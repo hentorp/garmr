@@ -669,12 +669,12 @@ mod tests {
 
     /// Deterministic synthetic rows — distinct, lexicographically-spread paths
     /// (same flavour as the bench's `synth_blobs`, so the sort/fst do real work).
-    fn synth(n: usize, salt: u64) -> Vec<(String, Vec<u8>)> {
+    fn synth(n: usize, seed: u64) -> Vec<(String, Vec<u8>)> {
         (0..n)
             .map(|i| {
-                let g = (i.wrapping_mul(2_654_435_761) ^ salt as usize) % 1000;
-                let p = format!("repo/grp{g:03}/file{:08}_{salt}.bin", i);
-                let body = format!("payload {i} salt {salt} {}\n", "z".repeat(8 + (i % 40)));
+                let g = (i.wrapping_mul(2_654_435_761) ^ seed as usize) % 1000;
+                let p = format!("repo/grp{g:03}/file{:08}_{seed}.bin", i);
+                let body = format!("payload {i} seed {seed} {}\n", "z".repeat(8 + (i % 40)));
                 (p, body.into_bytes())
             })
             .collect()

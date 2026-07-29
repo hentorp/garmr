@@ -90,18 +90,18 @@ pub(super) fn build_router(state: ApiState, opts: RouterOpts) -> Router {
         .route("/api/cases", get(cases))
         // axum 0.7 capture syntax is `:id` — `{id}` (the 0.8 syntax) registers
         // a LITERAL segment and every case-detail fetch 404s.
-        .route("/api/cases/:id", get(case_by_id))
-        .route("/api/entity/host/:name", get(entity_host))
-        .route("/api/entity/ip/:name", get(entity_ip))
-        .route("/api/entity/user/:name", get(entity_user))
-        .route("/api/entity/staff/:name", get(entity_staff))
-        .route("/api/entity/person/:name", get(entity_person))
+        .route("/api/cases/{id}", get(case_by_id))
+        .route("/api/entity/host/{name}", get(entity_host))
+        .route("/api/entity/ip/{name}", get(entity_ip))
+        .route("/api/entity/user/{name}", get(entity_user))
+        .route("/api/entity/staff/{name}", get(entity_staff))
+        .route("/api/entity/person/{name}", get(entity_person))
         .route("/api/hunts", get(hunts))
-        .route("/api/hunts/:id", get(hunt_by_id))
+        .route("/api/hunts/{id}", get(hunt_by_id))
         .route("/api/rules/proposals", get(rules_proposals))
-        .route("/api/rules/proposals/:id", get(rule_proposal_by_id))
+        .route("/api/rules/proposals/{id}", get(rule_proposal_by_id))
         .route("/api/actions", get(actions_list))
-        .route("/api/actions/:id", get(action_by_id))
+        .route("/api/actions/{id}", get(action_by_id))
         // Audit-ledger verification status (integrity + counts only, no record
         // content). Mounted on the read router so token-less / passkey-only
         // deployments resolve it, but admin-gated IN THE HANDLER: it runs an
@@ -129,15 +129,15 @@ pub(super) fn build_router(state: ApiState, opts: RouterOpts) -> Router {
         // Read-only Phase-3 record history: a case's full prediction/decision/
         // outcome revisions + the derived current view; and the false-negative
         // register (incl. incidents that never generated a case).
-        .route("/api/cases/:id/history", get(case_history))
+        .route("/api/cases/{id}/history", get(case_history))
         // Read-only explainability: WHY the case has its disposition — the
         // reasoning chain + registry drift + audit tokens (Phase 14).
-        .route("/api/cases/:id/explain", get(case_explain))
+        .route("/api/cases/{id}/explain", get(case_explain))
         .route("/api/false-negatives", get(false_negatives))
         // Read-only registry views (records + effective approval state + active).
         .route("/api/registry/active", get(registry_active))
         .route("/api/registry/verify", get(registry_verify))
-        .route("/api/registry/:kind", get(registry_list))
+        .route("/api/registry/{kind}", get(registry_list))
         .route("/api/hsearch", axum::routing::post(hsearch))
         // Deterministic, LLM-free replay of a stored `ask` plan (query_id) —
         // reproduces a past answer's retrieval through the same hybrid executor.
@@ -145,7 +145,7 @@ pub(super) fn build_router(state: ApiState, opts: RouterOpts) -> Router {
         .route("/api/env/facts", get(env_facts))
         .route("/api/env/candidates", get(env_candidates))
         .route("/api/env/verify", get(env_verify))
-        .route("/api/env/entity/:kind/:id", get(env_entity))
+        .route("/api/env/entity/{kind}/{id}", get(env_entity))
         .route("/api/appaudit/baselines", get(appaudit_baselines))
         // Phase 9 user-vs-peer-group behavioral comparison (peer_novelty), with
         // explicit abstention when either baseline is not yet Trusted.
@@ -154,7 +154,7 @@ pub(super) fn build_router(state: ApiState, opts: RouterOpts) -> Router {
         // enforces, so the console's Policies area can show them (authoring stays
         // a file + audited registry-promotion flow, never a console write).
         .route("/api/policies", get(super::policies::policies))
-        .route("/api/policies/:id", get(super::policies::policy_by_id))
+        .route("/api/policies/{id}", get(super::policies::policy_by_id))
         // Non-mutating backtest of a DRAFT policy over recent history (Phase 6/13):
         // replay it through the same read path + projection the live pipeline uses
         // and report its blast radius. Analyst-tier (persists/enforces nothing).
@@ -167,16 +167,16 @@ pub(super) fn build_router(state: ApiState, opts: RouterOpts) -> Router {
         // — registering/classifying/retiring a resource is a governed registry
         // promotion on the `catalog` kind, never a console write.
         .route("/api/resources", get(super::resources::resources))
-        .route("/api/resources/:id", get(super::resources::resource_by_id))
+        .route("/api/resources/{id}", get(super::resources::resource_by_id))
         // Per-user behavioral profile (Phase B / DoD 3): the learned per-dimension
         // footprint + time-of-day + volume, plus a bounded sensitive-activity scan.
-        .route("/api/users/:id", get(super::users::user_by_id))
+        .route("/api/users/{id}", get(super::users::user_by_id))
         // Application inventory (Phase B / DoD 4): declared (catalog) reconciled with
         // observed (baselines + activity), surfacing shadow + dormant apps; per-app
         // footprint + top users/objects + sensitive activity.
         .route("/api/applications", get(super::applications::applications))
         .route(
-            "/api/applications/:id",
+            "/api/applications/{id}",
             get(super::applications::application_by_id),
         )
         // Champion/challenger shadow evaluation (Phase E / DoD 19): the running
@@ -186,8 +186,8 @@ pub(super) fn build_router(state: ApiState, opts: RouterOpts) -> Router {
         .route("/api/shadow/summary", get(super::shadow::shadow_summary))
         .route("/api/shadow/scores", get(super::shadow::shadow_scores))
         .route("/api/findings", get(findings))
-        .route("/api/registry/:kind/:name", get(registry_show))
-        .route("/api/registry/:kind/:name/:version", get(registry_version))
+        .route("/api/registry/{kind}/{name}", get(registry_show))
+        .route("/api/registry/{kind}/{name}/{version}", get(registry_version))
         // Passkey (WebAuthn) login. The login page + login/logout/status are
         // public (auth middleware allow-lists them); register is admin-gated
         // (inside the handler AND by the middleware, so bootstrap needs the
@@ -251,7 +251,7 @@ pub(super) fn build_router(state: ApiState, opts: RouterOpts) -> Router {
             // audited). Decisions/false-negatives/feedback/mistakes are
             // analyst-tier; sealing an incident outcome is admin-gated in-handler.
             .route(
-                "/api/cases/:id/decision",
+                "/api/cases/{id}/decision",
                 axum::routing::post(submit_decision),
             )
             .route("/api/incidents", axum::routing::post(submit_incident))

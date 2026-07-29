@@ -55,7 +55,7 @@ Configuration is entirely by environment (defaults in parentheses):
 
 | Variable | Meaning | Default |
 |----------|---------|---------|
-| `GARMR_INGEST_URL` | Native ingest endpoint | `http://10.10.10.1:3100/ingest/v1/events` |
+| `GARMR_INGEST_URL` | Native ingest endpoint | `http://127.0.0.1:3100/ingest/v1/events` |
 | `GARMR_COLLECTOR_TOKEN` | Bearer token for the collector | *(unset → unauthenticated)* |
 | `PG_LOGDIR` | Directory of pgAudit `*.csv` files | `/var/lib/postgresql/17/main/log` |
 | `PG_HOST_LABEL` | `host` label stamped on events | `postgres` |
@@ -86,7 +86,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=postgres
-Environment=GARMR_INGEST_URL=http://10.10.10.1:3100/ingest/v1/events
+Environment=GARMR_INGEST_URL=http://127.0.0.1:3100/ingest/v1/events
 Environment=GARMR_COLLECTOR_TOKEN=REPLACE_ME
 Environment=PG_LOGDIR=/var/lib/postgresql/17/main/log
 Environment=PG_HOST_LABEL=soc-db

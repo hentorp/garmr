@@ -9,9 +9,9 @@ and exit; default = follow.
 """
 import glob, json, os, sys, time, urllib.request
 
-GARMR = os.environ.get("GARMR_LOKI", "http://10.10.10.1:3105/loki/api/v1/push")
+GARMR = os.environ.get("GARMR_LOKI", "http://127.0.0.1:3105/loki/api/v1/push")
 LOGDIR = os.environ.get("PG_LOGDIR", "/var/lib/postgresql/17/main/log")
-HOST = os.environ.get("PG_HOST_LABEL", "soc-matrix")
+HOST = os.environ.get("PG_HOST_LABEL", "pgdemo")
 
 class CsvRecordBuffer:
     """Incrementally split CSV data only at newlines outside quoted fields."""
