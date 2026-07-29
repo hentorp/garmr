@@ -1,0 +1,51 @@
+# garmr systemd unit — the deployable service (ingest, detect, triage, console).
+#
+# Paths are the default FHS layout used by scripts/airgap-install.sh and
+# scripts/deploy.sh: binary in /opt/garmr/bin, config + secrets in /etc/garmr,
+# data (the lakehouse — NEVER wiped on redeploy) in /var/lib/garmr. Adjust the
+# three paths if your install prefix differs, then:
+#   install -m0644 packaging/garmr.service /etc/systemd/system/garmr.service
+#   systemctl daemon-reload && systemctl enable --now garmr
+#
+# Secrets (GARMR_API_TOKEN, GARMR_ADMIN_TOKEN, ANTHROPIC_API_KEY, webhook/SMTP,
+# GARMR_UI_DIR, …) live in the EnvironmentFile (chmod 0640, never in git).
+[Unit]
+Description=garmr — agentic SOC (ingest, detect, triage, console)
+Documentation=https://github.com/hentorp/garmr
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=garmr
+Group=garmr
+EnvironmentFile=/etc/garmr/garmr.env
+ExecStart=/opt/garmr/bin/garmr serve
+WorkingDirectory=/var/lib/garmr
+Restart=on-failure
+RestartSec=5
+
+# File descriptors: a DataFusion scan of the events lakehouse opens every parquet
+# file in the current snapshot at once (hundreds after a busy day), on top of the
+# redb + tantivy segment handles already held. The systemd default soft limit
+# (1024) is far too low — a scan hits EMFILE ("Too many open files"), queries
+# fail, and the console/map render empty. Raise it well clear of the file count.
+LimitNOFILE=262144
+
+# Hardening. MemoryDenyWriteExecute stays off (the datafusion/JIT paths need W^X
+# relaxed). ReadWritePaths must include the data dir(s); everything else is RO.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/garmr
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+
+[Install]
+WantedBy=multi-user.target

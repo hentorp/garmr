@@ -1,0 +1,29 @@
+[package]
+publish = false            # workspace-internal; the deployable is the `garmr` binary
+name = "garmr-audit"
+description = "garmr tamper-evident audit ledger: append-only, BLAKE3-chained, signed, offline-verifiable."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Deliberately dependency-light: the ledger must be independently verifiable, so
+# it pulls no garmr crate and no storage engine — just crypto + serde + time.
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+blake3 = { workspace = true }
+ed25519-dalek = { workspace = true }
+getrandom = { workspace = true }
+hex = { workspace = true }
+# The no-barrier worker-pool engine. Used only in offline verification to run the
+# INDEPENDENT per-record crypto (BLAKE3 recompute + Ed25519 verify) across cores;
+# the hash-chain walk stays serial. Leaf crate, no codec deps — keeps the ledger
+# independently verifiable.
+gatling = { path = "../../vendor/znippy-zoomies/gatling", package = "rotaryengine", version = "0.1" }
+
+[dev-dependencies]
+tempfile = "3"

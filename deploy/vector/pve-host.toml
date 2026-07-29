@@ -1,0 +1,153 @@
+# ============================================================================
+# Vector — PVE HOST collector  (replaces the Alloy `loki.write` pipeline)
+# Ships: systemd journald + /var/log/pve-firewall.log + host Docker containers
+#        + kunai eBPF JSONL  ──▶  garmr NATIVE ingest (no Loki wire format)
+#
+#   POST http://127.0.0.1:3100/ingest/v1/events   (canonical Event JSON array)
+#
+# LABEL MODEL (preserved from the Alloy config): only host, service, source,
+# environment, severity, log_type are top-level keys. High-cardinality values
+# (container id, ip, pid, …) stay inside `message`; garmr's fields::extract
+# derives src_ip/user/port from the message on ingest — so we deliberately do
+# NOT send a `fields` object (letting garmr extract keeps parity with the old
+# Loki path and honours the endpoint's deny_unknown_fields contract).
+#
+# VRL note: field access is infallible (missing → null); to_string/to_int/
+# format_timestamp are fallible, so the `?? default` sits on the CONVERSION.
+#
+# NOTE: garmr's native endpoint does not (yet) decode Content-Encoding: gzip,
+# so this sink sends uncompressed JSON. Batches are small and local.
+# ============================================================================
+
+data_dir = "/var/lib/vector"
+
+# ---------------------------------------------------------------------------
+# 1) systemd JOURNALD  → source=journald, log_type=system
+# ---------------------------------------------------------------------------
+[sources.journald]
+type = "journald"
+# current_boot_only must be true on systemd 250–257 (Vector rejects false there).
+# since_now=true: start from the cutover moment. Alloy already shipped the
+# history, so backfilling the whole current boot would DUPLICATE days of events
+# into garmr (which does not de-dup by content). Vector checkpoints thereafter
+# (data_dir), so a later restart resumes without loss or duplication.
+current_boot_only = true
+since_now = true
+
+[transforms.journald_shape]
+type = "remap"
+inputs = ["journald"]
+source = '''
+# service: derive from the systemd unit, else the syslog identifier.
+u = to_string(."_SYSTEMD_UNIT") ?? ""
+svc = replace(u, r'\.(service|socket|scope|timer|slice|mount|target)$', "")
+if svc == "" { svc = to_string(."SYSLOG_IDENTIFIER") ?? "" }
+# collapse transient per-session / per-user scopes to a stable low-card value.
+svc = replace(svc, r'^session-\w+$', "session")
+svc = replace(svc, r'^user@\d+$', "user-manager")
+svc = replace(svc, r'^run-\w+$', "run-scope")
+
+# severity: journald PRIORITY (0..7) → keyword.
+prio = to_int(."PRIORITY") ?? 6
+sev = "info"
+if prio <= 0 { sev = "emerg" } else if prio == 1 { sev = "alert" } else if prio == 2 { sev = "crit" } else if prio == 3 { sev = "err" } else if prio == 4 { sev = "warning" } else if prio == 5 { sev = "notice" } else if prio == 6 { sev = "info" } else { sev = "debug" }
+
+msg = to_string(.message) ?? ""
+tstamp = format_timestamp(.timestamp, format: "%+") ?? ""
+. = { "host": "pve", "environment": "prod", "source": "journald", "log_type": "system", "service": svc, "severity": sev, "message": msg, "ts": tstamp }
+'''
+
+# ---------------------------------------------------------------------------
+# 2) PVE FIREWALL log file  → source=pve-firewall, log_type=firewall
+# ---------------------------------------------------------------------------
+[sources.pve_firewall]
+type = "file"
+include = ["/var/log/pve-firewall.log"]
+read_from = "end"            # ~ Alloy tail_from_end
+
+[transforms.firewall_shape]
+type = "remap"
+inputs = ["pve_firewall"]
+source = '''
+msg = to_string(.message) ?? ""
+tstamp = format_timestamp(.timestamp, format: "%+") ?? ""
+. = { "host": "pve", "environment": "prod", "source": "pve-firewall", "log_type": "firewall", "service": "pve-firewall", "severity": "info", "message": msg, "ts": tstamp }
+'''
+
+# ---------------------------------------------------------------------------
+# 3) HOST Docker containers  → source=docker, log_type=app, service=<container>
+# ---------------------------------------------------------------------------
+[sources.host_docker]
+type = "docker_logs"
+docker_host = "unix:///var/run/docker.sock"
+
+[transforms.docker_shape]
+type = "remap"
+inputs = ["host_docker"]
+source = '''
+name = to_string(.container_name) ?? ""
+name = replace(name, r'^/', "")
+svc = name
+if svc == "njord-audit-minio" { svc = "njord" }    # explicit override (as in Alloy)
+msg = to_string(.message) ?? ""
+tstamp = format_timestamp(.timestamp, format: "%+") ?? ""
+. = { "host": "pve", "environment": "prod", "source": "docker", "log_type": "app", "service": svc, "severity": "info", "message": msg, "ts": tstamp }
+'''
+
+# ---------------------------------------------------------------------------
+# 4) KUNAI eBPF JSONL  → source=kunai, log_type=endpoint, service=kunai
+#    Drop the high-volume, low-signal kinds (prctl/mmap_exec/io_uring_sqe) and
+#    rate-cap the firehose, exactly as the Alloy loki.process stage did.
+# ---------------------------------------------------------------------------
+[sources.kunai]
+type = "file"
+include = ["/var/log/kunai/events.jsonl"]
+read_from = "end"
+
+[transforms.kunai_filter]
+type = "filter"
+inputs = ["kunai"]
+# Keep the event unless its kind is one of the noisy ones. A line that doesn't
+# parse is KEPT (fail-open — never silently drop signal).
+condition.type = "vrl"
+condition.source = '''
+parsed = parse_json(to_string(.message) ?? "") ?? {}
+kind = to_string(parsed.info.event.name) ?? ""
+!includes(["prctl", "mmap_exec", "io_uring_sqe"], kind)
+'''
+
+[transforms.kunai_throttle]
+type = "throttle"
+inputs = ["kunai_filter"]
+threshold = 80               # ~ Alloy stage.limit rate = 80
+window_secs = 1
+
+[transforms.kunai_shape]
+type = "remap"
+inputs = ["kunai_throttle"]
+source = '''
+# Keep the raw JSON line as the message; garmr's fields::extract walks it.
+msg = to_string(.message) ?? ""
+tstamp = format_timestamp(.timestamp, format: "%+") ?? ""
+. = { "host": "pve", "environment": "prod", "source": "kunai", "log_type": "endpoint", "service": "kunai", "severity": "info", "message": msg, "ts": tstamp }
+'''
+
+# ---------------------------------------------------------------------------
+# SINK → garmr native canonical ingest
+# ---------------------------------------------------------------------------
+[sinks.garmr]
+type = "http"
+inputs = ["journald_shape", "firewall_shape", "docker_shape", "kunai_shape"]
+uri = "http://127.0.0.1:3100/ingest/v1/events"
+method = "post"
+encoding.codec = "json"      # a JSON array of the batch → matches the endpoint
+healthcheck.enabled = false  # the endpoint is POST-only; a GET healthcheck would
+                             # 405. The sink retries POSTs regardless, so this
+                             # just lets Vector start cleanly before garmr:3100 is up.
+
+[sinks.garmr.batch]
+max_events = 500
+timeout_secs = 1
+
+[sinks.garmr.request]
+retry_attempts = 10          # 5xx (storage not durable) → retry, at-least-once

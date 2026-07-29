@@ -1,0 +1,23 @@
+[package]
+publish = false            # workspace-internal; the deployable is the `garmr` binary, not crates.io libs
+name = "garmr-analytics"
+description = "garmr analytics: log-line templating + new-template anomaly detection (M4)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+garmr-core.workspace = true
+garmr-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+skade.workspace = true
+sha2 = "0.10"
+gatling = { path = "../../vendor/znippy-zoomies/gatling", package = "rotaryengine", version = "0.1" }
+
+[dev-dependencies]
+tokio.workspace = true

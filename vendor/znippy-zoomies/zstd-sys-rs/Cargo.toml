@@ -1,0 +1,45 @@
+[package]
+name = "zstd-sys-rs"
+readme = "README.md"
+version = "1.5.17"
+edition = "2024"
+license = "BSD-3-Clause"
+description = "Rust bindings to statically linked zstd v1.5.7, with a safe zero-copy (de)compress API"
+repository = "https://codeberg.org/nordisk/znippy"
+build = "build.rs"
+include = [
+    "src/**",
+    "zstd/lib/**",
+    "zstd/lib/common/**",
+    "zstd/lib/compress/**",
+    "zstd/lib/decompress/**",
+    "zstd/lib/deprecated/**",
+    "zstd/lib/dictBuilder/**",
+    "build.rs",
+    "wrapper.h",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+    "zstd.license"
+]
+
+
+[build-dependencies]
+cc = "1.2.30"
+bindgen = "0.72.0"
+glob = "0.3"
+
+
+[dependencies]
+libc = "0.2"
+
+[package.metadata]
+# Optional, for clarity in documentation.
+zstd-version = "1.5.7"
+
+[lib]
+doctest = false
+name = "zstd_sys_rs"
+path = "src/lib.rs"
+
+

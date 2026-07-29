@@ -1,0 +1,105 @@
+[package]
+publish = false            # workspace-internal; the deployable is the `garmr` binary, not crates.io libs
+name = "garmr-cli"
+description = "garmr — a one-person agentic SOC in Rust. The deployable binary."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "garmr"
+path = "src/main.rs"
+
+# The MCP (stdio) server exposing garmr's read + ask surface to an LLM agent
+# (Claude Code/Desktop). Built only with `--features mcp`; proxies to a running
+# `garmr serve` over its authenticated HTTP API.
+[[bin]]
+name = "garmr-mcp"
+path = "src/bin/garmr-mcp.rs"
+required-features = ["mcp"]
+
+[features]
+# znippy cold storage is on by default. `--no-default-features` builds a binary
+# with only the pure-Rust `plain` (zstd-parquet) archiver and no openzl C
+# toolchain — for airgapped source builds.
+default = ["znippy"]
+znippy = ["garmr-retention/znippy", "garmr-core/znippy"]
+# Semantic search pulls candle (pure-Rust BERT) + a ~130 MB model — off by
+# default so the base build stays lean. Enable with `--features semantic`;
+# at runtime it activates only when GARMR_EMBED_MODEL points at a model dir.
+semantic = ["dep:garmr-embed"]
+# MCP server binary (garmr-mcp). Off by default so the base build stays lean.
+mcp = ["dep:rmcp", "dep:schemars"]
+# Loki push compatibility (`/loki/api/v1/push`). Off by default: the base build
+# carries no Loki protocol, protobuf, or snappy. Enable only for environments
+# still fanning in through Grafana Alloy's `loki.write`; the native
+# `/ingest/v1/events` endpoint is always available.
+loki-compat = ["garmr-ingest/loki-compat"]
+# Arrow-Flight columnar ingest receiver (gRPC DoPut). Off by default so the base
+# build carries no tonic/gRPC/arrow-flight. Enable with `--features flight` and
+# set `ingest.flight_bind` to serve the zero-copy columnar swallow path.
+flight = ["garmr-ingest/flight"]
+
+[dependencies]
+garmr-core.workspace = true
+garmr-audit.workspace = true
+garmr-store.workspace = true
+garmr-query = { workspace = true, features = ["store"] }
+garmr-ingest.workspace = true
+garmr-detect.workspace = true
+garmr-llm.workspace = true
+garmr-agent.workspace = true
+garmr-analytics.workspace = true
+garmr-learning.workspace = true
+garmr-graph = { workspace = true, features = ["store"] }
+garmr-embed = { workspace = true, optional = true }
+garmr-correlate.workspace = true
+garmr-enrich.workspace = true
+garmr-retention = { workspace = true, default-features = false }
+garmr-route.workspace = true
+# Application-audit / insider-risk plane (Phases 1/3/5/8), wired into serve.
+garmr-policy.workspace = true
+garmr-appdetect.workspace = true
+garmr-catalog.workspace = true
+garmr-monitor.workspace = true
+garmr-baseline.workspace = true
+# The rayon-free fork-join worker pool: parallelizes the CPU-bound per-event
+# Sigma evaluation while detection handling stays serial + index-ordered.
+# Published to crates.io as `rotaryengine`; the library name stays `gatling`.
+gatling = { path = "../../vendor/znippy-zoomies/gatling", package = "rotaryengine", version = "0.1" }
+reqwest.workspace = true
+hex.workspace = true
+tokio.workspace = true
+axum.workspace = true
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+base64 = "0.22"
+# Raise the process open-file limit at startup so a lakehouse scan/compaction
+# (opens every parquet + manifest at once) never trips the 1024 soft default.
+libc = "0.2"
+# Passkey / WebAuthn login (pure-Rust RustCrypto — no openssl, airgap-clean).
+# Runtime-enabled when GARMR_WEBAUTHN_RP_ID is set; ES256 (P-256) authenticators.
+p256 = { version = "0.13", features = ["ecdsa"] }
+sha2 = "0.10"
+ciborium = "0.2"
+serde.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+uuid.workspace = true
+blake3.workspace = true
+# Encryption-at-rest for the writable secret store (AEAD; already in the tree via
+# rustls) + memory hygiene for decrypted plaintext.
+ring = "0.17"
+zeroize = "1"
+skade.workspace = true
+rmcp = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,20 @@
+[package]
+name = "flightbeat"
+version = "0.1.0"
+edition = "2021"
+publish = false            # a separate deployable (a "beat"), never a crates.io lib
+description = "Tiny Arrow-Flight log shipper for garm: tail a source, batch rows into Arrow RecordBatches, DoPut to garm's columnar-swallow ingest."
+
+# Detached workspace (like bench/) so the shipper stays tiny and decoupled — it
+# links arrow + arrow-flight + tonic only, NEVER skade/garmr-store. Its own arrow
+# 58 matches garm's wire schema by contract (see `wire_schema`), not by shared code.
+[workspace]
+
+[dependencies]
+arrow-array = "58"
+arrow-schema = "58"
+arrow-flight = "58"
+tonic = "0.14"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "fs", "time"] }
+futures = "0.3"
+anyhow = "1"

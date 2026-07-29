@@ -1,0 +1,38 @@
+version: 2
+
+# Dependency update automation.
+#
+# Only the root Cargo workspace and GitHub Actions are enabled here. Additional
+# Cargo manifests exist and can be added as further `package-ecosystem: cargo`
+# entries with the appropriate `directory` when we want them watched:
+#   - /crates/garmr-webui   (its own nested manifest)
+#   - /flightbeat
+#   - /xtask
+#   - /vendor/skade, /vendor/znippy, /vendor/facett, /vendor/znippy-zoomies
+#     (vendored subtrees — update via `git subtree pull` upstream, not Dependabot,
+#      so they are intentionally left out).
+
+updates:
+  # Rust crates — the root workspace lockfile.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "area:core"
+    commit-message:
+      prefix: "deps"
+
+  # GitHub Actions used by workflows under .github/workflows/.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "ci"

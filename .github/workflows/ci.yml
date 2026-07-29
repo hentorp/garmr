@@ -1,0 +1,125 @@
+# Garmr CI — format, lint, test, WebUI, and repo-hygiene gates.
+#
+# Security posture:
+#   * Default GITHUB_TOKEN permissions are read-only (see `permissions` below).
+#   * No job uses repository secrets on untrusted PR code, and we do NOT use
+#     `pull_request_target`.
+#   * Third-party actions SHOULD be pinned to a commit SHA before 1.0 (they are
+#     referenced by tag here for readability — pin them as a hardening follow-up).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Smaller/faster CI links (garmr links datafusion/arrow — big objects).
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features --locked
+
+  detached-packages:
+    # Packages with their own workspace (not garmr workspace members).
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        manifest:
+          - flightbeat/Cargo.toml
+          - xtask/Cargo.toml
+          - crates/garmr-webui/Cargo.toml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --manifest-path ${{ matrix.manifest }} --locked || cargo build --manifest-path ${{ matrix.manifest }} --locked
+
+  webui:
+    # Build the Leptos WebAssembly console.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install trunk
+        run: cargo install trunk --locked || true
+      - name: Build WASM frontend
+        working-directory: crates/garmr-webui
+        run: trunk build --release
+
+  reuse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: REUSE license lint
+        uses: fsfe/reuse-action@v5
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  no-private-references:
+    # Fail if internal infrastructure / private references leak into the tree.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for private references
+        run: |
+          set -e
+          patterns='vetra-automation/garmr|tail4eceda|100\.97\.108|/home/(rickard|henrik)|@ubm\.se|utbetalningsmyndigheten'
+          # Absolute local path deps or private git URLs in manifests:
+          man='path\s*=\s*"/|git\s*=\s*"(ssh://|git@)'
+          # Exclude the files that legitimately define these detection patterns.
+          self='--exclude=public-export.denylist --exclude=public-verify.sh --exclude=ci.yml'
+          hits=$(grep -rInE "$patterns" --exclude-dir=.git $self . || true)
+          manhits=$(grep -rInE "$man" --include=Cargo.toml . || true)
+          if [ -n "$hits$manhits" ]; then
+            echo "::error::private/internal reference found:"; echo "$hits"; echo "$manhits"; exit 1
+          fi
+          echo "no private references found"

@@ -1,0 +1,20 @@
+[package]
+name = "garmr-embed"
+description = "Pure-Rust (candle) sentence embeddings for garmr semantic search."
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+publish = false
+
+[dependencies]
+garmr-core.workspace = true
+# The SAME vendored znippy-zoomies garmr already builds via skade — its `vann`
+# module gives the HNSW ANN engine that replaces the brute-force cosine scan.
+znippy-zoomies = { path = "../../vendor/znippy-zoomies" }
+candle-core = "0.9"
+candle-nn = "0.9"
+candle-transformers = "0.9"
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+serde_json.workspace = true
+blake3.workspace = true
+tracing.workspace = true

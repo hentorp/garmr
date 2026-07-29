@@ -1,0 +1,41 @@
+# Garmr public-export ALLOWLIST — top-level paths copied into the public tree.
+# One path (file or dir) per line. Everything else is excluded by default.
+# The export is tracked-files-only (via `git archive`), then the denylist is
+# applied, then this allowlist is enforced as the final include set.
+Cargo.toml
+Cargo.lock
+rust-toolchain.toml
+deny.toml
+.gitignore
+.github
+README.md
+CLAUDE.md
+LICENSE
+LICENSES
+NOTICE
+COMMERCIAL-LICENSING.md
+TRADEMARKS.md
+CONTRIBUTING.md
+CLA.md
+SECURITY.md
+CODE_OF_CONDUCT.md
+THIRD_PARTY_LICENSES.md
+REUSE.toml
+catalog.example.toml
+garmr.example.toml
+crates
+flightbeat
+xtask
+correlations
+hunts
+rules
+policies
+fixtures
+deploy
+packaging
+scripts
+supply-chain
+docs
+vendor/skade
+vendor/znippy
+vendor/znippy-zoomies

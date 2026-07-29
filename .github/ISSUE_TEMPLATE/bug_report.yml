@@ -1,0 +1,107 @@
+name: Bug report
+description: Report a reproducible problem in garmr.
+title: "[bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug.
+
+        **Do not report security vulnerabilities here.** Suspected vulnerabilities
+        (auth bypass, data exposure, injection, denial of service, supply-chain)
+        must go through private disclosure — see
+        [`SECURITY.md`](../blob/main/SECURITY.md), not a public issue.
+
+        garmr is **alpha** software intended for isolated lab evaluation. Please
+        confirm the behaviour against a recent build before filing.
+  - type: input
+    id: version
+    attributes:
+      label: garmr version
+      description: Output of `garmr --version` (or the release tag you installed).
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Git commit
+      description: The commit hash you built from, if building from source (`git rev-parse HEAD`).
+      placeholder: "e.g. 678889e"
+    validations:
+      required: false
+  - type: dropdown
+    id: deployment_mode
+    attributes:
+      label: Deployment mode
+      description: How is this instance configured?
+      options:
+        - Airgapped (GARMR_AIRGAP=1)
+        - Local LLM (loopback / LAN OpenAI-compatible endpoint)
+        - Hybrid (external model, egress-policy controlled)
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: build_features
+    attributes:
+      label: Build features
+      description: Cargo features the binary was built with (e.g. `semantic loki-compat flight`), or "default".
+      placeholder: "default"
+    validations:
+      required: false
+  - type: input
+    id: os
+    attributes:
+      label: Operating system / kernel
+      description: OS and version, and CPU architecture.
+      placeholder: "e.g. Debian 12 (x86_64), kernel 6.1"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened? Include exact error messages.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: A minimal, ordered list of steps. Include the command line and relevant config keys (never secret values).
+      placeholder: |
+        1. Configure `[ingest]` with ...
+        2. Run `garmr serve`
+        3. POST an event to /ingest/v1/events with ...
+        4. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Relevant `garmr` log output or stack traces.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: sanitization
+    attributes:
+      label: Sanitization confirmation
+      description: |
+        **Do NOT paste secrets or real data.** Redact API keys, bearer tokens,
+        session cookies, the audit signing key, `GARMR_*` secret values, and any
+        real audit-log content (it can reveal who was investigated and which
+        subjects were accessed). Replace hostnames/IPs with examples.
+      options:
+        - label: I have removed all secrets, tokens, and real/sensitive audit-log content from this report.
+          required: true

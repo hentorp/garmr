@@ -1,0 +1,59 @@
+# Garmr public-export DENYLIST — never copied into the public tree, even if
+# tracked. Directory names, path prefixes, and glob patterns. Applied after the
+# `git archive` extract and before the allowlist enforcement. Fail-closed: the
+# verify step re-checks that none of these survive.
+#
+# --- git / history / editor / AI-context (internal) ---
+.git
+.gitattributes
+.nornir
+.claude
+.idea
+.vscode
+#
+# --- internal design/bench/roadmap/report content ---
+bench
+docs/lab
+docs/product
+docs/status/pre-productization-assessment.md
+docs/status/productization-roadmap.md
+docs/application-audit-ueba-report.md
+docs/webui/deploy-loader-auth-issue.md
+docs/webui/current-state-audit.md
+docs/webui/usability-audit.md
+docs/webui/usability-testing.md
+docs/webui/backend-capability-matrix.md
+docs/manual.pdf
+#
+# --- unclear-license vendored dep + its only consumer ---
+vendor/facett
+crates/garmr-map
+#
+# --- superseded license stubs (replaced by the AGPL/CC-BY model) ---
+LICENSE-MIT
+LICENSE-APACHE
+#
+# --- runtime state / data / secrets / build artifacts (never tracked, belt-and-suspenders) ---
+data
+dist
+target
+**/target
+node_modules
+garmr.toml
+*.redb
+.env
+.env.*
+*.pem
+*.key
+id_rsa
+id_ed25519
+*.pfx
+*.p12
+#
+# --- forbidden content patterns (verify step greps for these) ---
+PATTERN:vetra-automation/garmr
+PATTERN:tail4eceda
+PATTERN:100\.97\.108
+PATTERN:/home/rickard
+PATTERN:@ubm\.se
+PATTERN:utbetalningsmyndigheten

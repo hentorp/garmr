@@ -1,0 +1,196 @@
+# skade — "winter queen" (Skaði). Fast Apache Iceberg writing/reading +
+# ergonomic DataFusion SQL on top of skade-katalog's embedded RedbCatalog.
+#
+# Detached workspace (own [workspace], same pattern as ../bench): keeps the
+# published skade-katalog crate's manifest and lockfile untouched. The
+# skade-katalog dependency carries both `version` and `path`, so local builds
+# use the sibling sources and `cargo publish` uses the crates.io release.
+[package]
+name = "skade"
+version = "0.5.1"
+edition = "2024"
+rust-version = "1.92"
+description = "Fast Apache Iceberg table writing/reading (incl. identity-partitioned writes) and ergonomic DataFusion SQL over an embedded, pure-Rust catalog (skade-katalog). Arrow RecordBatch in, SQL out."
+license = "Apache-2.0"
+repository = "https://codeberg.org/nordisk/skade"
+readme = "README.md"
+keywords = ["iceberg", "datafusion", "arrow", "sql", "warehouse"]
+categories = ["database"]
+
+[dependencies]
+# The embedded catalog: catalog.redb + file:// warehouse in one directory.
+skade-katalog = { version = "0.1.15", path = ".." }
+# arrow-58 Iceberg via the vendored, separately published fork
+# (skade/vendor/iceberg-arrow58 → crates.io `iceberg-arrow58`, lib name
+# `iceberg`). path = local dev, version = published resolve. Replaces the old
+# `[patch.crates-io] iceberg` block that crates.io strips on publish.
+iceberg = { package = "iceberg-arrow58", version = "0.9.1", path = "../vendor/iceberg-arrow58" }
+
+# Data plane — pinned to the arrow/parquet major iceberg links (arrow 58).
+arrow-array = "58"
+arrow-schema = "58"
+arrow-cast = "58"
+# `arrow-select` supplies `filter_record_batch` (row-drop for changelog
+# collapse) and is a thin, pure-Rust part of the arrow-58 family already in the
+# tree via arrow-array/parquet.
+arrow-select = "58"
+parquet = "58"
+
+futures = "0.3"
+thiserror = "1"
+# Pluggable object store: the `ObjectStore` trait is async, and the iceberg
+# `StorageFactory`/`Storage` bridge is `#[typetag::serde]`, so these ride in the
+# default build (tiny, pure-Rust). The S3 *clients* stay optional (see features).
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+typetag = "0.2"
+
+# ── Object-store backends (all optional; none pulled by default) ──
+# rust-s3: the default S3 backend (feature `s3`). MinIO/S3 via custom endpoint.
+# NOTE: rust-s3 uses `maybe-async`; in a workspace that also links gix it won't
+# compile (gix flips maybe-async to is_sync globally) — use `aws-s3` there.
+s3 = { package = "rust-s3", version = "0.35", optional = true, default-features = false, features = ["tokio-rustls-tls"] }
+# aws-sdk-s3: the adapter so a consumer (Njord) reuses its own S3 SDK rather than
+# pulling a second one (feature `aws-s3`).
+aws-sdk-s3 = { version = "1", optional = true }
+# HTTP lineage sink (feature `lineage-http`, opt-in): a lightweight, pure-Rust
+# blocking HTTP client to POST OpenLineage `RunEvent`s. ureq (rustls) is the
+# smallest option and skade pulls no other HTTP client; the blocking call is
+# fenced onto `tokio::task::spawn_blocking` so it never stalls the async runtime.
+# `serde_json` builds the RunEvent body (it is already a dev-dep for the lineage
+# serde round-trip test; here it rides as an optional runtime dep).
+ureq = { version = "2", optional = true }
+serde_json = { version = "1", optional = true }
+# Parallel ingest: the ONE fork-join engine — znippy-zoomies `gatling_forkjoin`
+# — fans Parquet encoding across all cores (the gatling topology: all-cores
+# encode, one sequential writer/committer). No-barrier, self-dispatching scoped
+# threads; NO rayon. `bytes` is the FileIO write payload type.
+# garmr-vendoring: point at the vendored znippy-zoomies (vendor/znippy-zoomies,
+# also used by facett) instead of crates.io — keeps the build self-contained +
+# offline. The vendored 0.1.14 carries the gatling_map_owned API skade uses.
+znippy-zoomies = { version = "0.1", path = "../../znippy-zoomies" }
+bytes = "1"
+# No-barrier pipeline (`ingest_pipelined`): the all-core gatling encode runs on
+# `spawn_blocking` (rt), then the async writes fan out through the ONE async I/O
+# engine `gatling::io::run_ordered`. rt for spawn_blocking. (tokio is already in
+# the tree via iceberg.)
+tokio = { version = "1", features = ["rt", "sync"] }
+# `gatling::io::run_ordered` (the async I/O sibling of `gatling_forkjoin`) returns
+# `anyhow::Result`, and each write job's future yields `anyhow::Result`, so the
+# writer stage names `anyhow` at the engine boundary. (anyhow already rides in the
+# tree via iceberg-rust.)
+anyhow = "1"
+
+# SQL surface (feature `sql`, opt-in). datafusion 54.x shares arrow 58 with the
+# patched iceberg 0.9.1 forks, so writer/reader RecordBatch types interop without
+# bridging. (52.x → 54: 53.0.0 was the first arrow-58 datafusion.)
+datafusion = { version = "54", optional = true }
+# arrow-58 iceberg-datafusion via the vendored fork (skade/vendor/
+# iceberg-datafusion-arrow58 → crates.io `iceberg-datafusion-arrow58`, lib name
+# `iceberg_datafusion`). Same path+version pattern as `iceberg` above.
+iceberg-datafusion = { package = "iceberg-datafusion-arrow58", version = "0.9.2", path = "../vendor/iceberg-datafusion-arrow58", optional = true }
+
+# ── testmatrix feature (introspection markers) ──
+# Optional path dep on the nornir test-matrix engine. Off by default (no nornir
+# dep in the default build); with `--features testmatrix` the crate's
+# `functional_status(..)` wrapper feeds one functional-status row per real
+# surface (write/read/delta/MOR/object-store/lineage) into the matrix. Path dep
+# guarantees the emitter (nornir-testmatrix ≥0.2.0, not yet on crates.io).
+nornir-testmatrix = { version = "0.2", default-features = false, optional = true }
+
+[features]
+# Lean by default: writer/reader + bridges, pure-Rust catalog. The `sql` surface
+# (DataFusion) is opt-in — it pulls the datafusion tree incl. the C `liblzma-sys`
+# (xz) via async-compression, which most consumers don't want. Enable with
+# `features = ["sql"]` for `Table::sql` / `Warehouse::sql`.
+# (The zstd-sys C dep still rides in via iceberg-rust's Avro manifests — not ours
+# to drop without patching iceberg.)
+default = []
+sql = ["dep:datafusion", "dep:iceberg-datafusion"]
+
+# `bench` (opt-in, default OFF) — re-expose the `pub(crate)` partition-scan
+# accelerator (`write::uniform_str_value`) as `skade::bench_partition::*` so the
+# out-of-crate nornir-bench harness can A/B it against the naive per-row scan
+# (the `skade_partition_key_scan` micro-bench) without widening the public API.
+# A normal build (and `cargo publish`) has it OFF and pays nothing — mirrors
+# skade-katalog's `bench` feature over the redb key builders.
+bench = []
+
+# `lineage` (opt-in, default OFF) — turns on the automatic lineage emit hook on
+# `Table::append`: when a `LineageSink` is attached via `Table::with_lineage_sink`,
+# each append emits a `LineageEvent` to it post-commit (best-effort, never fails
+# the write). The lineage TYPES (`LineageEvent`/`LineageSink`/…) are always
+# compiled regardless of this flag — only the automatic emission wiring is gated,
+# so the default build pays nothing. See `.nornir/cdc-streaming-lineage.md`.
+lineage = []
+
+# `stream` (opt-in, default OFF) — the push CDC consume API: `ChangeStream` +
+# `Table::changes`, a live changelog stream driven by skade-katalog's commit
+# broadcast (`subscribe_commits`) with a durable poll fallback and exactly-once
+# `ConsumerCursor` resume. Pure additive; the default build pays nothing. See
+# `.nornir/cdc-streaming-lineage.md` §3.2.
+stream = []
+
+# `lineage-http` (opt-in, default OFF) — the OpenLineage HTTP lineage sink:
+# `HttpLineageSink` maps each `LineageEvent` to an OpenLineage `RunEvent` and
+# POSTs it to a configured endpoint (e.g. a Marquez collector). Its own feature
+# so the HTTP client (`ureq`) + `serde_json` stay out of every other build. The
+# lineage TYPES compile regardless; this only adds the HTTP poster. Enabling it
+# does NOT imply the `lineage` emit hook — attach the sink explicitly.
+lineage-http = ["dep:ureq", "dep:serde_json"]
+
+# ── Pluggable object-store backends (opt-in) ──
+# `rustfs`: an embedded, zero-external-dependency local-filesystem ObjectStore
+# (no extra crates — just std). The "local object store" backend.
+rustfs = []
+# `s3`: rust-s3 backend for MinIO/S3 (the default S3 backend; configurable
+# endpoint). See the dependency note above re: maybe-async / gix.
+s3 = ["dep:s3"]
+# `aws-s3`: aws-sdk-s3 backend — reuse the consumer's existing S3 SDK.
+aws-s3 = ["dep:aws-sdk-s3"]
+
+# `testmatrix` (opt-in, default OFF) — flip the crate's `functional_status(..)`
+# markers from compiled-out `#[inline]` no-ops into real nornir test-matrix
+# rows. Pulls the optional `nornir-testmatrix` dep AND its own `testmatrix`
+# mode (a passthrough) so the emit records rather than no-ops. Off by default →
+# the write/read data plane pays nothing and pulls no nornir dep.
+testmatrix = ["dep:nornir-testmatrix", "nornir-testmatrix/testmatrix"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tempfile = "3"
+anyhow = "1"
+# The `stream` integration tests drive the returned `BoxStream` with
+# `StreamExt::next` (futures is already a normal dep; named here for the tests).
+futures = "0.3"
+# Lineage unit test asserts the `LineageEvent` serde round-trip (the on-the-wire /
+# lineage_events-row form). serde itself is a normal dep; only the JSON codec is
+# test-only here.
+serde_json = "1"
+# NOTE: the throughput benchmarks were migrated off criterion onto the nornir
+# Bencher engine — they now live in the detached bench crate as `skade.*`
+# benchers (see ../bench/examples/nornir-bench.rs). No criterion dev-dep or
+# `[[bench]]` target here anymore.
+
+# Detached from the skade-katalog package on purpose (see header). The vendored
+# arrow-58 Iceberg forks (skade/vendor/*) are pulled in as members so their path
+# deps resolve and `cargo build` here compiles them.
+#
+# arrow-58 migration is now via VENDORED, separately published crates, NOT a
+# `[patch.crates-io]` block:
+#   - `iceberg`            → `iceberg-arrow58` (iceberg 0.9.1 + arrow/parquet 58,
+#                            zero source changes; lib name kept `iceberg`).
+#   - `iceberg-datafusion` → `iceberg-datafusion-arrow58` (iceberg-datafusion
+#                            0.9.1 on arrow-58 + datafusion-54, CARRYING the
+#                            parallel per-file partitioned scan; lib name kept
+#                            `iceberg_datafusion`).
+# Because these are real uniquely-named deps (package = "...", version + path),
+# `cargo publish` does NOT strip them — the published skade is genuinely arrow-58.
+# skade is the single canonical publisher of both fork crate names. Drop them the
+# moment upstream iceberg-rust ships an arrow-58 release — then a plain version bump.
+#
+# The vendored fork crates are NOT listed as members here: they already belong to
+# the skade-katalog workspace (../Cargo.toml). A package can only be a member of
+# one workspace, so this detached workspace consumes them as plain out-of-workspace
+# path dependencies (which cargo permits).
+[workspace]

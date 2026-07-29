@@ -1,0 +1,25 @@
+title: SSH login attempt for invalid user
+id: garmr-ssh-invalid-user
+status: experimental
+description: >
+    An SSH login attempt against a username that does not exist. Strongly
+    associated with automated brute-force / credential-stuffing, since a
+    legitimate user knows their own account name.
+author: garmr
+logsource:
+    product: linux
+    service: sshd
+detection:
+    selection:
+        service: sshd
+        message|contains:
+            - 'Invalid user'
+            - 'invalid user'
+    condition: selection
+falsepositives:
+    - A decommissioned account still referenced by an old client config.
+level: medium
+tags:
+    - attack.credential_access
+    - attack.t1110
+    - attack.t1078

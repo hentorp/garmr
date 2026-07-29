@@ -1,0 +1,266 @@
+# garmr configuration. Copy to garmr.toml and edit. Secrets come from the
+# environment, never this file:
+#   ANTHROPIC_API_KEY    — for the Anthropic backend
+#   GARMR_OPENAI_API_KEY — optional, for an authenticated OpenAI-compatible endpoint
+#   GARMR_MATRIX_TOKEN   — the garmr-bot Matrix access token
+#   GARMR_ADMIN_TOKEN    — enables POST /admin/silence on the API (human-approval
+#                          executor; the agent never holds this token)
+#   GARMR_API_TOKEN      — authenticates the WHOLE serve API + web console.
+#                          REQUIRED to bind ingest.api_bind to a non-loopback
+#                          address (serve refuses to start otherwise — the read
+#                          API exposes all logs + SQL + case transcripts).
+#                          Browsers get a login prompt (Basic; any username, the
+#                          token as password); API clients send it as a Bearer.
+#                          Send it over TLS — e.g. behind the Caddy reverse proxy.
+#                          NOTE: garmr trusts a LOOPBACK bind (no auth there). A
+#                          reverse proxy that forwards to the loopback API must
+#                          enforce auth ITSELF — garmr can't see the real client.
+#                          Set GARMR_ADMIN_TOKEN too: without it the LLM-spend
+#                          endpoints (/api/hunt, /api/rules/propose) are open to
+#                          any API-token holder.
+#   GARMR_UI_DIR         — path to the built web console (garmr-webui dist/) to
+#                          host at / on the API bind; overrides ingest.ui_dir.
+#   GARMR_EMBED_MODEL    — directory holding an embedding model (config.json,
+#                          tokenizer.json, model.safetensors; e.g. a bge-small-
+#                          en-v1.5 export). Enables SEMANTIC search: build with
+#                          `cargo build --features semantic`, then `garmr
+#                          embed-index` (batch, serve stopped) + `garmr semantic
+#                          "<query>"` (find events by meaning, not keywords).
+#                          Fetch the model once with e.g.:
+#                            mkdir -p ./data/embed-model && for f in config.json \
+#                            tokenizer.json model.safetensors; do curl -fsSL -o \
+#                            ./data/embed-model/$f \
+#                            https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/$f; done
+#   GARMR_SEMANTIC_STORE — override the semantic vector-store path (default:
+#                          alongside store.warehouse_dir).
+
+[store]
+warehouse_dir = "./data/warehouse"   # skade lakehouse (events)
+state_db      = "./data/state.redb"  # agent state (cases, budget, baselines)
+search_dir    = "./data/search"      # Tantivy full-text index over messages
+retention_days = 90                  # events older than this roll to cold storage
+fulltext_exclude_sources = []   # sources to keep OUT of the full-text index (still stored+detected); e.g. ["kunai"] to spare the indexer a high-volume endpoint firehose
+# Auto-compaction: iceberg appends one snapshot + tiny file per commit, so under
+# continuous ingest the metadata grows without bound and OOMs. Once this many
+# snapshots accrue SINCE the last compaction, the events table is rebuilt as a
+# few big zstd files (one snapshot) and atomically swapped in; with retention
+# enabled the rebuild also prunes rows already sealed to cold storage. 0
+# disables it; non-zero values are floored at 8.
+compact_snapshot_threshold = 256
+compact_gc_grace_secs = 300          # wait before deleting a retired data dir (lets
+                                     # in-flight queries finish reading the old files;
+                                     # must exceed the longest reader — API caps at 30s)
+
+[retention]
+# Cold storage: events older than store.retention_days are sealed into
+# immutable, content-addressed archives (never silently deleted) that stay
+# queryable via `garmr cold-query`. Off by default — turn on once cold_dir is
+# set. NOTE: archived rows currently remain in the hot lakehouse too (the
+# embedded store has no row-delete yet), so this is durable cold archival, not
+# hot-space reclamation.
+enabled = false
+cold_dir = "./data/cold"             # archives + thaw scratch
+archiver = "znippy"                  # "znippy" (default) | "plain" (pure-Rust zstd-parquet)
+window_days = 1                      # one archive per this many days of aged data
+interval_secs = 21600                # how often `serve` seals aged windows (6h)
+compression_level = 6                # znippy/zstd level
+
+[ingest]
+ingest_bind = "0.0.0.0:3100"         # native canonical ingest: POST /ingest/v1/events
+                                     # (JSON array or x-ndjson). The vendor-neutral
+                                     # primary path — any collector that POSTs JSON.
+                                     # null to disable.
+# loki_bind = "0.0.0.0:3100"         # Loki push (/loki/api/v1/push) for Alloy's
+                                     # loki.write. Only active when built with
+                                     # --features loki-compat; use a DISTINCT port
+                                     # from ingest_bind if you run both.
+# syslog_bind = "0.0.0.0:5514"       # optional; enables syslog UDP+TCP
+default_environment = "prod"
+api_bind = "127.0.0.1:3110"          # read-only query/search/cases API on `serve`; null to disable.
+                                     # A non-loopback bind REQUIRES GARMR_API_TOKEN (serve fails
+                                     # closed otherwise) — front it with TLS (Caddy).
+# ui_dir = "./crates/garmr-webui/dist" # host the built web console at / on api_bind (same origin,
+                                     # no CORS). Overridden by GARMR_UI_DIR. Build it with `trunk
+                                     # build` in crates/garmr-webui. Inherits the api_bind auth gate.
+# dedup_recent = 100000              # exactly-once storage: remember this many recent stable
+                                     # event_ids and drop an at-least-once collector's retry. 0
+                                     # (default) = off. Size-bounded, so it only ever collapses an
+                                     # exact re-appearance — it never drops two distinct events.
+# flight_bind = "0.0.0.0:50051"      # Arrow-Flight columnar ingest (gRPC DoPut): the zero-copy path
+                                     # `flightbeat` shippers push Arrow RecordBatches to (no JSON parse,
+                                     # ~2.6x faster swallow). null (default) = off. Requires a build with
+                                     # `--features flight`; ignored otherwise.
+
+[detect]
+rules_dir = "./rules"                # Sigma YAML, loaded at serve start
+correlations_dir = "./correlations"  # windowed multi-event correlation rules (TOML+SQL)
+hunts_dir = "./hunts"                # scheduled threat-hunt hypotheses (TOML; see
+                                     # hunts/example-beacon.toml.disabled — each run is
+                                     # model-priced and budget-capped)
+realert_secs = 900                   # collapse repeat detections into one case
+# Application-audit / insider-risk plane (Phases 1/3/5/8): per audit event
+# (log_type=audit, e.g. pgAudit), project to the canonical model, enrich with the
+# resource catalog, evaluate access policy, and run the application-audit
+# detectors (forbidden access, missing justification, self/watched access,
+# privilege change, export, bulk, service-account misuse, failed access). Off by
+# default (adds per-event CPU on an audit firehose). See docs/access-audit.md.
+app_audit_enabled = false
+policies_dir = "./policies"          # one access-policy TOML per file (see policies/)
+# catalog_file = "./catalog.toml"    # resource catalog (see catalog.example.toml)
+# monitoring_file = "./monitoring.json"  # JSON array of user-monitoring profiles
+anomaly_enabled = false              # flag never-before-seen log-template shapes as
+                                     # cases (seeds the existing corpus at serve start)
+anomaly_min_count = 3                # a new shape must recur >= this many times to alert
+# Risk-based alerting (RBA): accumulate per-host risk from ADJUDICATED cases
+# (a benign-triaged case adds 0, malicious ×2) over a decaying 24h window and
+# open ONE risk case when a host crosses the threshold — catching "many weak
+# signals" that individually never escalate. Read it live with `garmr risk` /
+# GET /api/risk. Off by default.
+risk_enabled = false
+risk_threshold = 20.0                # score to open a risk case (medium≈4, high≈8,
+                                     # critical≈13, × disposition × time-decay)
+risk_halflife_hours = 12.0           # a case's risk contribution halves every N hours
+risk_realert_secs = 3600             # don't re-open a host's risk case within N seconds
+# Frequency baseline: flag a (host, service) whose event volume this hour is far
+# above its own norm for the SAME clock-hour (robust median±MAD over ~14 days).
+# Needs a few days of history (warmup). Inspect with `garmr baseline`. Off by
+# default.
+freq_baseline_enabled = false
+freq_k = 3.0                         # burst threshold = median + k*max(MAD,1); higher = quieter
+freq_min_count = 20                  # a (host,service) needs >= this many events/hour to be a candidate
+
+[agent]
+backend = "anthropic"                # "anthropic" | "open_ai_compat"
+model = "claude-opus-4-8"            # triage model (or an Ollama tag for open_ai_compat)
+# prefilter_model = "claude-haiku-4-5"
+# openai_base_url = "http://localhost:11434/v1"   # for backend = open_ai_compat (Ollama)
+max_iterations = 12
+max_tokens = 4096
+daily_budget_usd = 5.0
+allow_online_lookups = false
+# geoip_dir = "./data/geoip"          # country.mmdb + asn.mmdb (MaxMind GeoLite2 / DB-IP Lite)
+ioc_feeds = ["./fixtures/ioc-demo.txt"]  # local IOC lists (one IP/line) for ip_reputation
+
+# External MCP servers whose tools the triage agent may call mid-investigation
+# (threat-intel, WHOIS, passive-DNS, …). Opt-in: none by default. garmr spawns
+# each `command` as a child process and speaks MCP over its stdio. Every tool is
+# offered to the LLM as `mcp__<name>__<tool>` (can't shadow a built-in) and its
+# output is treated as untrusted data. Only connect servers you trust to be
+# read-only — garmr proxies the call but can't enforce that on the far side.
+# [[agent.mcp_servers]]
+# name = "whois"                       # tool namespace: mcp__whois__*
+# command = "whois-mcp"               # any stdio MCP server on PATH
+# args = []
+# enabled = true
+# env = { }                            # extra env for the child (e.g. an API token)
+
+[route]
+# Notification-side controls (case-dedup is [detect] realert_secs). Silences
+# are set at runtime: `garmr silence set <rule> --hours N` or POST /admin/silence
+# (with GARMR_ADMIN_TOKEN) — max 168h, hours=0 clears, survive restarts.
+# A silence suppresses ESCALATIONS too (your explicit, bounded call — scope with
+# --host to keep it narrow); every set/clear is announced on the alerts room.
+throttle_secs = 0                    # drop repeat notifications per RULE within
+                                     # this window (0 = off) — caps a one-rule,
+                                     # many-hosts flood. Escalations are NEVER
+                                     # throttled, and the window only opens
+                                     # after a successful delivery.
+
+# Egress allowlist (the air-gap chokepoint, invariant #1). Every outbound client
+# — LLM API, Matrix/webhook/SMTP, external MCP spawn, IOC feeds, S3 — is checked
+# against this at construction. An EMPTY list is allow-all (today's behavior).
+# GARMR_AIRGAP=1 OVERRIDES this entirely: all non-local egress is denied, and a
+# loopback/LAN destination (a local model, an on-prem mirror) is still allowed.
+# Entries match a host exactly or as a dotted-suffix parent domain
+# (e.g. "anthropic.com" matches "api.anthropic.com").
+[route.egress]
+allow = []                           # e.g. ["api.anthropic.com", "hooks.slack.com"]
+
+# Model router (Phase 10). Selects one model per case by DATA CLASSIFICATION +
+# air-gap + availability, over the SAME egress chokepoint. An EMPTY catalog =
+# today's single [agent] model. Restricted/confidential data NEVER reaches an
+# external model (the external ceiling is `internal`, non-removable); a degrade
+# resolves to NeedsHuman (never a silent fallback). `garmr models --for <class>`
+# shows the fence offline.
+#
+# default_classification is the operator FLOOR for every case — RAISE it to
+# `confidential` for a register/PII deployment so a case is never routed (and the
+# ask/hunt/rule surfaces are never built) against an external model. NOTE: in an
+# air-gapped deployment, [agent] itself must point at a LOCAL endpoint (it is the
+# base/hunt provider, built at startup).
+[route.router]
+default_classification = "internal"  # public|internal|confidential|restricted|secret
+# models = [
+#   { name = "local-large", backend = "open_ai_compat", model = "llama3.1:70b", openai_base_url = "http://127.0.0.1:11434/v1" },
+#   { name = "cloud", backend = "anthropic", model = "claude-opus-4-8", max_sensitivity = "internal" },
+# ]
+
+[matrix]
+homeserver = "https://matrix.example.ts.net"
+investigation_room = "#soc-investigation:example.ts.net"
+alerts_room = "#soc-alerts:example.ts.net"
+escalate_severity = 7
+
+[executor]
+# Response actions (SOAR). The agent can PROPOSE a reversible action (block an
+# IP, isolate a host); a human approves it (`garmr action approve <id>` or
+# POST /admin/action/approve with GARMR_ADMIN_TOKEN); a SEPARATE executor
+# re-validates it independently and only then acts. garmr ships NO capability:
+# each action is an argv COMMAND TEMPLATE you provide (no shell — the validated
+# argument replaces the literal token {arg} in one element). With a template
+# absent the executor REFUSES and records the exact manual command. All off by
+# default — nothing can change system state until you wire and enable this.
+enabled = false                      # run the executor poll loop inside `serve`
+# block_ip = ["nft", "add", "element", "inet", "filter", "blocklist", "{arg}"]
+# isolate_host = ["/usr/local/sbin/quarantine-host", "{arg}"]
+# never_block: IPs/CIDRs the executor refuses to block even if approved — your
+# own management IP, gateway, and resolvers, so a bad approval can't sever your
+# out-of-band undo path. The Tailscale/CGNAT overlay (100.64.0.0/10) is already
+# refused by default; add anything else specific to your network.
+# never_block = ["100.64.0.0/10", "192.168.1.1", "1.1.1.1"]
+
+[audit]
+# Tamper-evident audit ledger (garmr-audit): an append-only, BLAKE3-hash-chained,
+# ed25519-signed record of security-relevant actions (auth, admin decisions,
+# response actions, exports, config/model/prompt changes, egress decisions). It
+# is verified OFFLINE with `garmr audit verify` by a party who trusts neither the
+# process nor the disk. On by default.
+enabled = true
+# dir = "data/audit"                 # ledger root (segments/ + checkpoints/)
+# key_path = "data/audit/signing.key" # ed25519 seed; created on first run (0600)
+# content_mode = "digest_only"       # off | digest_only | redacted | encrypted | full
+                                     # default digest_only: never stores raw
+                                     # sensitive content, only its digest + refs.
+# per_record_sign = false            # checkpoints are always signed; per-record
+                                     # signing is optional (slower, rarely needed).
+# fsync = true                       # fsync each append — required for the
+                                     # fail-closed guarantee on admin operations.
+# node_id = "garmr"                  # stamped into every record (default: hostname)
+# segment_max_records = 10000        # seal + roll a segment after this many
+# checkpoint_every = 1000            # emit a signed checkpoint after this many
+
+[environment]
+# The temporal environment model (Phase 5): a learned, gated model of what is
+# "normal" for this environment — hosts, IPs, identities, services, and the
+# relations between them — built WITHOUT letting an attacker or an open case
+# teach it. Facts are promoted Unknown -> Candidate -> Trusted through an
+# audit-bound state machine; an open (or malicious) case and a known-compromised
+# asset can NEVER auto-teach the Trusted baseline. Fully OFF by default.
+enabled = false                      # expose the env query/API surface
+learn = false                        # run the background learner + auto-promote loops
+# quarantine_hours = 24              # a Candidate must age this before auto-promotion
+# asserted_quarantine_hours = 1      # shorter quarantine for inventory (Asserted) facts
+# min_observations = 5               # total sightings required before auto-promotion
+# min_distinct_sources = 2           # distinct BOUNDED sources required (no single feed)
+# max_single_source_share = 0.8      # cap any one source's trust-weighted influence
+# fact_ttl_days = 90                 # a stale Candidate expires to Retired
+# default_source_trust = 0.5         # trust for a source absent from source_trust
+# learn_interval_secs = 3600         # learner-loop cadence
+# promote_interval_secs = 3600       # auto-promote/expiry-loop cadence
+# inventory_dir = "data/inventory"   # operator drops offline inventory files here
+# high_impact_attributes = []        # ADD to the code floor of analyst-only facts
+#                                    # (identity/role/certificate/authz always require
+#                                    # analyst approval — config can add, never remove).
+# [environment.source_trust]         # per-source trust weights (bounded source id)
+# "alloy-nixos" = 0.8
+# "cmdb" = 1.0

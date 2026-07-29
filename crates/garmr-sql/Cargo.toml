@@ -1,0 +1,15 @@
+[package]
+publish = false
+name = "garmr-sql"
+description = "PostgreSQL-aware SQL semantic analysis (Phase 3): a normalized SqlAccessAnalysis (tables/views/columns/functions/predicates/privilege targets/COPY/DDL/bulk) + stable, security-preserving query fingerprints. Pure, no I/O — a layered parser (sqlparser PostgreSQL dialect) with graceful degradation to a keyword extractor."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+garmr-core.workspace = true
+serde.workspace = true
+sqlparser.workspace = true
+blake3.workspace = true

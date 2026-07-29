@@ -1,0 +1,37 @@
+# Access-audit: accesses OUTSIDE normal working hours — evenings, nights and
+# weekends, when legitimate case handling is unlikely. T1213.
+#
+# GENERIC + LOCALE-AWARE: event_ts is UTC, so `tz_offset` in [params] shifts it
+# to local time before the hour test (e.g. 1 or 2 for Sweden). `day_start`/
+# `day_end` are the local working-hour bounds; the weekend is dow IN (0,6)
+# (0 = Sunday). All four are DATA — tune to the environment's shift pattern and
+# timezone; a 24/7 operation should narrow the window to nights only. Keys on
+# log_type = 'audit' so any audit feed drives it. Emits `db_user` → per-actor case.
+id = "reg_off_hours_lookup"
+title = "Access outside working hours (audit)"
+attack = "T1213"
+severity = "high"
+schedule_secs = 900
+window_secs = 3600
+realert_secs = 3600
+message = "An actor made a register lookup/access outside normal working hours (evening/night/weekend). Was it an on-call case?"
+sql = """
+SELECT
+  regexp_replace(fields, '.*"db_user":"([^"]+)".*', '$1') AS db_user,
+  max(host) AS host,
+  count(*) AS lookups,
+  min(NULLIF(regexp_replace(fields, '.*"target_person":"([^"]+)".*', '$1'), fields)) AS sample_target
+FROM events
+WHERE event_ts > to_timestamp_micros({since_us})
+  AND log_type = 'audit'
+  AND fields LIKE '%"db_user":%'
+  AND (date_part('hour', event_ts + INTERVAL '{tz_offset} hours') >= {day_end}
+       OR date_part('hour', event_ts + INTERVAL '{tz_offset} hours') < {day_start}
+       OR date_part('dow', event_ts + INTERVAL '{tz_offset} hours') IN (0, 6))
+GROUP BY 1
+"""
+
+[params]
+tz_offset = 0     # local UTC offset in hours (e.g. 1 = CET, 2 = CEST)
+day_start = 6     # local hour the working day starts
+day_end = 18      # local hour the working day ends

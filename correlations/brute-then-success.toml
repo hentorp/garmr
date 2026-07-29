@@ -1,0 +1,32 @@
+# The single highest-value correlation: a brute-force burst FOLLOWED BY a
+# successful login from the same source IP inside the window. T1110 → T1078.
+id = "brute_then_success"
+title = "Brute force followed by successful login"
+attack = "T1110->T1078"
+severity = "critical"
+schedule_secs = 300
+window_secs = 1800
+realert_secs = 3600
+message = "The same source IP had >=5 failed logins and then a SUCCESSFUL one within the window. Investigate immediately."
+sql = """
+WITH fails AS (
+  SELECT regexp_replace(fields, '.*"src_ip":"([^"]+)".*', '$1') AS ip,
+         count(*) AS failures,
+         max(event_ts) AS last_fail
+  FROM events
+  WHERE event_ts > to_timestamp_micros({since_us})
+    AND service = 'sshd' AND fields LIKE '%"src_ip"%'
+    AND (message ILIKE '%failed password%' OR message ILIKE '%invalid user%')
+  GROUP BY 1
+  HAVING count(*) >= 5
+)
+SELECT f.ip AS src_ip, max(e.host) AS host,
+       max(f.failures) AS failures, count(*) AS successes
+FROM events e
+JOIN fails f ON regexp_replace(e.fields, '.*"src_ip":"([^"]+)".*', '$1') = f.ip
+WHERE e.event_ts > to_timestamp_micros({since_us})
+  AND e.service = 'sshd'
+  AND (e.message ILIKE '%accepted password%' OR e.message ILIKE '%accepted publickey%')
+  AND e.event_ts > f.last_fail
+GROUP BY f.ip
+"""

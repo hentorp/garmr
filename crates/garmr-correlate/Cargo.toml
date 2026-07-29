@@ -1,0 +1,25 @@
+[package]
+publish = false            # workspace-internal; the deployable is the `garmr` binary, not crates.io libs
+name = "garmr-correlate"
+description = "garmr correlation: windowed, stateful multi-event detection rules (TOML + SQL) that produce Detections onto the same Case machinery as Sigma."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+garmr-core.workspace = true
+garmr-store.workspace = true
+skade.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+# Published to crates.io as `rotaryengine`; the library name stays `gatling`.
+# Fans the per-row detection build across cores (ROOT LAW #0: no rayon).
+gatling = { path = "../../vendor/znippy-zoomies/gatling", package = "rotaryengine", version = "0.1" }
+
+[dev-dependencies]
+tokio.workspace = true

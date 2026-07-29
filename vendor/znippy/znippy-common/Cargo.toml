@@ -1,0 +1,38 @@
+# VENDORED SUBSET of znippy-common (codeberg.org/nordisk/znippy), pinned into
+# garmr for the cold-storage tier. This is a trimmed copy: only the default
+# feature set is kept — the `host-decompressors` / `wasm-plugins` / `sign`
+# features and their path-dep'd crates (znippy-zoomies, RustCrypto, wasmtime)
+# are removed because garmr only seals + thaws its own parquet payloads
+# (`meta_sink_append::create_archive` + `get_file` / `decompress_archive`).
+#
+# Kept out of the garmr workspace (see the root Cargo.toml `exclude`) so its
+# arrow/openzl deps resolve independently and its warnings don't reach garmr's
+# clippy. Sync upstream by re-copying `src/` and re-trimming this manifest.
+[package]
+name = "znippy-common"
+version = "0.9.7"
+edition = "2024"
+license = "MIT"
+description = "Core archive create/read logic for Znippy (garmr-vendored subset)."
+authors = ["Rickard Lundin <rickard@ignalina.dk>"]
+repository = "https://codeberg.org/nordisk/znippy"
+
+[features]
+default = []
+
+[dependencies]
+# Statically-linked OpenZL (facebook/openzl) bindings — the compression codec.
+openzl-sys-rs = "0.2.0"
+anyhow = "1.0.100"
+blake3 = "1.8.5"
+tempfile = "3"
+sysinfo = { version = "0.39.2", features = ["multithread"] }
+once_cell = "1.21.3"
+serde = { version = "1.0.228", features = ["derive"] }
+log = "0.4.29"
+hex = "0.4.3"
+arrow = "58.3.0"
+arrow-array = "58.3.0"
+arrow-select = "58.3.0"
+fst = "0.4.7"
+crossbeam-channel = "0.5.15"

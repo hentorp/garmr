@@ -1,0 +1,6 @@
+# Demo IOC feed (one IPv4 per line; # comments and trailing columns tolerated).
+# Real feeds: abuse.ch Feodo/URLhaus, blocklist.de, etc. Drop their exported
+# IP lists here (or point ioc_feeds at fetched copies). 203.0.113.7 is the
+# fixture's brute-force source, so `garmr correlate`/triage flag it as known-bad.
+203.0.113.7
+45.9.148.99 example-trailing-column

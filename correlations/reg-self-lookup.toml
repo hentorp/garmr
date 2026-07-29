@@ -1,0 +1,37 @@
+# Access-audit: an actor accessed THEIR OWN record. Almost never a legitimate
+# action and a classic curiosity/misuse tell. T1213.
+#
+# GENERIC + DATA-MINIMISING: garmr holds NO actor→own-record map. The application
+# (which knows the logged-in actor AND the accessed subject) sets `is_self: true`
+# on the audit event when actor == subject, and this rule fires on that flag. So
+# no staff→personal-ID-number mapping ever lives in garmr, and "accessed my own
+# account/HR record/case" generalises to any subject type.
+#
+# If the producer cannot set the flag, join an operator-maintained CTE mapping
+# db_user → own subject id instead (same sensitivity/permissions note as the
+# watchlist rule). The flag is strongly preferred.
+#
+# To also catch access to RELATED subjects (family / same address), the producer
+# would additionally flag those (e.g. `related: true`) — garmr ships no
+# relationship dataset.
+id = "reg_self_lookup"
+title = "Actor looked up themselves (audit)"
+attack = "T1213"
+severity = "high"
+schedule_secs = 300
+window_secs = 3600
+realert_secs = 7200
+message = "An actor looked up/opened their own record in the register. Requires an explanation — almost never a legitimate case."
+sql = """
+SELECT
+  regexp_replace(fields, '.*"db_user":"([^"]+)".*', '$1') AS db_user,
+  max(host) AS host,
+  NULLIF(regexp_replace(fields, '.*"target_person":"([^"]+)".*', '$1'), fields) AS target_person,
+  count(*) AS lookups
+FROM events
+WHERE event_ts > to_timestamp_micros({since_us})
+  AND log_type = 'audit'
+  AND fields LIKE '%"is_self":"true"%'
+  AND fields LIKE '%"db_user":%'
+GROUP BY 1, 3
+"""

@@ -1,0 +1,40 @@
+# Supply-chain gate: license/advisory/bans/sources (cargo-deny), RustSec
+# (cargo-audit), and a deterministic CycloneDX SBOM. Format/lint/test live in
+# ci.yml. The graph is locked (--locked): a build that would update Cargo.lock
+# fails instead. deny.toml carries audited advisory `ignore`s (each justified).
+name: supply-chain
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-deny + cargo-audit
+        run: cargo install --locked cargo-deny cargo-audit
+      - name: cargo-deny (licenses, advisories, bans, sources)
+        run: cargo deny check
+      - name: cargo-audit (RustSec)
+        run: cargo audit
+      - name: Regenerate SBOM and fail if the committed one is stale
+        run: |
+          bash scripts/sbom.sh dist/sbom.cdx.json
+          bash scripts/sbom.sh supply-chain/sbom.cdx.json
+          git diff --exit-code supply-chain/sbom.cdx.json \
+            || { echo "::error::supply-chain/sbom.cdx.json is stale — run scripts/sbom.sh and commit"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: dist/sbom.cdx.json

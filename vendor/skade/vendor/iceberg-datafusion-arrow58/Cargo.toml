@@ -1,0 +1,62 @@
+# iceberg-datafusion-arrow58 — Apache Iceberg DataFusion integration
+# (iceberg-rust 0.9.1) on arrow-58 + datafusion-54, depending on the
+# sibling `iceberg-arrow58` crate (library name `iceberg`). Carries the
+# upstream-vs-fork delta: parallel per-file partitioned scan (one
+# DataFusion partition per data file) instead of upstream's single-stream
+# scan (single-threaded Parquet decode).
+#
+# Same rationale as iceberg-arrow58: a separately-PUBLISHED uniquely-named
+# crate (lib name kept as `iceberg_datafusion`) so consumers write
+# `iceberg-datafusion = { package = "iceberg-datafusion-arrow58", version }`
+# with NO `[patch.crates-io]` to be stripped on publish.
+#
+# skade is the SINGLE canonical publisher; it is the only consumer of this
+# crate (skade's `sql` feature).
+[package]
+name = "iceberg-datafusion-arrow58"
+version = "0.9.6"
+edition = "2024"
+rust-version = "1.92"
+description = "Apache Iceberg DataFusion integration (iceberg-rust 0.9.1) on arrow-58 + datafusion-54 with a parallel per-file partitioned scan. Depends on iceberg-arrow58; lib name kept as `iceberg_datafusion`."
+homepage = "https://rust.iceberg.apache.org/"
+repository = "https://codeberg.org/nordisk/skade"
+readme = "README.md"
+keywords = ["iceberg", "datafusion", "arrow"]
+categories = ["database"]
+license = "Apache-2.0"
+# The integration test pulls iceberg's internal `test_utils` (not exported
+# from the published library), so keep it (and the fixtures) out of the
+# package — the crate ships as a library only.
+exclude = ["tests/", "testdata/", "DEPENDENCIES.rust.tsv", "Cargo.toml.orig", ".nornir/", ".cargo_vcs_info.json"]
+autotests = false
+
+# The library is still named `iceberg_datafusion` so downstreams
+# `use iceberg_datafusion::…` unchanged — only the *package* name differs.
+[lib]
+name = "iceberg_datafusion"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1.0.72"
+async-trait = "0.1.89"
+dashmap = "6"
+datafusion = "54"
+futures = "0.3"
+# The arrow-58 iceberg fork, addressed by its real package name but kept
+# bound to the `iceberg` crate identifier (so the source's `use iceberg::…`
+# is unchanged). path = local dev, version = published resolve.
+iceberg = { package = "iceberg-arrow58", version = "0.9.1", path = "../iceberg-arrow58" }
+parquet = "58"
+tokio = { version = "1.47", default-features = false }
+uuid = { version = "1.18", features = ["v7"] }
+
+[dev-dependencies]
+expect-test = "1"
+parquet = "58"
+tempfile = "3.18"
+# The `#[tokio::main]` doctest in `table_provider_factory.rs` needs the
+# multi-thread runtime + macros. The normal `tokio` dep is feature-light
+# (`default-features = false`); under a standalone `cargo test -p` the doctest
+# does not inherit the workspace feature unification the lib tests get, so it
+# must pull these features in as a dev-dependency.
+tokio = { version = "1.47", features = ["macros", "rt-multi-thread"] }

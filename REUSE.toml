@@ -1,0 +1,29 @@
+version = 1
+
+# Garmr — REUSE bulk licensing. Per-file SPDX headers are authoritative where
+# present; this file covers the rest (vendored third-party, config, generated,
+# and asset files). Garmr's own source carries per-file AGPL-3.0-only headers.
+
+[[annotations]]
+path = ["Cargo.lock", "**/Cargo.toml", "rust-toolchain.toml", ".gitignore", ".gitattributes", "deny.toml", "**/*.example.toml", "garmr.example.toml", "catalog.example.toml"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Vetra Automation AB"
+SPDX-License-Identifier = "AGPL-3.0-only"
+
+[[annotations]]
+path = ["correlations/**", "hunts/**", "rules/**", "policies/**", "fixtures/**", "deploy/**", "packaging/**", "scripts/**", "supply-chain/**", "docs/garmr.png"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Vetra Automation AB"
+SPDX-License-Identifier = "AGPL-3.0-only"
+
+[[annotations]]
+path = "vendor/skade/**"
+precedence = "override"
+SPDX-FileCopyrightText = "The skade authors (codeberg.org/nordisk/skade)"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = ["vendor/znippy/**", "vendor/znippy-zoomies/**"]
+precedence = "override"
+SPDX-FileCopyrightText = "Rickard Lundin and the znippy contributors (codeberg.org/nordisk)"
+SPDX-License-Identifier = "MIT"

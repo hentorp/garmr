@@ -1,0 +1,35 @@
+[package]
+name = "aegir"
+version = "0.1.1"
+edition = "2024"
+description = "Ægir — a tiny pure-Rust S3 client (SigV4 over ureq, zero-copy reads). No maybe-async, no C, no OpenSSL — so it coexists with gix where rust-s3 can't."
+license = "MIT OR Apache-2.0"
+# Internal bench-support crate in a detached [workspace] under bench/ — never
+# shipped to crates.io. Keeps `release doctor --publish` from ever handing it to
+# `cargo publish -p aegir` from the repo-root workspace (which it isn't a member of).
+publish = false
+
+[dependencies]
+# HTTP — pure Rust, rustls. Already used across the bench.
+ureq = "2"
+# AWS SigV4 (HMAC-SHA256). RustCrypto, pure Rust.
+hmac = "0.12"
+sha2 = "0.10"
+# Zero-copy response bodies.
+bytes = "1"
+# RFC1123 / SigV4 timestamps.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# io_uring TCP transport for the plaintext hot path (RustFS, no TLS). Pure Rust:
+# its only deps are libc FFI decls + bitflags + cfg-if (no bindgen, no C, no
+# OpenSSL). Optional — pulled in only by the `uring` feature.
+io-uring = { version = "0.7", optional = true }
+
+[features]
+# Opt-in io_uring TCP transport for the plaintext (http://) hot path. `ureq`
+# stays the default backend; `uring` only handles plaintext and falls back to
+# `ureq` for TLS. Select per-client via `Client::with_transport(Transport::Uring)`
+# or `AEGIR_TRANSPORT=uring`.
+uring = ["dep:io-uring"]
+
+[dev-dependencies]
+# s3_smoke-style integration test points at a live RustFS via env.

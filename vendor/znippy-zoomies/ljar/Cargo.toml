@@ -1,0 +1,68 @@
+[package]
+name = "ljar"
+readme = "README.md"
+version = "0.2.8"
+edition = "2024"
+description = "Pure Rust parallel JAR decompressor — fast Central Directory scan, multi-core DEFLATE decode"
+license = "MIT OR Apache-2.0"
+repository = "https://codeberg.org/nordisk/znippy"
+
+[dependencies]
+# The ONE shared no-barrier engine (leaf crate). Per-entry / per-segment
+# DEFLATE decode fans out through `gatling_forkjoin::gatling_for_each` — no
+# private rayon pool (rayon dropped).
+gatling = { path = "../gatling", version = "0.1.7", package = "rotaryengine" }
+linflate = { path = "../linflate", version = "0.1.9" }
+# Shared streaming-ZIP core (Central Directory parser + parallel DEFLATE
+# full-flush split). A JAR is a ZIP, so this machinery is byte-for-byte the
+# same as lzip-parallel's — it lives once in zip-core; ljar re-exports it as
+# thin `central_dir` / `deflate_scan` wrappers.
+zip-core = { path = "../zip-core", version = "0.1.0" }
+flate2 = { version = "1", optional = true, default-features = false, features = ["zlib-ng-compat"] }
+zip = { version = "2", optional = true }
+miniz_oxide = { version = "0.8", optional = true }
+# testmatrix feature only; path dep to sibling nornir repo, off by default.
+nornir-testmatrix = { version = "0.2", default-features = false, optional = true }
+
+[features]
+default = []
+zlib-ng = ["dep:flate2"]
+gen = ["dep:zip", "dep:miniz_oxide"]
+# `testmatrix` — nornir functional-status rows; no-op + no nornir dep by default.
+testmatrix = ["dep:nornir-testmatrix", "nornir-testmatrix/testmatrix"]
+
+[dev-dependencies]
+zip = "2"
+tempfile = "3"
+miniz_oxide = "0.8"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "inflate_bench"
+harness = false
+
+[[bench]]
+name = "chunk_into"
+harness = false
+
+[[bin]]
+name = "ljar"
+path = "src/bin/ljar.rs"
+
+[[bin]]
+name = "bench_inflate_cmp"
+path = "src/bin/bench_inflate_cmp.rs"
+required-features = ["gen"]
+
+[[bin]]
+name = "bench_large"
+path = "src/bin/bench_large.rs"
+required-features = ["gen"]
+
+[[bin]]
+name = "gen_large_zip"
+path = "src/bin/gen_large_zip.rs"
+required-features = ["gen"]
+
+[lib]
+doctest = false
