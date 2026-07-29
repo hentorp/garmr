@@ -124,7 +124,7 @@ schemars = "1"
 uuid = { version = "1", features = ["v4"] }
 regex = "1"
 maxminddb = "0.24"
-toml = "0.8"
+toml = "1.1"
 # PostgreSQL-dialect SQL parser (garmr-sql, Phase 3). Pinned to the same 0.62
 # DataFusion already resolves, so no new transitive version enters the tree.
 sqlparser = "0.62"
