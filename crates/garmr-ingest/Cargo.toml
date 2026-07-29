@@ -32,7 +32,7 @@ znippy-zoomies = { path = "../../vendor/znippy-zoomies", version = "0.1" }
 # Loki push compatibility only. Optional so the default build carries no Loki
 # protocol code, no protobuf, and no snappy — Loki is not a dependency of garmr
 # unless the `loki-compat` feature is explicitly enabled.
-prost = { version = "0.13", optional = true }
+prost = { version = "0.14", optional = true }
 snap = { version = "1", optional = true }
 bytes = { version = "1", optional = true }
 
