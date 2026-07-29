@@ -3020,7 +3020,7 @@ dependencies = [
  "chrono",
  "garmr-core",
  "rsigma-eval",
- "rsigma-parser",
+ "rsigma-parser 0.18.0",
  "serde",
  "serde_json",
  "tracing",
@@ -5978,9 +5978,9 @@ dependencies = [
 
 [[package]]
 name = "rsigma-eval"
-version = "0.18.0"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce5f81538a985b5f1bfedc7f119551c2025c2b036331a28fc6ad295a14d190d5"
+checksum = "ee77a2e8d23bd8bcc6b7512031b2d91bd9d7b72fa3bb1328090618a68f3d1184"
 dependencies = [
  "ahash 0.8.12",
  "aho-corasick",
@@ -5990,7 +5990,22 @@ dependencies = [
  "ipnet",
  "log",
  "regex",
- "rsigma-parser",
+ "rsigma-ir",
+ "rsigma-parser 0.20.0",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "yaml_serde",
+]
+
+[[package]]
+name = "rsigma-ir"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a484c9b1992f9a5f1b56a40556b98bf9c4005665f72528681fcfb5d3700550d6"
+dependencies = [
+ "ciborium",
+ "rsigma-parser 0.20.0",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -6013,6 +6028,22 @@ dependencies = [
  "yaml_serde",
  "yamlpatch",
  "yamlpath",
+]
+
+[[package]]
+name = "rsigma-parser"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "61cdf056039cc0bd824d8204ceec9f39211d61033d5fe272ebb8b94b404f6bf6"
+dependencies = [
+ "globset",
+ "log",
+ "pest",
+ "pest_derive",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "yaml_serde",
 ]
 
 [[package]]
