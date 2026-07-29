@@ -92,7 +92,7 @@ axum = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 # Embedded state store for cases/verdicts/budget (separate from the lakehouse).
-redb = "2"
+redb = "4"
 
 # Detection: Sigma in Rust.
 rsigma-eval = "0.18"

@@ -3227,7 +3227,7 @@ dependencies = [
  "chrono",
  "garmr-core",
  "garmr-search",
- "redb",
+ "redb 4.1.0",
  "rotaryengine",
  "serde",
  "serde_json",
@@ -5762,6 +5762,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "redb"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e925444704b5f17d32bf42f5b6e2df050bceebc3dcd6e71cc73dafe8092e839"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6520,7 +6529,7 @@ dependencies = [
  "iceberg-arrow58",
  "imbl",
  "moka",
- "redb",
+ "redb 2.6.3",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
