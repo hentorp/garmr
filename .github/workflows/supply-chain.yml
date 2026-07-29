@@ -34,7 +34,7 @@ jobs:
           bash scripts/sbom.sh supply-chain/sbom.cdx.json
           git diff --exit-code supply-chain/sbom.cdx.json \
             || { echo "::error::supply-chain/sbom.cdx.json is stale — run scripts/sbom.sh and commit"; exit 1; }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: dist/sbom.cdx.json
