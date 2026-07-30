@@ -122,7 +122,9 @@ pub fn event_id_for(e: &Event) -> String {
     // builder computes the JSON once and feeds those exact bytes in via
     // [`hash_event_id`] so a build never serializes `fields` twice.
     let fields_json = serde_json::to_string(&e.fields).ok();
-    hash_event_id(e, fields_json.as_deref().map(str::as_bytes)).to_hex().to_string()
+    hash_event_id(e, fields_json.as_deref().map(str::as_bytes))
+        .to_hex()
+        .to_string()
 }
 
 /// The id digest, parameterised on the already-serialized `fields` JSON **bytes**
@@ -266,7 +268,8 @@ impl ProvSeg {
             self.fields_vals.truncate(start);
             (None, false)
         };
-        self.fields_lens.push((self.fields_vals.len() - start) as u32);
+        self.fields_lens
+            .push((self.fields_vals.len() - start) as u32);
         self.fields_valid.push(valid);
 
         // event_id: hash the identifying fields + the just-written `fields` bytes,
@@ -497,7 +500,11 @@ pub fn build_events_batch_from_wire(
                 acc.push((Vec::new(), Vec::new()));
             }
             let (id_hex, ph_hex) = acc.last_mut().unwrap();
-            let fj = if fields.is_null(i) { None } else { Some(fields.value(i).as_bytes()) };
+            let fj = if fields.is_null(i) {
+                None
+            } else {
+                Some(fields.value(i).as_bytes())
+            };
             let id = hash_id_parts(
                 ts.value(i),
                 str_or_empty(host, i),
@@ -509,7 +516,10 @@ pub fn build_events_batch_from_wire(
             let mut slot = [0u8; HEX_LEN];
             write_hex(&mut slot, id.as_bytes());
             id_hex.extend_from_slice(&slot);
-            write_hex(&mut slot, blake3::hash(str_or_empty(message, i).as_bytes()).as_bytes());
+            write_hex(
+                &mut slot,
+                blake3::hash(str_or_empty(message, i).as_bytes()).as_bytes(),
+            );
             ph_hex.extend_from_slice(&slot);
         },
         |acc, mut part| acc.append(&mut part),
@@ -526,7 +536,11 @@ pub fn build_events_batch_from_wire(
     let schema_version: Int32Array = (0..n).map(|_| Some(EVENT_SCHEMA_VERSION)).collect();
     let ingest_time: TimestampMicrosecondArray = (0..n).map(|_| Some(now_us)).collect();
     let parser_name: StringArray = (0..n).map(|i| Some(str_or_empty(source, i))).collect();
-    let trust = if collector.is_some() { "authenticated" } else { "unverified" };
+    let trust = if collector.is_some() {
+        "authenticated"
+    } else {
+        "unverified"
+    };
     let source_trust: StringArray = (0..n).map(|_| Some(trust)).collect();
     let collector_id: StringArray = (0..n).map(|_| collector).collect();
 
@@ -565,17 +579,24 @@ pub fn wire_schema() -> Schema {
 /// canonical JSON, so the receiver's recomputed `event_id` matches the native
 /// path's — see [`build_events_batch_from_wire`]).
 pub fn build_wire_batch(events: &[Event]) -> anyhow::Result<RecordBatch> {
-    let ts: TimestampMicrosecondArray =
-        events.iter().map(|e| Some(e.ts.timestamp_micros())).collect();
+    let ts: TimestampMicrosecondArray = events
+        .iter()
+        .map(|e| Some(e.ts.timestamp_micros()))
+        .collect();
     let host: StringArray = events.iter().map(|e| Some(e.host.as_str())).collect();
     let service: StringArray = events.iter().map(|e| Some(e.service.as_str())).collect();
     let source: StringArray = events.iter().map(|e| Some(e.source.as_str())).collect();
-    let environment: StringArray = events.iter().map(|e| Some(e.environment.as_str())).collect();
+    let environment: StringArray = events
+        .iter()
+        .map(|e| Some(e.environment.as_str()))
+        .collect();
     let severity: StringArray = events.iter().map(|e| Some(e.severity.as_str())).collect();
     let log_type: StringArray = events.iter().map(|e| Some(e.log_type.as_str())).collect();
     let message: StringArray = events.iter().map(|e| Some(e.message.as_str())).collect();
-    let fields: StringArray =
-        events.iter().map(|e| serde_json::to_string(&e.fields).ok()).collect();
+    let fields: StringArray = events
+        .iter()
+        .map(|e| serde_json::to_string(&e.fields).ok())
+        .collect();
     let cols: Vec<ArrayRef> = vec![
         Arc::new(ts),
         Arc::new(host),
@@ -783,7 +804,8 @@ mod tests {
                 // ids across rows can't mask a misalignment.
                 e.host = format!("host-{i}").into();
                 e.message = format!("line {i} user=mallory port={}", i % 65535);
-                e.fields.insert("src_ip".into(), format!("10.0.{}.{}", i / 256, i % 256));
+                e.fields
+                    .insert("src_ip".into(), format!("10.0.{}.{}", i / 256, i % 256));
                 e.fields.insert("seq".into(), i.to_string());
                 e
             })
@@ -797,7 +819,11 @@ mod tests {
         let fields_col = col(&batch, "fields");
         for (i, e) in events.iter().enumerate() {
             assert_eq!(id_col.value(i), event_id_for(e), "event_id row {i}");
-            assert_eq!(hash_col.value(i), payload_hash(&e.message), "payload_hash row {i}");
+            assert_eq!(
+                hash_col.value(i),
+                payload_hash(&e.message),
+                "payload_hash row {i}"
+            );
             assert_eq!(
                 fields_col.value(i),
                 serde_json::to_string(&e.fields).unwrap(),
@@ -824,14 +850,17 @@ mod tests {
                 e.host = format!("host-{i}").into();
                 e.source = "flightbeat".into();
                 e.message = format!("line {i} from {}", i % 7);
-                e.fields.insert("src_ip".into(), format!("10.1.{}.{}", i / 256, i % 256));
+                e.fields
+                    .insert("src_ip".into(), format!("10.1.{}.{}", i / 256, i % 256));
                 e
             })
             .collect();
 
         // Native path → canonical full batch; its first 9 columns are the wire.
         let native = build_events_batch(&events).unwrap();
-        let wire = native.project(&(0..V1_COLUMNS).collect::<Vec<_>>()).unwrap();
+        let wire = native
+            .project(&(0..V1_COLUMNS).collect::<Vec<_>>())
+            .unwrap();
 
         let swallowed = build_events_batch_from_wire(&wire, Some("collector-x")).unwrap();
         assert_eq!(swallowed.num_rows(), n);

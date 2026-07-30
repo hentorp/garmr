@@ -356,9 +356,21 @@ fn matcher_is_empty_helpers() {
     assert!(SubjectMatch::default().is_empty());
     assert!(ResourceMatch::default().is_empty());
     assert!(ConditionMatch::default().is_empty());
-    assert!(!ResourceMatch { objects: vec!["x".into()], ..Default::default() }.is_empty());
-    assert!(!ConditionMatch { export: Some(true), ..Default::default() }.is_empty());
-    assert!(!SubjectMatch { service_account: Some(true), ..Default::default() }.is_empty());
+    assert!(!ResourceMatch {
+        objects: vec!["x".into()],
+        ..Default::default()
+    }
+    .is_empty());
+    assert!(!ConditionMatch {
+        export: Some(true),
+        ..Default::default()
+    }
+    .is_empty());
+    assert!(!SubjectMatch {
+        service_account: Some(true),
+        ..Default::default()
+    }
+    .is_empty());
 }
 
 #[test]
@@ -369,7 +381,11 @@ fn policy_digest_distinguishes_content_even_when_disabled() {
     a.enabled = false;
     let mut b = a.clone();
     b.resource.objects = vec!["curated.*".into()];
-    assert_ne!(policy_digest(&a), policy_digest(&b), "content must drive the digest");
+    assert_ne!(
+        policy_digest(&a),
+        policy_digest(&b),
+        "content must drive the digest"
+    );
     // Identical content → identical digest (immutability guard relies on this).
     assert_eq!(policy_digest(&a), policy_digest(&a.clone()));
     // And it differs from the set digest's empty-set constant.

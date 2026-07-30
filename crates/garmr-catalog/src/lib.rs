@@ -176,7 +176,10 @@ pub fn object_pattern_matches(pattern: &str, obj: &str) -> bool {
     }
     // An unqualified pattern matches the last dotted segment of the object.
     !pattern.contains('.')
-        && obj.rsplit('.').next().is_some_and(|seg| seg.eq_ignore_ascii_case(pattern))
+        && obj
+            .rsplit('.')
+            .next()
+            .is_some_and(|seg| seg.eq_ignore_ascii_case(pattern))
 }
 
 /// The monotonic object-resolution reduction, shared by the linear
@@ -323,11 +326,7 @@ impl ObjectIndex {
 
     /// Time-agnostic [`ObjectIndex::resolve_object_at`] (`at = None`) — the
     /// enrichment path, mirroring [`Catalog::resolve_object`].
-    pub fn resolve_object(
-        &self,
-        entries: &[CatalogEntry],
-        name: &str,
-    ) -> Option<ResolvedResource> {
+    pub fn resolve_object(&self, entries: &[CatalogEntry], name: &str) -> Option<ResolvedResource> {
         self.resolve_object_at(entries, name, None)
     }
 

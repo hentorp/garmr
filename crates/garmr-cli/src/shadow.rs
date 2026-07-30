@@ -191,9 +191,11 @@ impl ShadowPlane {
             .iter()
             .map(|f| (f.detector.as_str(), f.base_level.as_str()))
             .collect();
-        let dangerous_miss = removed
-            .iter()
-            .any(|d| champ_level.get(d.as_str()).is_some_and(|lvl| is_dangerous(lvl)));
+        let dangerous_miss = removed.iter().any(|d| {
+            champ_level
+                .get(d.as_str())
+                .is_some_and(|lvl| is_dangerous(lvl))
+        });
 
         self.summary.diff_events += 1;
         self.summary.challenger_only += added.len() as u64;
@@ -271,7 +273,13 @@ pub fn load_shadow_challenger(
     // is a mis-registration we surface loudly rather than silently blending.
     let mut chosen = None;
     for name in names {
-        if let Some(rec) = active(RegistryKind::DetectorConfig, name, SHADOW_CHANNEL, &records, &promotions) {
+        if let Some(rec) = active(
+            RegistryKind::DetectorConfig,
+            name,
+            SHADOW_CHANNEL,
+            &records,
+            &promotions,
+        ) {
             if chosen.is_some() {
                 tracing::warn!(
                     ignored = name,
@@ -447,9 +455,18 @@ mod tests {
 
         let s = plane.summary();
         assert_eq!(s.events_scored, 8);
-        assert!(s.challenger_only > 0, "the seq_run_len=4 challenger should add detections");
-        assert_eq!(s.champion_only, 0, "champion (seq_run_len=12) added nothing to drop");
-        assert_eq!(s.dangerous_misses, 0, "a challenger-only add is never a dangerous miss");
+        assert!(
+            s.challenger_only > 0,
+            "the seq_run_len=4 challenger should add detections"
+        );
+        assert_eq!(
+            s.champion_only, 0,
+            "champion (seq_run_len=12) added nothing to drop"
+        );
+        assert_eq!(
+            s.dangerous_misses, 0,
+            "a challenger-only add is never a dangerous miss"
+        );
         assert!(plane
             .recent(10)
             .iter()
@@ -477,9 +494,15 @@ mod tests {
 
         let s = plane.summary();
         assert_eq!(s.events_scored, 8);
-        assert!(s.champion_only > 0, "champion caught a walk the challenger missed");
+        assert!(
+            s.champion_only > 0,
+            "champion caught a walk the challenger missed"
+        );
         assert_eq!(s.challenger_only, 0, "challenger added nothing");
-        assert!(s.dangerous_misses > 0, "a dropped high-severity sensitive enumeration is dangerous");
+        assert!(
+            s.dangerous_misses > 0,
+            "a dropped high-severity sensitive enumeration is dangerous"
+        );
     }
 
     /// SF-2 regression: an identical-config challenger SEEDED from the champion's
@@ -506,8 +529,17 @@ mod tests {
         let s = plane.summary();
         // Same config + same seed windows => exact agreement (champion trips
         // sequential; so does the seeded challenger, at the same event).
-        assert_eq!(s.champion_only, 0, "a seeded identical challenger must not show champion-only drops");
-        assert_eq!(s.challenger_only, 0, "a seeded identical challenger must not add");
-        assert_eq!(s.dangerous_misses, 0, "no dangerous miss when the two agree");
+        assert_eq!(
+            s.champion_only, 0,
+            "a seeded identical challenger must not show champion-only drops"
+        );
+        assert_eq!(
+            s.challenger_only, 0,
+            "a seeded identical challenger must not add"
+        );
+        assert_eq!(
+            s.dangerous_misses, 0,
+            "no dangerous miss when the two agree"
+        );
     }
 }

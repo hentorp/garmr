@@ -394,9 +394,8 @@ pub(super) async fn config_status(State(st): State<ApiState>) -> ApiResult {
 
     // Security-critical: a non-loopback API bind with no auth token is an open door.
     if let Some(bind) = st.cfg.ingest.api_bind.as_deref() {
-        let loopback = bind.starts_with("127.")
-            || bind.starts_with("localhost")
-            || bind.starts_with("[::1]");
+        let loopback =
+            bind.starts_with("127.") || bind.starts_with("localhost") || bind.starts_with("[::1]");
         if !loopback && st.auth.is_empty() {
             out.push(diag("security_critical", "open_api_bind", "API bound to a non-loopback address without a token",
                 format!("api_bind = {bind} is reachable off-box but no API token is set — set GARMR_API_TOKEN.")));
@@ -413,8 +412,13 @@ pub(super) async fn config_status(State(st): State<ApiState>) -> ApiResult {
 
     // Recommendation: the tamper-evident ledger is off.
     if st.audit.is_none() {
-        out.push(diag("recommendation", "audit_disabled", "Audit ledger disabled",
-            "Protected admin actions are not tamper-evidently recorded (audit.enabled = false).".into()));
+        out.push(diag(
+            "recommendation",
+            "audit_disabled",
+            "Audit ledger disabled",
+            "Protected admin actions are not tamper-evidently recorded (audit.enabled = false)."
+                .into(),
+        ));
     }
 
     // Degraded: executor enabled but nothing to act (mirrors the capability report).
@@ -428,8 +432,13 @@ pub(super) async fn config_status(State(st): State<ApiState>) -> ApiResult {
             "All external egress (LLM/feeds/webhooks/SMTP/S3/MCP) is blocked; only local models are permitted.".into()));
     }
     if st.read_only {
-        out.push(diag("info", "read_only_follower", "This node is a read-only HA follower",
-            "Writes, LLM, and the admin surface are unmounted until it is promoted to writer.".into()));
+        out.push(diag(
+            "info",
+            "read_only_follower",
+            "This node is a read-only HA follower",
+            "Writes, LLM, and the admin surface are unmounted until it is promoted to writer."
+                .into(),
+        ));
     }
     if st.app_audit.is_none() {
         out.push(diag("info", "app_audit_off", "Application-audit plane disabled",
@@ -443,7 +452,9 @@ pub(super) async fn config_status(State(st): State<ApiState>) -> ApiResult {
             "Applied config changes are saved but not yet loaded. Restart garmr (systemctl restart garmr) to apply them.".into()));
     }
 
-    Ok(axum::Json(json!({ "diagnostics": out, "restart_pending": restart_pending })))
+    Ok(axum::Json(
+        json!({ "diagnostics": out, "restart_pending": restart_pending }),
+    ))
 }
 
 /// `GET /api/config/offline-ops` — an HONEST panel for offline-only maintenance
@@ -537,7 +548,10 @@ fn reload_str(r: Reload) -> &'static str {
 
 /// The env var that overrides a config key, if the schema names one.
 fn env_var_of(key: &str) -> Option<&'static str> {
-    schema().into_iter().find(|f| f.key == key).and_then(|f| f.env_var)
+    schema()
+        .into_iter()
+        .find(|f| f.key == key)
+        .and_then(|f| f.env_var)
 }
 
 /// The `GARMR_` env var figment reads for a config key, per its
@@ -560,7 +574,11 @@ fn shadowing_env_var(key: &str) -> Option<String> {
 /// set. Everything else is refused (see the module comment). Derived from the
 /// schema fields flagged `editable`.
 fn editable_keys() -> std::collections::BTreeSet<&'static str> {
-    schema().into_iter().filter(|f| f.editable).map(|f| f.key).collect()
+    schema()
+        .into_iter()
+        .filter(|f| f.editable)
+        .map(|f| f.key)
+        .collect()
 }
 
 /// The dotted leaf keys a proposed override BODY explicitly sets (env- and
@@ -664,9 +682,13 @@ fn validate_override(base_path: &std::path::Path, proposed_body: &str, baseline:
     // agent at runtime (max_tokens / max_iterations = 0).
     let mut domain: Vec<String> = Vec::new();
     if proposed_cfg.detect.risk_enabled
-        && !(proposed_cfg.detect.risk_threshold.is_finite() && proposed_cfg.detect.risk_threshold > 0.0)
+        && !(proposed_cfg.detect.risk_threshold.is_finite()
+            && proposed_cfg.detect.risk_threshold > 0.0)
     {
-        domain.push("detect.risk_threshold must be finite and > 0 when risk-based alerting is enabled".into());
+        domain.push(
+            "detect.risk_threshold must be finite and > 0 when risk-based alerting is enabled"
+                .into(),
+        );
     }
     if proposed_cfg.agent.max_tokens < 1 {
         domain.push("agent.max_tokens must be at least 1".into());
@@ -760,8 +782,8 @@ fn store_for(st: &ApiState) -> crate::config_store::RevisionStore {
     // Prefer the loader-resolved override path (set at startup); fall back to the
     // merged-config derivation only if it was somehow never set. They agree unless
     // an out-of-band override moved state_db — which the write path forbids.
-    let path = crate::config_store::override_path()
-        .unwrap_or_else(|| st.cfg.config_override_path());
+    let path =
+        crate::config_store::override_path().unwrap_or_else(|| st.cfg.config_override_path());
     crate::config_store::RevisionStore::new(path)
 }
 
@@ -776,7 +798,11 @@ pub(super) async fn config_validate(
     super::auth::check_admin(&st, &headers)?;
     let base = crate::config_store::base_config_path();
     let baseline = diff_baseline(&st)?;
-    Ok(Json(validate_override(&base, &req.override_toml, &baseline)))
+    Ok(Json(validate_override(
+        &base,
+        &req.override_toml,
+        &baseline,
+    )))
 }
 
 /// `POST /admin/config/apply` — validate then persist a new revision + swap the
@@ -802,7 +828,11 @@ pub(super) async fn config_apply(
     // Refuse a no-op so the history isn't polluted with empty revisions. If an env
     // var is shadowing the edited keys, the "no change" is because env wins over the
     // file — say so, rather than a bare "no changes".
-    if report["changes"].as_array().map(Vec::is_empty).unwrap_or(true) {
+    if report["changes"]
+        .as_array()
+        .map(Vec::is_empty)
+        .unwrap_or(true)
+    {
         let warns: Vec<&str> = report["warnings"]
             .as_array()
             .map(|a| a.iter().filter_map(Value::as_str).collect())
@@ -895,9 +925,9 @@ pub(super) async fn config_rollback(
     let baseline = diff_baseline(&st)?;
     let report = validate_override(&base, &target.body, &baseline);
     if report["valid"] != json!(true) {
-        return Err(bad(report["error"]
-            .as_str()
-            .unwrap_or("target revision is no longer valid against the current base config")));
+        return Err(bad(report["error"].as_str().unwrap_or(
+            "target revision is no longer valid against the current base config",
+        )));
     }
     let now = chrono::Utc::now().timestamp();
     let rev = store.rollback(req.seq, &who.user, now).map_err(oops)?;
@@ -1007,7 +1037,11 @@ mod tests {
             "[store]\nwarehouse_dir = \"/definitely/not/the/base/warehouse\"\n",
             &live,
         );
-        assert_eq!(report["valid"], json!(false), "immutable path change must be refused");
+        assert_eq!(
+            report["valid"],
+            json!(false),
+            "immutable path change must be refused"
+        );
         let err = report["error"].as_str().unwrap();
         assert!(err.contains("cannot be changed"), "{err}");
         assert!(err.contains("store.warehouse_dir"), "{err}");
@@ -1024,7 +1058,11 @@ mod tests {
             "[executor]\nenabled = true\nblock_ip = [\"/tmp/payload\", \"{arg}\"]\n",
             &live,
         );
-        assert_eq!(report["valid"], json!(false), "executor capability edit must be refused");
+        assert_eq!(
+            report["valid"],
+            json!(false),
+            "executor capability edit must be refused"
+        );
         let err = report["error"].as_str().unwrap();
         assert!(err.contains("cannot be changed"), "{err}");
         assert!(err.contains("executor"), "{err}");
@@ -1035,7 +1073,11 @@ mod tests {
         let base = example_base();
         let live = live_of(&base);
         // A key that isn't even a Config field must be refused, not silently dropped.
-        let report = validate_override(&base, "[store]\nretention_days = 12\nbogus_key = 1\n", &live);
+        let report = validate_override(
+            &base,
+            "[store]\nretention_days = 12\nbogus_key = 1\n",
+            &live,
+        );
         assert_eq!(report["valid"], json!(false));
         assert!(report["error"].as_str().unwrap().contains("bogus_key"));
     }
@@ -1047,7 +1089,10 @@ mod tests {
         // retention_days is an integer; a string must fail type-checking.
         let report = validate_override(&base, "[store]\nretention_days = \"lots\"\n", &live);
         assert_eq!(report["valid"], json!(false));
-        assert!(report["error"].as_str().unwrap().contains("invalid configuration"));
+        assert!(report["error"]
+            .as_str()
+            .unwrap()
+            .contains("invalid configuration"));
     }
 
     #[test]

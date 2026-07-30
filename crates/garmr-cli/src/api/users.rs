@@ -192,11 +192,12 @@ pub(super) async fn user_by_id(
     let store = aa.baseline_snapshot();
 
     // Resolve the entity: an explicit ?kind=, else the people-kinds in order.
-    let kinds: Vec<EntityKind> = match p.get("kind") {
-        Some(k) => vec![parse_user_kind(k)
-            .ok_or_else(|| bad("unknown ?kind= (user|service-account only)"))?],
-        None => vec![EntityKind::User, EntityKind::ServiceAccount],
-    };
+    let kinds: Vec<EntityKind> =
+        match p.get("kind") {
+            Some(k) => vec![parse_user_kind(k)
+                .ok_or_else(|| bad("unknown ?kind= (user|service-account only)"))?],
+            None => vec![EntityKind::User, EntityKind::ServiceAccount],
+        };
     let resolved = kinds.iter().find_map(|k| {
         let e = Entity::new(*k, id.as_str());
         store.get(&e).map(|pf| (e, pf))
@@ -378,7 +379,10 @@ mod tests {
         let accesses: Vec<UserAccess> = (0..60).map(|_| ua(true, false, false, false)).collect();
         let v = summarize_sensitive(&accesses, 168, 60, true);
         assert_eq!(v["user_events"], 60);
-        assert_eq!(v["exports"], 60, "counters are not capped by the evidence list");
+        assert_eq!(
+            v["exports"], 60,
+            "counters are not capped by the evidence list"
+        );
         assert_eq!(v["truncated"], true);
         assert_eq!(v["recent"].as_array().unwrap().len(), RECENT_SENSITIVE_CAP);
     }

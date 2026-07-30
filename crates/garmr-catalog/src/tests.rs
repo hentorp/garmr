@@ -58,25 +58,45 @@ fn entry(id: &str, resource: Resource, approval: ApprovalState) -> CatalogEntry 
 fn object_index_matches_linear_resolve() {
     use chrono::TimeZone;
     let t0 = Utc.timestamp_opt(1_000_000, 0).unwrap();
-    let expired = entry("expired", sensitive_persons("curated.persons", DataClassification::Secret), ApprovalState::Trusted);
+    let expired = entry(
+        "expired",
+        sensitive_persons("curated.persons", DataClassification::Secret),
+        ApprovalState::Trusted,
+    );
     let mut expired = expired;
     expired.valid_until = Some(t0); // effective only before t0
     let cat = Catalog::new(vec![
-        entry("s1", sensitive_persons("curated.persons", DataClassification::Restricted), ApprovalState::Trusted),
+        entry(
+            "s1",
+            sensitive_persons("curated.persons", DataClassification::Restricted),
+            ApprovalState::Trusted,
+        ),
         // unqualified pattern (no dot) — matches any `*.persons`
-        entry("t_unqual", Resource::Table(Table {
-            name: "persons".into(),
-            application: Some("app-u".into()),
-            owner: None,
-            classification: Some(DataClassification::Confidential),
-            sensitive: false,
-            expected_users: vec!["carol".into()],
-            ..Default::default()
-        }), ApprovalState::Trusted),
+        entry(
+            "t_unqual",
+            Resource::Table(Table {
+                name: "persons".into(),
+                application: Some("app-u".into()),
+                owner: None,
+                classification: Some(DataClassification::Confidential),
+                sensitive: false,
+                expected_users: vec!["carol".into()],
+                ..Default::default()
+            }),
+            ApprovalState::Trusted,
+        ),
         // schema wildcard
-        entry("w1", sensitive_persons("raw.*", DataClassification::Confidential), ApprovalState::Trusted),
+        entry(
+            "w1",
+            sensitive_persons("raw.*", DataClassification::Confidential),
+            ApprovalState::Trusted,
+        ),
         // a Candidate (never effective) + a windowed entry
-        entry("cand", sensitive_persons("curated.persons", DataClassification::Secret), ApprovalState::Candidate),
+        entry(
+            "cand",
+            sensitive_persons("curated.persons", DataClassification::Secret),
+            ApprovalState::Candidate,
+        ),
         expired,
     ]);
     let index = cat.object_index();
@@ -84,13 +104,13 @@ fn object_index_matches_linear_resolve() {
     let now = Utc.timestamp_opt(2_000_000, 0).unwrap(); // after t0 → expired inactive
     let before = Utc.timestamp_opt(500_000, 0).unwrap(); // before t0 → expired active
     let names = [
-        "curated.persons",   // exact + unqualified(persons) overlap
-        "CURATED.PERSONS",   // case-insensitive
-        "raw.addresses",     // wildcard
-        "raw",               // bare schema
-        "public.persons",    // unqualified only
+        "curated.persons",      // exact + unqualified(persons) overlap
+        "CURATED.PERSONS",      // case-insensitive
+        "raw.addresses",        // wildcard
+        "raw",                  // bare schema
+        "public.persons",       // unqualified only
         "public.personseditor", // near-miss, no match
-        "unrelated.table",   // miss
+        "unrelated.table",      // miss
     ];
     for at in [None, Some(now), Some(before)] {
         for name in names {

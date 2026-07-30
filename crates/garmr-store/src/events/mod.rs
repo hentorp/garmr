@@ -143,7 +143,11 @@ impl EventsHandle {
     /// a Flight event and the same event via NDJSON share one `event_id` and dedup
     /// against each other. Serialised through the same actor as `append`, so dedup
     /// and compaction are identical. See `schema::build_events_batch_from_wire`.
-    pub async fn append_batch(&self, wire: RecordBatch, collector: Option<String>) -> Result<usize> {
+    pub async fn append_batch(
+        &self,
+        wire: RecordBatch,
+        collector: Option<String>,
+    ) -> Result<usize> {
         let (r, rx) = oneshot::channel();
         self.tx
             .send(Cmd::AppendBatch(wire, collector, r))
@@ -507,7 +511,11 @@ async fn actor_loop(
         }
         let r = match batch {
             Ok(None) => Ok(0),
-            Ok(Some(batch)) => events.append(&[batch]).await.map(|_| n).map_err(Error::store),
+            Ok(Some(batch)) => events
+                .append(&[batch])
+                .await
+                .map(|_| n)
+                .map_err(Error::store),
             Err(e) => Err(Error::store(e)),
         };
         let appended = r.is_ok() && n > 0;
@@ -859,7 +867,10 @@ mod tests {
         let ts = chrono::DateTime::from_timestamp(1_700_000_100, 0).unwrap();
         let events: Vec<Event> = (0..3)
             .map(|i| {
-                let mut e = event_at(&format!("flight line {i}"), ts + chrono::Duration::seconds(i));
+                let mut e = event_at(
+                    &format!("flight line {i}"),
+                    ts + chrono::Duration::seconds(i),
+                );
                 e.fields.insert("src_ip".into(), format!("10.0.0.{i}"));
                 e
             })
@@ -868,7 +879,10 @@ mod tests {
         let wire = full.project(&(0..9).collect::<Vec<_>>()).unwrap();
 
         // Swallow with an AUTHENTICATED collector.
-        let stored = handle.append_batch(wire.clone(), Some("edge-01".into())).await.unwrap();
+        let stored = handle
+            .append_batch(wire.clone(), Some("edge-01".into()))
+            .await
+            .unwrap();
         assert_eq!(stored, 3, "all three wire rows stored");
         assert_eq!(count_via(&handle).await, 3);
         // v2 provenance stamped server-side.
@@ -886,7 +900,10 @@ mod tests {
         // Cross-path dedup: re-send the SAME events via the NATIVE path. Same
         // event_id, so all are duplicates and nothing new is stored.
         let native = handle.append(events.clone()).await.unwrap();
-        assert_eq!(native, 0, "native re-send of Flight-stored events is fully deduped");
+        assert_eq!(
+            native, 0,
+            "native re-send of Flight-stored events is fully deduped"
+        );
         assert_eq!(count_via(&handle).await, 3);
 
         // A Flight retry of the same wire batch is deduped too.
@@ -1185,11 +1202,16 @@ mod tests {
         let probe = event_at("line 2", base + chrono::Duration::seconds(2));
         let probe_id = crate::schema::event_id_for(&probe);
         {
-            let mut t = wh.table_or_create(T_EVENTS, &events_schema()).await.unwrap();
+            let mut t = wh
+                .table_or_create(T_EVENTS, &events_schema())
+                .await
+                .unwrap();
             t.set_write_props(crate::schema::events_write_props());
             for i in 0..5i64 {
                 let e = event_at(&format!("line {i}"), base + chrono::Duration::seconds(i));
-                t.append(&[build_events_batch(&[e]).unwrap()]).await.unwrap();
+                t.append(&[build_events_batch(&[e]).unwrap()])
+                    .await
+                    .unwrap();
             }
         }
 

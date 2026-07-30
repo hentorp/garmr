@@ -488,7 +488,8 @@ mod tests {
 
     #[test]
     fn wrong_dim_is_skipped() {
-        let mut s = VectorStore::open(std::env::temp_dir().join("garmr-vec-skip.bin"), 10, "m1").unwrap();
+        let mut s =
+            VectorStore::open(std::env::temp_dir().join("garmr-vec-skip.bin"), 10, "m1").unwrap();
         s.push(Record {
             ts_micros: 1,
             host: "h".into(),

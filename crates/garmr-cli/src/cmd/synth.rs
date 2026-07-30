@@ -31,11 +31,15 @@ use chrono::{DateTime, Utc};
 
 use garmr_analytics::ensemble::{fuse_access, EnsemblePolicy};
 use garmr_appdetect::stateful::{StatefulConfig, StatefulDetectors};
-use garmr_appdetect::{classification_criticality, detect_access, is_deterministic_policy, is_standalone};
+use garmr_appdetect::{
+    classification_criticality, detect_access, is_deterministic_policy, is_standalone,
+};
 use garmr_catalog::{Catalog, CatalogEntry, CatalogSource, DataClassification, Resource, Table};
 use garmr_core::app_audit::keys;
 use garmr_core::{AuditRecord, Event};
-use garmr_policy::{context_from_event, ConditionMatch, Effect, Policy, ResourceMatch, SubjectMatch};
+use garmr_policy::{
+    context_from_event, ConditionMatch, Effect, Policy, ResourceMatch, SubjectMatch,
+};
 
 use crate::cli::Cli;
 
@@ -177,7 +181,14 @@ fn generate() -> Vec<Sample> {
     for user in ["anna", "bob", "carol"] {
         for _ in 0..10 {
             out.push(Sample {
-                ev: next(user, "curated.orders", "select", "success", Some("JIRA-1"), &mut t),
+                ev: next(
+                    user,
+                    "curated.orders",
+                    "select",
+                    "success",
+                    Some("JIRA-1"),
+                    &mut t,
+                ),
                 label: "normal",
                 expect: "",
             });
@@ -189,7 +200,14 @@ fn generate() -> Vec<Sample> {
     // satisfied path + the sensitivity gate — a ticketed sensitive read is normal.
     for _ in 0..8 {
         out.push(Sample {
-            ev: next("gina", "curated.persons", "select", "success", Some("JIRA-5"), &mut t),
+            ev: next(
+                "gina",
+                "curated.persons",
+                "select",
+                "success",
+                Some("JIRA-5"),
+                &mut t,
+            ),
             label: "normal",
             expect: "",
         });
@@ -197,24 +215,57 @@ fn generate() -> Vec<Sample> {
     // A benign SHORT sequential id walk (below seq_run_len): a paginated report,
     // not a scrape — the sequential detector must NOT trip under its threshold.
     for i in 0..8 {
-        let mut e = next("harry", "curated.persons", "select", "success", Some("JIRA-6"), &mut t);
-        e.fields.insert(keys::RECORD_ID.to_string(), (900 + i).to_string());
-        e.fields.insert(keys::OBJECT_TYPE.to_string(), "persons".to_string());
-        out.push(Sample { ev: e, label: "normal", expect: "" });
+        let mut e = next(
+            "harry",
+            "curated.persons",
+            "select",
+            "success",
+            Some("JIRA-6"),
+            &mut t,
+        );
+        e.fields
+            .insert(keys::RECORD_ID.to_string(), (900 + i).to_string());
+        e.fields
+            .insert(keys::OBJECT_TYPE.to_string(), "persons".to_string());
+        out.push(Sample {
+            ev: e,
+            label: "normal",
+            expect: "",
+        });
     }
     // Justified reads of a handful of DISTINCT subjects (below slow_min_subjects):
     // a case worker touching several records with a ticket — not enumeration.
     for i in 0..10 {
-        let mut e = next("iris", "curated.persons", "select", "success", Some("JIRA-8"), &mut t);
-        e.fields.insert(keys::RECORD_ID.to_string(), format!("subj-{i}"));
-        e.fields.insert(keys::OBJECT_TYPE.to_string(), "persons".to_string());
-        out.push(Sample { ev: e, label: "normal", expect: "" });
+        let mut e = next(
+            "iris",
+            "curated.persons",
+            "select",
+            "success",
+            Some("JIRA-8"),
+            &mut t,
+        );
+        e.fields
+            .insert(keys::RECORD_ID.to_string(), format!("subj-{i}"));
+        e.fields
+            .insert(keys::OBJECT_TYPE.to_string(), "persons".to_string());
+        out.push(Sample {
+            ev: e,
+            label: "normal",
+            expect: "",
+        });
     }
 
     // --- forbidden-access: a read of a raw.* table (deny policy) ---
     for _ in 0..3 {
         out.push(Sample {
-            ev: next("dave", "raw.persons", "select", "success", Some("JIRA-2"), &mut t),
+            ev: next(
+                "dave",
+                "raw.persons",
+                "select",
+                "success",
+                Some("JIRA-2"),
+                &mut t,
+            ),
             label: "forbidden-access",
             expect: "app-forbidden-access",
         });
@@ -235,7 +286,14 @@ fn generate() -> Vec<Sample> {
     //     an analyst actually sees — the harness scores what serve raises. ---
     for _ in 0..3 {
         out.push(Sample {
-            ev: next("frank", "curated.orders", "select", "failure", Some("JIRA-3"), &mut t),
+            ev: next(
+                "frank",
+                "curated.orders",
+                "select",
+                "failure",
+                Some("JIRA-3"),
+                &mut t,
+            ),
             label: "failed-access",
             expect: "app-insider-risk",
         });
@@ -245,7 +303,14 @@ fn generate() -> Vec<Sample> {
     //     tables (the detector trips on distinct denied resources, not repetition) ---
     for i in 0..15 {
         out.push(Sample {
-            ev: next("mallory", &format!("raw.probe{i:02}"), "select", "success", None, &mut t),
+            ev: next(
+                "mallory",
+                &format!("raw.probe{i:02}"),
+                "select",
+                "success",
+                None,
+                &mut t,
+            ),
             label: "denied-probing",
             expect: "app-denied-probing",
         });
@@ -256,7 +321,14 @@ fn generate() -> Vec<Sample> {
     //     detector keys on adjacent numeric subject/record ids per object type
     //     (not the object name), so we stamp record_id + object_table. ---
     for i in 0..20 {
-        let mut e = next("scanner", "curated.persons", "select", "success", Some("JIRA-9"), &mut t);
+        let mut e = next(
+            "scanner",
+            "curated.persons",
+            "select",
+            "success",
+            Some("JIRA-9"),
+            &mut t,
+        );
         e.fields
             .insert(keys::RECORD_ID.to_string(), (100_000 + i).to_string());
         e.fields
@@ -271,32 +343,81 @@ fn generate() -> Vec<Sample> {
     // --- self-access: reading one's own record. A weak record-derived signal —
     //     serve fuses it into app-insider-risk-*. ---
     for _ in 0..3 {
-        let mut e = next("nina", "curated.persons", "select", "success", Some("JIRA-SELF"), &mut t);
-        e.fields.insert(keys::IS_SELF.to_string(), "true".to_string());
-        out.push(Sample { ev: e, label: "self-access", expect: "app-insider-risk" });
+        let mut e = next(
+            "nina",
+            "curated.persons",
+            "select",
+            "success",
+            Some("JIRA-SELF"),
+            &mut t,
+        );
+        e.fields
+            .insert(keys::IS_SELF.to_string(), "true".to_string());
+        out.push(Sample {
+            ev: e,
+            label: "self-access",
+            expect: "app-insider-risk",
+        });
     }
 
     // --- watched-subject access: a flagged subject is touched (standalone case). ---
     for _ in 0..3 {
-        let mut e = next("olof", "curated.persons", "select", "success", Some("JIRA-W"), &mut t);
-        e.fields.insert(keys::WATCHED.to_string(), "true".to_string());
-        out.push(Sample { ev: e, label: "watched-subject", expect: "app-watched-subject-access" });
+        let mut e = next(
+            "olof",
+            "curated.persons",
+            "select",
+            "success",
+            Some("JIRA-W"),
+            &mut t,
+        );
+        e.fields
+            .insert(keys::WATCHED.to_string(), "true".to_string());
+        out.push(Sample {
+            ev: e,
+            label: "watched-subject",
+            expect: "app-watched-subject-access",
+        });
     }
 
     // --- privilege change: a GRANT/ALTER-ROLE style privileged operation. ---
     for _ in 0..3 {
-        let mut e = next("dba", "curated.roles", "grant", "success", Some("JIRA-P"), &mut t);
-        e.fields.insert(keys::PRIVILEGE_OPERATION.to_string(), "true".to_string());
-        out.push(Sample { ev: e, label: "privilege-change", expect: "app-privilege-change" });
+        let mut e = next(
+            "dba",
+            "curated.roles",
+            "grant",
+            "success",
+            Some("JIRA-P"),
+            &mut t,
+        );
+        e.fields
+            .insert(keys::PRIVILEGE_OPERATION.to_string(), "true".to_string());
+        out.push(Sample {
+            ev: e,
+            label: "privilege-change",
+            expect: "app-privilege-change",
+        });
     }
 
     // --- service-account misuse: a service account driven from an interactive
     //     client (psql), not its application. ---
     for _ in 0..3 {
-        let mut e = next("svc-etl", "curated.orders", "select", "success", Some("JIRA-SA"), &mut t);
-        e.fields.insert(keys::SERVICE_ACCOUNT.to_string(), "true".to_string());
-        e.fields.insert(keys::CLIENT_APPLICATION.to_string(), "psql".to_string());
-        out.push(Sample { ev: e, label: "service-account-misuse", expect: "app-service-account-misuse" });
+        let mut e = next(
+            "svc-etl",
+            "curated.orders",
+            "select",
+            "success",
+            Some("JIRA-SA"),
+            &mut t,
+        );
+        e.fields
+            .insert(keys::SERVICE_ACCOUNT.to_string(), "true".to_string());
+        e.fields
+            .insert(keys::CLIENT_APPLICATION.to_string(), "psql".to_string());
+        out.push(Sample {
+            ev: e,
+            label: "service-account-misuse",
+            expect: "app-service-account-misuse",
+        });
     }
 
     // --- low-and-slow enumeration: many DISTINCT sensitive subjects, drip-fed over
@@ -311,24 +432,49 @@ fn generate() -> Vec<Sample> {
             Some("JIRA-LS"),
             100_000 + i * 660,
         );
-        e.fields.insert(keys::SUBJECT.to_string(), format!("person{i}"));
-        e.fields.insert(keys::SESSION_ID.to_string(), format!("ls-sess-{}", i % 3));
-        out.push(Sample { ev: e, label: "low-and-slow", expect: "app-enumeration-low-and-slow" });
+        e.fields
+            .insert(keys::SUBJECT.to_string(), format!("person{i}"));
+        e.fields
+            .insert(keys::SESSION_ID.to_string(), format!("ls-sess-{}", i % 3));
+        out.push(Sample {
+            ev: e,
+            label: "low-and-slow",
+            expect: "app-enumeration-low-and-slow",
+        });
     }
 
     // --- split-bulk extraction: many sub-threshold reads whose rows sum to a bulk
     //     export (not flagged as a bulk/export op — the point is it is SPLIT). ---
     for _ in 0..15 {
-        let mut e = next("harvester", "curated.persons", "select", "success", Some("JIRA-B"), &mut t);
-        e.fields.insert(keys::ROWS_READ.to_string(), "10000".to_string());
-        out.push(Sample { ev: e, label: "split-bulk", expect: "app-split-bulk-extraction" });
+        let mut e = next(
+            "harvester",
+            "curated.persons",
+            "select",
+            "success",
+            Some("JIRA-B"),
+            &mut t,
+        );
+        e.fields
+            .insert(keys::ROWS_READ.to_string(), "10000".to_string());
+        out.push(Sample {
+            ev: e,
+            label: "split-bulk",
+            expect: "app-split-bulk-extraction",
+        });
     }
 
     // --- missing-approval: a salary read carries a ticket (justification) but no
     //     approval reference, which the RequireApproval policy demands. ---
     for _ in 0..3 {
         out.push(Sample {
-            ev: next("quentin", "curated.salaries", "select", "success", Some("JIRA-A"), &mut t),
+            ev: next(
+                "quentin",
+                "curated.salaries",
+                "select",
+                "success",
+                Some("JIRA-A"),
+                &mut t,
+            ),
             label: "missing-approval",
             expect: "app-missing-approval",
         });
@@ -338,9 +484,15 @@ fn generate() -> Vec<Sample> {
     //     data domains (schemas) — lateral reach, not a single-domain workflow. ---
     for (obj, schema) in [("curated.persons", "hr"), ("curated.salaries", "finance")] {
         let mut e = next("rover", obj, "select", "success", Some("JIRA-X"), &mut t);
-        e.fields.insert(keys::SESSION_ID.to_string(), "xd-sess-1".to_string());
-        e.fields.insert(keys::DATABASE_SCHEMA.to_string(), schema.to_string());
-        out.push(Sample { ev: e, label: "cross-domain", expect: "app-cross-domain-access" });
+        e.fields
+            .insert(keys::SESSION_ID.to_string(), "xd-sess-1".to_string());
+        e.fields
+            .insert(keys::DATABASE_SCHEMA.to_string(), schema.to_string());
+        out.push(Sample {
+            ev: e,
+            label: "cross-domain",
+            expect: "app-cross-domain-access",
+        });
     }
 
     out
@@ -397,11 +549,16 @@ fn evaluate(samples: &[Sample]) -> (Vec<ScenarioResult>, usize, usize) {
         }
         // Fuse into the final detection set (monitor_mult = 1.0 — no monitoring
         // registry in the harness) and score over the rule-ids serve would raise.
-        let fired: BTreeSet<String> =
-            fuse_access(findings, &ensemble, is_deterministic_policy, is_standalone, 1.0)
-                .into_iter()
-                .map(|f| f.into_detection().rule_id)
-                .collect();
+        let fired: BTreeSet<String> = fuse_access(
+            findings,
+            &ensemble,
+            is_deterministic_policy,
+            is_standalone,
+            1.0,
+        )
+        .into_iter()
+        .map(|f| f.into_detection().rule_id)
+        .collect();
 
         if s.label == "normal" {
             normal_events += 1;
@@ -409,7 +566,9 @@ fn evaluate(samples: &[Sample]) -> (Vec<ScenarioResult>, usize, usize) {
                 normal_fp_events += 1;
             }
         } else {
-            let e = by_label.entry(s.label).or_insert((0, BTreeSet::new(), s.expect));
+            let e = by_label
+                .entry(s.label)
+                .or_insert((0, BTreeSet::new(), s.expect));
             e.0 += 1;
             e.1.extend(fired);
         }
@@ -434,7 +593,11 @@ pub(crate) async fn synth_eval(_cli: &Cli) -> Result<()> {
 
     let attacks = results.len();
     let caught = results.iter().filter(|r| r.detected).count();
-    let recall = if attacks == 0 { 0.0 } else { caught as f64 / attacks as f64 };
+    let recall = if attacks == 0 {
+        0.0
+    } else {
+        caught as f64 / attacks as f64
+    };
     let fpr = if normal_events == 0 {
         0.0
     } else {
@@ -444,7 +607,10 @@ pub(crate) async fn synth_eval(_cli: &Cli) -> Result<()> {
     println!("garmr synthetic detection eval — {} events", samples.len());
     println!("  scenarios : {attacks}   normal events: {normal_events}");
     println!();
-    println!("  {:<24} {:>6}  {:<8}  detectors fired", "scenario", "events", "caught");
+    println!(
+        "  {:<24} {:>6}  {:<8}  detectors fired",
+        "scenario", "events", "caught"
+    );
     for r in &results {
         println!(
             "  {:<24} {:>6}  {:<8}  {}",
@@ -455,7 +621,10 @@ pub(crate) async fn synth_eval(_cli: &Cli) -> Result<()> {
         );
     }
     println!();
-    println!("  recall (scenarios caught) : {caught}/{attacks} = {:.0}%", recall * 100.0);
+    println!(
+        "  recall (scenarios caught) : {caught}/{attacks} = {:.0}%",
+        recall * 100.0
+    );
     println!(
         "  false-positive rate (normal): {normal_fp}/{normal_events} = {:.1}%",
         fpr * 100.0
@@ -482,22 +651,45 @@ mod tests {
         // (all three policy detectors, all three standalone record detectors, all
         // five cross-event stateful detectors, and the fused insider-risk path).
         // EVERY one must be caught over the deployed pipeline + config.
-        assert!(results.len() >= 13, "expected the full detector-family catalog, got {}", results.len());
+        assert!(
+            results.len() >= 13,
+            "expected the full detector-family catalog, got {}",
+            results.len()
+        );
         for r in &results {
-            assert!(r.detected, "scenario '{}' was not caught (detectors fired: {:?})", r.label, r.fired);
+            assert!(
+                r.detected,
+                "scenario '{}' was not caught (detectors fired: {:?})",
+                r.label, r.fired
+            );
         }
         // Every shipped detector family is represented — guard against a silently
         // dropped scenario.
         for label in [
-            "forbidden-access", "missing-justification", "missing-approval",
-            "watched-subject", "privilege-change", "service-account-misuse",
-            "enumeration", "low-and-slow", "split-bulk", "denied-probing", "cross-domain",
-            "self-access", "failed-access",
+            "forbidden-access",
+            "missing-justification",
+            "missing-approval",
+            "watched-subject",
+            "privilege-change",
+            "service-account-misuse",
+            "enumeration",
+            "low-and-slow",
+            "split-bulk",
+            "denied-probing",
+            "cross-domain",
+            "self-access",
+            "failed-access",
         ] {
-            assert!(results.iter().any(|r| r.label == label), "missing scenario '{label}'");
+            assert!(
+                results.iter().any(|r| r.label == label),
+                "missing scenario '{label}'"
+            );
         }
         // Normal traffic — including adversarially-close benign reads — must NOT
         // false-positive.
-        assert_eq!(normal_fp, 0, "{normal_fp}/{normal_events} normal events false-positived");
+        assert_eq!(
+            normal_fp, 0,
+            "{normal_fp}/{normal_events} normal events false-positived"
+        );
     }
 }

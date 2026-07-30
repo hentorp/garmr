@@ -118,12 +118,30 @@ pub(crate) async fn shadow_cmd(cli: &Cli) -> Result<()> {
         ch["name"].as_str().unwrap_or("?"),
         ch["version"].as_str().unwrap_or("?")
     );
-    println!("  events scored    : {}", v["events_scored"].as_u64().unwrap_or(0));
-    println!("  diff events      : {}", v["diff_events"].as_u64().unwrap_or(0));
-    println!("  challenger-only  : {}", v["challenger_only"].as_u64().unwrap_or(0));
-    println!("  champion-only    : {}", v["champion_only"].as_u64().unwrap_or(0));
-    println!("  dangerous misses : {}", v["dangerous_misses"].as_u64().unwrap_or(0));
-    println!("  recommendation   : {}", v["recommendation"].as_str().unwrap_or(""));
+    println!(
+        "  events scored    : {}",
+        v["events_scored"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "  diff events      : {}",
+        v["diff_events"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "  challenger-only  : {}",
+        v["challenger_only"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "  champion-only    : {}",
+        v["champion_only"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "  dangerous misses : {}",
+        v["dangerous_misses"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "  recommendation   : {}",
+        v["recommendation"].as_str().unwrap_or("")
+    );
     Ok(())
 }
 

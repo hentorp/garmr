@@ -150,10 +150,11 @@ pub(super) fn build_semantic(store: &Store, cfg: &Config) -> Option<SemanticHand
             }),
     );
     let path = semantic_store_path(cfg);
-    let index = garmr_embed::VectorStore::open(&path, semantic_max(), &digest).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "semantic: index file unreadable — starting empty");
-        garmr_embed::VectorStore::new(&path, semantic_max(), &digest)
-    });
+    let index =
+        garmr_embed::VectorStore::open(&path, semantic_max(), &digest).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "semantic: index file unreadable — starting empty");
+            garmr_embed::VectorStore::new(&path, semantic_max(), &digest)
+        });
     tracing::info!(dir = ?dir, indexed = index.len(), "semantic search enabled");
     let handle = SemanticHandle {
         embedder,

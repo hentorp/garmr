@@ -254,7 +254,11 @@ fn apply_lock() -> std::sync::MutexGuard<'static, ()> {
 fn unique_suffix() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static CTR: AtomicU64 = AtomicU64::new(0);
-    format!("{}.{}", std::process::id(), CTR.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "{}.{}",
+        std::process::id(),
+        CTR.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// fsync the file's parent directory so a create/rename is durable — POSIX does
@@ -295,7 +299,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("override");
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("override");
     let tmp = dir.join(format!(".{name}.{}.tmp", unique_suffix()));
     {
         let mut opts = std::fs::OpenOptions::new();

@@ -343,18 +343,20 @@ async fn recover_issue_admin(cli: &Cli, label: &str, hours: i64) -> Result<()> {
                     );
                     return Ok(());
                 };
-                let rec = garmr_audit::AuditRecord::new(
-                    garmr_audit::action::RECOVERY_ADMIN,
-                    "recovery",
-                )
-                .actor(garmr_audit::ActorType::Human, "cli-recovery".to_string(), Some("Admin"))
-                .auth_method("cli-local")
-                .outcome(garmr_audit::Outcome::Success)
-                .policy(garmr_audit::PolicyDecision::Allowed)
-                .object_id(id)
-                .reason(format!(
-                    "emergency admin credential '{label}' ({fp}) expiring in {hours}h"
-                ));
+                let rec =
+                    garmr_audit::AuditRecord::new(garmr_audit::action::RECOVERY_ADMIN, "recovery")
+                        .actor(
+                            garmr_audit::ActorType::Human,
+                            "cli-recovery".to_string(),
+                            Some("Admin"),
+                        )
+                        .auth_method("cli-local")
+                        .outcome(garmr_audit::Outcome::Success)
+                        .policy(garmr_audit::PolicyDecision::Allowed)
+                        .object_id(id)
+                        .reason(format!(
+                            "emergency admin credential '{label}' ({fp}) expiring in {hours}h"
+                        ));
                 ledger
                     .append(rec)
                     .map(|_| ())

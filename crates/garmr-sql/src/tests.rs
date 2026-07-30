@@ -276,9 +276,7 @@ fn named_tables_after_derived_tables_are_captured() {
     let a = analyze("SELECT * FROM (SELECT 1) d, sensitive_table s");
     assert!(a.read_tables.contains(&"sensitive_table".to_string()));
 
-    let b = analyze(
-        "SELECT * FROM (SELECT id FROM safe_table) d, (SELECT 1) e, sensitive_table s",
-    );
+    let b = analyze("SELECT * FROM (SELECT id FROM safe_table) d, (SELECT 1) e, sensitive_table s");
     assert!(b.read_tables.contains(&"safe_table".to_string()));
     assert!(b.read_tables.contains(&"sensitive_table".to_string()));
 }

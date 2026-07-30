@@ -147,9 +147,14 @@ pub(super) async fn secret_test(
     let airgap = garmr_core::egress::global().is_airgap();
 
     // Only the LLM keys are testable in this cycle.
-    let is_llm = matches!(req.name.as_str(), "ANTHROPIC_API_KEY" | "GARMR_OPENAI_API_KEY");
+    let is_llm = matches!(
+        req.name.as_str(),
+        "ANTHROPIC_API_KEY" | "GARMR_OPENAI_API_KEY"
+    );
     if !is_llm {
-        return Err(bad("only the LLM keys support a connection test in this cycle"));
+        return Err(bad(
+            "only the LLM keys support a connection test in this cycle",
+        ));
     }
     let store = sealed(&st);
     let configured = secrets::source_of(&req.name, store.as_ref()) != SecretSource::Unset;

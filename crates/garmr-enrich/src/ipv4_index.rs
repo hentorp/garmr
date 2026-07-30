@@ -54,7 +54,10 @@ impl Ipv4IocIndex {
             }
         }
         if ranges.is_empty() {
-            return Self { index: None, labels };
+            return Self {
+                index: None,
+                labels,
+            };
         }
         ranges.sort_by_key(|r| r.0);
         // Merge overlaps/adjacency; keep the first label of an overlapping run.
@@ -68,12 +71,18 @@ impl Ipv4IocIndex {
             }
             merged.push((s, e, id));
         }
-        Self { index: Some(RangeStree32::new(merged)), labels }
+        Self {
+            index: Some(RangeStree32::new(merged)),
+            labels,
+        }
     }
 
     /// The feed label for a single IPv4 `ip` (as `u32`), or `None`.
     pub fn tag(&self, ip: u32) -> Option<&str> {
-        self.index.as_ref()?.lookup(ip).map(|&id| self.labels[id as usize].as_str())
+        self.index
+            .as_ref()?
+            .lookup(ip)
+            .map(|&id| self.labels[id as usize].as_str())
     }
 
     /// **Batch tag** — resolve a whole slice of IPv4 `u32`s. The firehose path:
@@ -106,21 +115,26 @@ impl Ipv4IocIndex {
         // pipeline stays full; fewer, fatter chunks beat many thin ones (per-chunk
         // pipeline warm-up is amortized). `gatling_for_each` hands back the chunk
         // results in index order — concatenation reproduces the serial ordering.
-        let workers = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1).max(1);
+        let workers = std::thread::available_parallelism()
+            .map(|x| x.get())
+            .unwrap_or(1)
+            .max(1);
         let chunk = n.div_ceil(workers).max(4 * BATCH_P);
         let n_chunks = n.div_ceil(chunk);
-        let parts: Vec<Vec<Option<u32>>> =
-            gatling_forkjoin::gatling_for_each(n_chunks, 0, |c| {
-                let lo = c * chunk;
-                let hi = (lo + chunk).min(n);
-                idx.lookup_batch::<BATCH_P>(&ips[lo..hi])
-                    .into_iter()
-                    .map(|o| o.copied())
-                    .collect()
-            });
+        let parts: Vec<Vec<Option<u32>>> = gatling_forkjoin::gatling_for_each(n_chunks, 0, |c| {
+            let lo = c * chunk;
+            let hi = (lo + chunk).min(n);
+            idx.lookup_batch::<BATCH_P>(&ips[lo..hi])
+                .into_iter()
+                .map(|o| o.copied())
+                .collect()
+        });
         let mut out = Vec::with_capacity(n);
         for part in parts {
-            out.extend(part.into_iter().map(|o| o.map(|id| self.labels[id as usize].as_str())));
+            out.extend(
+                part.into_iter()
+                    .map(|o| o.map(|id| self.labels[id as usize].as_str())),
+            );
         }
         out
     }
@@ -182,14 +196,31 @@ mod tests {
     fn batch_matches_single() {
         let mut m = HashMap::new();
         for i in 0..500u32 {
-            m.insert(format!("{}.{}.0.0/16", 1 + i / 256, i % 256), format!("feed{}", i % 7));
+            m.insert(
+                format!("{}.{}.0.0/16", 1 + i / 256, i % 256),
+                format!("feed{}", i % 7),
+            );
         }
         let idx = Ipv4IocIndex::from_ioc_map(&m);
-        let probes: Vec<u32> = (0..2000u32).map(|i| ip((1 + (i % 200)) as u8, (i % 256) as u8, (i % 7) as u8, (i % 251) as u8)).collect();
-        let batch: Vec<Option<String>> =
-            idx.tag_batch(&probes).into_iter().map(|o| o.map(str::to_string)).collect();
-        let single: Vec<Option<String>> =
-            probes.iter().map(|&p| idx.tag(p).map(str::to_string)).collect();
+        let probes: Vec<u32> = (0..2000u32)
+            .map(|i| {
+                ip(
+                    (1 + (i % 200)) as u8,
+                    (i % 256) as u8,
+                    (i % 7) as u8,
+                    (i % 251) as u8,
+                )
+            })
+            .collect();
+        let batch: Vec<Option<String>> = idx
+            .tag_batch(&probes)
+            .into_iter()
+            .map(|o| o.map(str::to_string))
+            .collect();
+        let single: Vec<Option<String>> = probes
+            .iter()
+            .map(|&p| idx.tag(p).map(str::to_string))
+            .collect();
         assert_eq!(batch, single, "batch tag must equal single tag");
     }
 
@@ -202,11 +233,17 @@ mod tests {
     fn parallel_batch_matches_serial_in_order() {
         let mut m = HashMap::new();
         for i in 0..1000u32 {
-            m.insert(format!("{}.{}.0.0/16", 1 + i / 256, i % 256), format!("feed{}", i % 11));
+            m.insert(
+                format!("{}.{}.0.0/16", 1 + i / 256, i % 256),
+                format!("feed{}", i % 11),
+            );
         }
         let idx = Ipv4IocIndex::from_ioc_map(&m);
         let n = PARALLEL_TAG_THRESHOLD * 3 + 137; // safely into the parallel regime
-        assert!(n >= PARALLEL_TAG_THRESHOLD, "must exercise the fan-out path");
+        assert!(
+            n >= PARALLEL_TAG_THRESHOLD,
+            "must exercise the fan-out path"
+        );
         // xorshift probes: a mix of hits and misses, deterministic.
         let mut x = 0x9E37_79B9u32;
         let probes: Vec<u32> = (0..n)
@@ -217,11 +254,19 @@ mod tests {
                 x
             })
             .collect();
-        let batch: Vec<Option<String>> =
-            idx.tag_batch(&probes).into_iter().map(|o| o.map(str::to_string)).collect();
-        let serial: Vec<Option<String>> =
-            probes.iter().map(|&p| idx.tag(p).map(str::to_string)).collect();
+        let batch: Vec<Option<String>> = idx
+            .tag_batch(&probes)
+            .into_iter()
+            .map(|o| o.map(str::to_string))
+            .collect();
+        let serial: Vec<Option<String>> = probes
+            .iter()
+            .map(|&p| idx.tag(p).map(str::to_string))
+            .collect();
         assert_eq!(batch.len(), n);
-        assert_eq!(batch, serial, "parallel batch tag must equal serial tag, in order");
+        assert_eq!(
+            batch, serial,
+            "parallel batch tag must equal serial tag, in order"
+        );
     }
 }

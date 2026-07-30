@@ -58,11 +58,11 @@ mod registry;
 mod resources;
 mod secrets;
 mod security;
-mod setup;
-mod shadow;
 #[cfg(feature = "semantic")]
 mod semantic;
 mod serve;
+mod setup;
+mod shadow;
 mod users;
 mod views;
 

@@ -108,7 +108,9 @@ async fn app_activity_sql(
             .column_by_name("last")
             .and_then(|c| c.as_any().downcast_ref::<TimestampMicrosecondArray>());
         let iv = |a: Option<&Int64Array>, i: usize| {
-            a.filter(|x| !x.is_null(i)).map(|x| x.value(i).max(0) as u64).unwrap_or(0)
+            a.filter(|x| !x.is_null(i))
+                .map(|x| x.value(i).max(0) as u64)
+                .unwrap_or(0)
         };
         for i in 0..b.num_rows() {
             let Some(name) = app.filter(|x| !x.is_null(i)).map(|x| x.value(i)) else {
@@ -227,7 +229,12 @@ pub(super) async fn applications(
                     .unwrap_or(0)
                     .cmp(&a["activity"]["events"].as_u64().unwrap_or(0))
             })
-            .then_with(|| a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or("")))
+            .then_with(|| {
+                a["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .cmp(b["name"].as_str().unwrap_or(""))
+            })
     });
 
     let mut out = Page::from_query(&p).envelope("applications", rows);
@@ -399,7 +406,8 @@ pub(super) async fn application_by_id(
         " AND fields LIKE '%\"application_name\":\"{}\"%' ESCAPE '\\'",
         app_like(&id)
     );
-    let events = super::policies::scan_audit_events_where(&st, hours, SCAN_LIMIT, &where_app).await?;
+    let events =
+        super::policies::scan_audit_events_where(&st, hours, SCAN_LIMIT, &where_app).await?;
     let scanned = events.len();
     let hits = project_app_accesses(&events, &id);
 
@@ -446,7 +454,9 @@ pub(super) async fn application_by_id(
     });
 
     let top_users = top_counts(
-        hits.iter().filter(|a| !a.actor.is_empty()).map(|a| a.actor.clone()),
+        hits.iter()
+            .filter(|a| !a.actor.is_empty())
+            .map(|a| a.actor.clone()),
         TOP_N,
     );
     let top_objects = top_counts(hits.iter().filter_map(|a| a.object.clone()), TOP_N);
@@ -537,7 +547,7 @@ mod tests {
         let events = vec![
             app_event("warehouse", "anna"),
             app_event("portal", "bob"), // a different app → dropped for `warehouse`
-            non_audit,                   // not an audit event → dropped
+            non_audit,                  // not an audit event → dropped
         ];
         let hits = project_app_accesses(&events, "warehouse");
         assert_eq!(hits.len(), 1);

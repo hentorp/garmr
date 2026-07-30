@@ -126,11 +126,17 @@ pub fn build_snapshot(inputs: DatasetInputs) -> DatasetSnapshot {
     use std::collections::HashMap;
     let mut preds_by: HashMap<&str, Vec<AgentPrediction>> = HashMap::new();
     for p in &predictions {
-        preds_by.entry(p.case_id.as_str()).or_default().push(p.clone());
+        preds_by
+            .entry(p.case_id.as_str())
+            .or_default()
+            .push(p.clone());
     }
     let mut decs_by: HashMap<&str, Vec<AnalystDecision>> = HashMap::new();
     for d in &decisions {
-        decs_by.entry(d.case_id.as_str()).or_default().push(d.clone());
+        decs_by
+            .entry(d.case_id.as_str())
+            .or_default()
+            .push(d.clone());
     }
     let mut outs_by: HashMap<&str, Vec<IncidentOutcome>> = HashMap::new();
     for o in &outcomes {
@@ -411,13 +417,20 @@ mod tests {
 
         let mut decs_by: HashMap<&str, Vec<AnalystDecision>> = HashMap::new();
         for d in &decisions {
-            decs_by.entry(d.case_id.as_str()).or_default().push(d.clone());
+            decs_by
+                .entry(d.case_id.as_str())
+                .or_default()
+                .push(d.clone());
         }
         for c in &cases {
             let scan = CaseDecisionView {
                 case_id: c.id.clone(),
                 predictions: vec![],
-                decisions: decisions.iter().filter(|d| d.case_id == c.id).cloned().collect(),
+                decisions: decisions
+                    .iter()
+                    .filter(|d| d.case_id == c.id)
+                    .cloned()
+                    .collect(),
                 outcomes: vec![],
                 false_negatives: vec![],
             };
@@ -428,7 +441,12 @@ mod tests {
                 outcomes: vec![],
                 false_negatives: vec![],
             };
-            assert_eq!(judge_view(c, &scan), judge_view(c, &grouped), "case {}", c.id);
+            assert_eq!(
+                judge_view(c, &scan),
+                judge_view(c, &grouped),
+                "case {}",
+                c.id
+            );
         }
     }
 

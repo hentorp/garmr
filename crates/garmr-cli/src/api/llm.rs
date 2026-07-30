@@ -364,8 +364,8 @@ pub(super) async fn llm_status(State(st): State<ApiState>, headers: HeaderMap) -
         .state_db
         .parent()
         .and_then(crate::secrets::SealedSecretStore::from_env);
-    let key_present =
-        crate::secrets::source_of(key_secret, sealed.as_ref()) != crate::secrets::SecretSource::Unset;
+    let key_present = crate::secrets::source_of(key_secret, sealed.as_ref())
+        != crate::secrets::SecretSource::Unset;
     Ok(axum::Json(serde_json::json!({
         "backend": format!("{backend:?}"),
         "model": st.cfg.agent.model,

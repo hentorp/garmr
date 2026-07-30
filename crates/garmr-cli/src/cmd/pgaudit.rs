@@ -33,12 +33,24 @@ fn is_stamp(line: &str) -> bool {
         return false;
     }
     let d = |i: usize| b[i].is_ascii_digit();
-    d(0) && d(1) && d(2) && d(3)
-        && b[4] == b'-' && d(5) && d(6)
-        && b[7] == b'-' && d(8) && d(9)
-        && b[10] == b' ' && d(11) && d(12)
-        && b[13] == b':' && d(14) && d(15)
-        && b[16] == b':' && d(17) && d(18)
+    d(0) && d(1)
+        && d(2)
+        && d(3)
+        && b[4] == b'-'
+        && d(5)
+        && d(6)
+        && b[7] == b'-'
+        && d(8)
+        && d(9)
+        && b[10] == b' '
+        && d(11)
+        && d(12)
+        && b[13] == b':'
+        && d(14)
+        && d(15)
+        && b[16] == b':'
+        && d(17)
+        && d(18)
 }
 
 /// A shipped record is a pgAudit row (contains `AUDIT:`).
@@ -219,7 +231,9 @@ impl Config {
             environment: env("PG_ENVIRONMENT", "prod"),
             spool_path: PathBuf::from(env("GARMR_SPOOL", "/var/lib/garmr/pgaudit.spool")),
             batch: env("GARMR_BATCH", "500").parse().unwrap_or(500).max(1),
-            poll: Duration::from_millis(env("GARMR_POLL_MS", "1000").parse().unwrap_or(1000).max(50)),
+            poll: Duration::from_millis(
+                env("GARMR_POLL_MS", "1000").parse().unwrap_or(1000).max(50),
+            ),
         }
     }
 }
@@ -304,7 +318,11 @@ async fn drain(
     max_attempts: Option<u32>,
 ) -> Result<()> {
     while !spool.is_empty() {
-        let batch: Vec<String> = spool.peek(cfg.batch).into_iter().map(str::to_string).collect();
+        let batch: Vec<String> = spool
+            .peek(cfg.batch)
+            .into_iter()
+            .map(str::to_string)
+            .collect();
         let refs: Vec<&str> = batch.iter().map(String::as_str).collect();
         ship_batch(client, cfg, &refs, epoch, *seq, max_attempts).await?;
         spool.commit(batch.len())?;
@@ -398,7 +416,10 @@ fn read_from(path: &Path, offset: u64) -> Result<(String, u64)> {
     f.seek(SeekFrom::Start(start))?;
     let mut buf = Vec::new();
     f.read_to_end(&mut buf)?;
-    Ok((String::from_utf8_lossy(&buf).into_owned(), start + buf.len() as u64))
+    Ok((
+        String::from_utf8_lossy(&buf).into_owned(),
+        start + buf.len() as u64,
+    ))
 }
 
 #[cfg(test)]
@@ -419,10 +440,17 @@ mod tests {
                     2026-07-28 00:00:02 UTC,b,LOG:  plain line\n\
                     2026-07-28 00:00:03 UTC,c,LOG:  AUDIT: UPDATE\n\tstill open";
         let (records, partial) = reassemble(text);
-        assert_eq!(records.len(), 2, "two complete records; the third is still open");
+        assert_eq!(
+            records.len(),
+            2,
+            "two complete records; the third is still open"
+        );
         assert!(records[0].contains("AUDIT: SELECT") && records[0].contains("continued"));
         assert!(is_audit(&records[0]));
-        assert!(!is_audit(&records[1]), "the plain line is not an audit record");
+        assert!(
+            !is_audit(&records[1]),
+            "the plain line is not an audit record"
+        );
         assert!(partial.contains("AUDIT: UPDATE") && partial.contains("still open"));
     }
 
@@ -432,7 +460,11 @@ mod tests {
         assert_eq!(backoff_ms(1, 500, 30_000), 1000);
         assert_eq!(backoff_ms(3, 500, 30_000), 4000);
         assert_eq!(backoff_ms(20, 500, 30_000), 30_000, "capped");
-        assert_eq!(backoff_ms(60, 500, 30_000), 30_000, "shift saturates + capped");
+        assert_eq!(
+            backoff_ms(60, 500, 30_000),
+            30_000,
+            "shift saturates + capped"
+        );
     }
 
     #[test]

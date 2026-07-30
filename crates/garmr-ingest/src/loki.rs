@@ -277,7 +277,16 @@ mod tests {
     fn json_push_routes_pg_csvlog_source_through_adapter() {
         let msg = "AUDIT: SESSION,1,1,READ,SELECT,TABLE,public.persons,\
                    SELECT pnr FROM public.persons WHERE id = 42,<none>";
-        let line = csvline("caseworker7", "registry", "10.0.0.5:52001", "SELECT", "LOG", "00000", msg, "psql");
+        let line = csvline(
+            "caseworker7",
+            "registry",
+            "10.0.0.5:52001",
+            "SELECT",
+            "LOG",
+            "00000",
+            msg,
+            "psql",
+        );
         let body = push_body(
             serde_json::json!({"source":"postgres-csvlog","host":"db01","log_type":"audit"}),
             serde_json::json!([["1720000000000000000", line]]),
@@ -289,7 +298,10 @@ mod tests {
         assert_eq!(ev.host, "db01"); // stream label overrides the adapter default
         assert_eq!(ev.field("db_user"), Some("caseworker7"));
         assert_eq!(ev.field("query_type"), Some("select"));
-        assert!(ev.field("statement_fingerprint").unwrap().starts_with("sql1:"));
+        assert!(ev
+            .field("statement_fingerprint")
+            .unwrap()
+            .starts_with("sql1:"));
         assert_eq!(ev.field("sql_read_tables"), Some("public.persons"));
     }
 
@@ -297,19 +309,37 @@ mod tests {
     fn multiline_csvlog_record_split_across_two_values_is_stitched() {
         let stmt = "CREATE TABLE public.t (\n  id int\n)";
         let msg = format!("AUDIT: SESSION,1,1,DDL,CREATE TABLE,TABLE,public.t,{stmt},<none>");
-        let line = csvline("dba", "app", "[local]", "CREATE TABLE", "LOG", "00000", &msg, "psql");
+        let line = csvline(
+            "dba",
+            "app",
+            "[local]",
+            "CREATE TABLE",
+            "LOG",
+            "00000",
+            &msg,
+            "psql",
+        );
         // Ship each physical line of the record as a separate Loki value.
         let values: Vec<Vec<String>> = line
             .split('\n')
             .enumerate()
-            .map(|(i, p)| vec![format!("{}", 1_720_000_000_000_000_000u64 + i as u64), p.to_string()])
+            .map(|(i, p)| {
+                vec![
+                    format!("{}", 1_720_000_000_000_000_000u64 + i as u64),
+                    p.to_string(),
+                ]
+            })
             .collect();
         let body = push_body(
             serde_json::json!({"source":"postgres-csvlog","host":"db01"}),
             serde_json::to_value(values).unwrap(),
         );
         let events = decode_json(&body, "prod").unwrap();
-        assert_eq!(events.len(), 1, "the multiline record must stitch into ONE event");
+        assert_eq!(
+            events.len(),
+            1,
+            "the multiline record must stitch into ONE event"
+        );
         assert_eq!(events[0].field("query_type"), Some("create"));
     }
 
@@ -318,7 +348,10 @@ mod tests {
         // A non-adapter source must behave exactly as before (no regression).
         let body = push_body(
             serde_json::json!({"host":"pve","source":"journald","service":"sshd"}),
-            serde_json::json!([["1720000000000000000", "Failed password for root from 10.0.0.9 port 22 ssh2"]]),
+            serde_json::json!([[
+                "1720000000000000000",
+                "Failed password for root from 10.0.0.9 port 22 ssh2"
+            ]]),
         );
         let events = decode_json(&body, "prod").unwrap();
         assert_eq!(events.len(), 1);

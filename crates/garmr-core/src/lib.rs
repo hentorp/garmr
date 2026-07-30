@@ -60,10 +60,10 @@ pub use egress::{
 };
 pub use environment::*;
 pub use event::Event;
-pub use label::{intern, interned_len, Label};
 pub use finding::*;
 pub use hunt::{HuntFinding, HuntOutcome, HuntReport};
 pub use injection::{scan_text, INJECTION_MARKERS};
+pub use label::{intern, interned_len, Label};
 pub use lesson::{
     category_guidance, category_tag, validate_lesson_set, Lesson, LessonCaps, LessonFinding,
     LessonSet, LessonSetSpec, LESSON_CAPS,

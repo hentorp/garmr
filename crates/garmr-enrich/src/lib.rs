@@ -116,7 +116,10 @@ impl Enricher {
     /// string lookup use [`lookup`](Self::lookup).
     pub fn tag_ipv4_batch(&self, ips: &[u32]) -> Vec<Option<String>> {
         let g = self.ipv4_iocs.read().unwrap_or_else(|e| e.into_inner());
-        g.tag_batch(ips).into_iter().map(|o| o.map(str::to_string)).collect()
+        g.tag_batch(ips)
+            .into_iter()
+            .map(|o| o.map(str::to_string))
+            .collect()
     }
 
     /// Replace the domain-IOC set (structured / STIX feeds).

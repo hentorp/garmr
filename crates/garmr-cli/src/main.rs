@@ -147,7 +147,9 @@ fn main() -> Result<()> {
         // Record the override the process starts with, so the config API can later
         // detect a persisted-but-not-yet-loaded change (a restart is pending).
         let startup_body = std::fs::read_to_string(&p).unwrap_or_default();
-        crate::config_store::set_startup_override_hash(crate::config_store::override_hash(&startup_body));
+        crate::config_store::set_startup_override_hash(crate::config_store::override_hash(
+            &startup_body,
+        ));
         crate::config_store::set_override_path(p);
     }
     // Hydrate secrets from the sealed store into the environment BEFORE the

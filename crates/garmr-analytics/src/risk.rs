@@ -550,7 +550,13 @@ mod tests {
     /// instant the group-by-`case_id` misroutes or reorders a record.
     #[test]
     fn build_matches_per_case_full_scan() {
-        let a = case("garmr-sigma-x", "high", "h1", Some(Disposition::Malicious), 1);
+        let a = case(
+            "garmr-sigma-x",
+            "high",
+            "h1",
+            Some(Disposition::Malicious),
+            1,
+        );
         let b = case("garmr-sigma-y", "medium", "h2", None, 2);
         let c = case("garmr-sigma-z", "low", "h3", Some(Disposition::Benign), 3);
         let cases = vec![a.clone(), b.clone(), c.clone()];

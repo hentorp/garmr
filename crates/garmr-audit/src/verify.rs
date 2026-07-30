@@ -225,7 +225,11 @@ pub fn verify_dir(dir: impl AsRef<Path>, trust: &TrustRoot) -> Result<VerifyRepo
         ParsedItem::Record { record, .. } => {
             let recomputed = compute_record_hash(record);
             let signature = match &record.signature {
-                Some(sig) => match record.signing_key_id.as_deref().and_then(|kid| trust.get(kid)) {
+                Some(sig) => match record
+                    .signing_key_id
+                    .as_deref()
+                    .and_then(|kid| trust.get(kid))
+                {
                     Some(pk) => {
                         if verify(pk, &record.record_hash.0, sig) {
                             SignatureCheck::Valid

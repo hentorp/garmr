@@ -30,6 +30,8 @@ impl StateStore {
     pub fn get_app_shadow_summary(&self) -> Result<Option<Vec<u8>>> {
         let rtx = self.db.begin_read().map_err(Error::store)?;
         let t = rtx.open_table(APP_SHADOW).map_err(Error::store)?;
-        Ok(t.get(KEY).map_err(Error::store)?.map(|v| v.value().to_vec()))
+        Ok(t.get(KEY)
+            .map_err(Error::store)?
+            .map(|v| v.value().to_vec()))
     }
 }

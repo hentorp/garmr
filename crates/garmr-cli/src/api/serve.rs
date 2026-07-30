@@ -187,7 +187,10 @@ pub(super) fn build_router(state: ApiState, opts: RouterOpts) -> Router {
         .route("/api/shadow/scores", get(super::shadow::shadow_scores))
         .route("/api/findings", get(findings))
         .route("/api/registry/{kind}/{name}", get(registry_show))
-        .route("/api/registry/{kind}/{name}/{version}", get(registry_version))
+        .route(
+            "/api/registry/{kind}/{name}/{version}",
+            get(registry_version),
+        )
         // Passkey (WebAuthn) login. The login page + login/logout/status are
         // public (auth middleware allow-lists them); register is admin-gated
         // (inside the handler AND by the middleware, so bootstrap needs the

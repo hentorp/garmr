@@ -69,8 +69,7 @@ struct Access {
 /// attribution never disagrees with enforcement.
 fn access_matches(a: &Access, pattern: &str) -> bool {
     a.objects.iter().any(|o| object_pattern_matches(pattern, o))
-        || a
-            .object_name
+        || a.object_name
             .as_deref()
             .is_some_and(|o| object_pattern_matches(pattern, o))
 }
@@ -352,7 +351,12 @@ pub(super) async fn resources(
                     .unwrap_or(0)
                     .cmp(&a["access"]["count"].as_u64().unwrap_or(0))
             })
-            .then_with(|| a["id"].as_str().unwrap_or("").cmp(b["id"].as_str().unwrap_or("")))
+            .then_with(|| {
+                a["id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .cmp(b["id"].as_str().unwrap_or(""))
+            })
     });
 
     let mut out = Page::from_query(&p).envelope("resources", rows);
@@ -423,12 +427,17 @@ pub(super) async fn resource_by_id(
 
     let accesses = scan_accesses(&st, aa, hours, SCAN_LIMIT).await?;
     // Newest-first is preserved from the scan's `ORDER BY event_ts DESC`.
-    let hits: Vec<&Access> = accesses.iter().filter(|a| access_matches(a, pattern)).collect();
+    let hits: Vec<&Access> = accesses
+        .iter()
+        .filter(|a| access_matches(a, pattern))
+        .collect();
     // Summary numbers come from the shared `tally` so they never diverge from the list.
     let t = tally(&accesses, pattern);
 
     let top_users = top_counts(
-        hits.iter().filter(|a| !a.actor.is_empty()).map(|a| a.actor.clone()),
+        hits.iter()
+            .filter(|a| !a.actor.is_empty())
+            .map(|a| a.actor.clone()),
         TOP_N,
     );
     let top_clients = top_counts(hits.iter().filter_map(|a| a.client.clone()), TOP_N);
@@ -510,7 +519,12 @@ mod tests {
         }
     }
 
-    fn table_entry(id: &str, name: &str, cls: Option<DataClassification>, sensitive: bool) -> CatalogEntry {
+    fn table_entry(
+        id: &str,
+        name: &str,
+        cls: Option<DataClassification>,
+        sensitive: bool,
+    ) -> CatalogEntry {
         let mut e = CatalogEntry::candidate(
             id,
             Resource::Table(Table {
@@ -550,7 +564,9 @@ mod tests {
     }
 
     fn cov_ids(cov: &[Value]) -> Vec<String> {
-        cov.iter().map(|c| c["id"].as_str().unwrap().to_string()).collect()
+        cov.iter()
+            .map(|c| c["id"].as_str().unwrap().to_string())
+            .collect()
     }
 
     fn cov_row<'a>(cov: &'a [Value], id: &str) -> &'a Value {
@@ -561,7 +577,10 @@ mod tests {
     fn access_attribution_uses_the_shared_object_matcher() {
         assert!(access_matches(&access(&["raw.persons"], None), "raw.*"));
         assert!(access_matches(&access(&[], Some("raw.persons")), "raw.*"));
-        assert!(access_matches(&access(&["public.persons"], None), "persons"));
+        assert!(access_matches(
+            &access(&["public.persons"], None),
+            "persons"
+        ));
         assert!(!access_matches(&access(&["curated.orders"], None), "raw.*"));
     }
 
@@ -646,11 +665,24 @@ mod tests {
             &entry,
         );
         let ids = cov_ids(&cov);
-        for want in ["p-object", "p-object2", "p-class", "p-schema", "p-all", "p-both"] {
+        for want in [
+            "p-object",
+            "p-object2",
+            "p-class",
+            "p-schema",
+            "p-all",
+            "p-both",
+        ] {
             assert!(ids.contains(&want.to_string()), "missing {want}: {ids:?}");
         }
-        assert!(!ids.contains(&"p-mixed".to_string()), "AND-semantics must exclude object-mismatch");
-        assert!(!ids.contains(&"p-other".to_string()), "unrelated policy wrongly reported");
+        assert!(
+            !ids.contains(&"p-mixed".to_string()),
+            "AND-semantics must exclude object-mismatch"
+        );
+        assert!(
+            !ids.contains(&"p-other".to_string()),
+            "unrelated policy wrongly reported"
+        );
 
         assert_eq!(cov_row(&cov, "p-object")["match"][0], "object");
         assert_eq!(cov_row(&cov, "p-schema")["match"][0], "schema");

@@ -114,7 +114,12 @@ impl SealedSecretStore {
     /// even for a low-entropy value (e.g. an SMTP password).
     fn fingerprint(&self, secret: &str) -> String {
         let h = blake3::keyed_hash(&self.fp_key, secret.as_bytes());
-        let hex: String = h.as_bytes().iter().take(4).map(|b| format!("{b:02x}")).collect();
+        let hex: String = h
+            .as_bytes()
+            .iter()
+            .take(4)
+            .map(|b| format!("{b:02x}"))
+            .collect();
         format!("fp_{hex}")
     }
 
@@ -324,11 +329,17 @@ mod tests {
         assert_eq!(sfp, fp);
         assert_eq!(version, 1);
         // internal decrypt recovers the plaintext.
-        assert_eq!(s.get_plaintext("ANTHROPIC_API_KEY").as_deref(), Some("sk-secret-123"));
+        assert_eq!(
+            s.get_plaintext("ANTHROPIC_API_KEY").as_deref(),
+            Some("sk-secret-123")
+        );
         // replace bumps the version.
         s.set("ANTHROPIC_API_KEY", "sk-secret-456").unwrap();
         assert_eq!(s.status("ANTHROPIC_API_KEY").unwrap().2, 2);
-        assert_eq!(s.get_plaintext("ANTHROPIC_API_KEY").as_deref(), Some("sk-secret-456"));
+        assert_eq!(
+            s.get_plaintext("ANTHROPIC_API_KEY").as_deref(),
+            Some("sk-secret-456")
+        );
     }
 
     #[test]
@@ -353,7 +364,10 @@ mod tests {
         let entry = map.remove("ANTHROPIC_API_KEY").unwrap();
         map.insert("GARMR_OPENAI_API_KEY".into(), entry);
         s.save_map(&map).unwrap();
-        assert!(s.get_plaintext("GARMR_OPENAI_API_KEY").is_none(), "AAD mismatch must fail");
+        assert!(
+            s.get_plaintext("GARMR_OPENAI_API_KEY").is_none(),
+            "AAD mismatch must fail"
+        );
     }
 
     #[test]
@@ -378,6 +392,9 @@ mod tests {
         s.set("GARMR_SMTP_PASSWORD", "pw").unwrap();
         assert!(s.remove("GARMR_SMTP_PASSWORD").unwrap());
         assert!(s.status("GARMR_SMTP_PASSWORD").is_none());
-        assert!(!s.remove("GARMR_SMTP_PASSWORD").unwrap(), "second remove is a no-op");
+        assert!(
+            !s.remove("GARMR_SMTP_PASSWORD").unwrap(),
+            "second remove is a no-op"
+        );
     }
 }

@@ -997,7 +997,9 @@ pub(crate) async fn embed_verify(cli: &Cli) -> Result<()> {
     if let Ok(pin) = std::env::var("GARMR_EMBED_MODEL_DIGEST") {
         let pin = pin.trim();
         if !pin.is_empty() && pin != digest {
-            println!("  WARNING: model digest {digest} does not match the pin {pin} — a swapped model");
+            println!(
+                "  WARNING: model digest {digest} does not match the pin {pin} — a swapped model"
+            );
         }
     }
     let store = garmr_embed::VectorStore::open(&path, 5_000_000, &digest)?;
@@ -1141,7 +1143,8 @@ fn local_semantic(cfg: &Config, requested: bool) -> Option<Box<dyn garmr_query::
         return None;
     }
     let (embedder, digest) = load_embedder().ok()?;
-    let store = garmr_embed::VectorStore::open(semantic_store_path(cfg), 5_000_000, &digest).ok()?;
+    let store =
+        garmr_embed::VectorStore::open(semantic_store_path(cfg), 5_000_000, &digest).ok()?;
     if store.is_empty() {
         return None;
     }

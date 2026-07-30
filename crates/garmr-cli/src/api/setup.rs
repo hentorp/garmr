@@ -26,7 +26,14 @@ use serde_json::{json, Value};
 use super::{ApiResult, ApiState};
 
 /// One setup step as the wizard renders it.
-fn step(id: &str, title: &str, required: bool, status: &str, detail: String, extra: Value) -> Value {
+fn step(
+    id: &str,
+    title: &str,
+    required: bool,
+    status: &str,
+    detail: String,
+    extra: Value,
+) -> Value {
     let mut v = json!({
         "id": id,
         "title": title,
@@ -190,7 +197,11 @@ pub(super) async fn setup_status(State(st): State<ApiState>, headers: HeaderMap)
         "admin",
         "Admin bootstrap",
         true,
-        if admin_present { "complete" } else { "incomplete" },
+        if admin_present {
+            "complete"
+        } else {
+            "incomplete"
+        },
         if admin_present {
             "an Admin principal is configured".into()
         } else {
@@ -202,11 +213,17 @@ pub(super) async fn setup_status(State(st): State<ApiState>, headers: HeaderMap)
     // 4. Passkey registration — ideally >= 2 admin passkeys (so one loss isn't a lockout).
     let webauthn_on = st.webauthn.is_some();
     let (pk_status, pk_detail) = if !webauthn_on {
-        ("incomplete", "passkeys are not enabled (set GARMR_WEBAUTHN_RP_ID)".to_string())
+        (
+            "incomplete",
+            "passkeys are not enabled (set GARMR_WEBAUTHN_RP_ID)".to_string(),
+        )
     } else if admin_pk >= 2 {
         ("complete", format!("{admin_pk} admin passkeys registered"))
     } else if admin_pk == 1 {
-        ("incomplete", "1 admin passkey — register a 2nd so a lost key isn't a lockout".to_string())
+        (
+            "incomplete",
+            "1 admin passkey — register a 2nd so a lost key isn't a lockout".to_string(),
+        )
     } else {
         ("incomplete", "no admin passkeys registered yet".to_string())
     };
@@ -247,21 +264,37 @@ pub(super) async fn setup_status(State(st): State<ApiState>, headers: HeaderMap)
             format!(
                 "backend {}{}",
                 backend_str(backend),
-                if key_present { " with a key set" } else { " (local — no key required)" }
+                if key_present {
+                    " with a key set"
+                } else {
+                    " (local — no key required)"
+                }
             )
         } else {
-            format!("{key_secret} is not set for the {} backend", backend_str(backend))
+            format!(
+                "{key_secret} is not set for the {} backend",
+                backend_str(backend)
+            )
         },
         json!({}),
     ));
 
     // 7. LLM reachability — airgap-aware egress-permits proxy (not a live model call).
     let (reach_status, reach_detail) = if !external {
-        ("complete", "local backend — no external egress needed".to_string())
+        (
+            "complete",
+            "local backend — no external egress needed".to_string(),
+        )
     } else if airgap {
-        ("failed", "external LLM egress is blocked under airgap — switch to a local backend".to_string())
+        (
+            "failed",
+            "external LLM egress is blocked under airgap — switch to a local backend".to_string(),
+        )
     } else if !key_present {
-        ("incomplete", "no key set to reach the external backend".to_string())
+        (
+            "incomplete",
+            "no key set to reach the external backend".to_string(),
+        )
     } else {
         ("info", "key set and egress permits the backend — use the LLM test in System → Access to confirm".to_string())
     };
@@ -278,7 +311,12 @@ pub(super) async fn setup_status(State(st): State<ApiState>, headers: HeaderMap)
     // INFO, never a failure (a fresh install legitimately has no data yet — the
     // explicit-state invariant: don't infer "misconfigured" from an empty store).
     let sources = active_source_count(&st).await;
-    let seq_collectors = st.store.state.ingest_seq_health().map(|h| h.len()).unwrap_or(0);
+    let seq_collectors = st
+        .store
+        .state
+        .ingest_seq_health()
+        .map(|h| h.len())
+        .unwrap_or(0);
     steps.push(step(
         "data_sources",
         "Data sources",

@@ -189,54 +189,54 @@ fn row_to_detection(
     now: DateTime<Utc>,
     row: usize,
 ) -> Detection {
-            let mut fields = BTreeMap::new();
-            for (col, name) in names.iter().enumerate() {
-                let v = array_value_to_string(b.column(col), row).unwrap_or_default();
-                fields.insert(name.clone(), v);
+    let mut fields = BTreeMap::new();
+    for (col, name) in names.iter().enumerate() {
+        let v = array_value_to_string(b.column(col), row).unwrap_or_default();
+        fields.insert(name.clone(), v);
+    }
+    let host = fields.get("host").cloned().unwrap_or_default();
+    // Promote a source IP for the dedup key / agent tools if the row
+    // carries one under a conventional name.
+    if !fields.contains_key("src_ip") {
+        for k in ["key_ip", "ip", "source_ip"] {
+            if let Some(v) = fields.get(k) {
+                fields.insert("src_ip".to_string(), v.clone());
+                break;
             }
-            let host = fields.get("host").cloned().unwrap_or_default();
-            // Promote a source IP for the dedup key / agent tools if the row
-            // carries one under a conventional name.
-            if !fields.contains_key("src_ip") {
-                for k in ["key_ip", "ip", "source_ip"] {
-                    if let Some(v) = fields.get(k) {
-                        fields.insert("src_ip".to_string(), v.clone());
-                        break;
-                    }
-                }
-            }
-            let hit = serde_json::to_string(&fields).unwrap_or_default();
-            let event = Event {
-                ts: now,
-                host: if host.is_empty() {
-                    "-".into()
-                } else {
-                    host.into()
-                },
-                service: "correlation".into(),
-                source: "garmr-correlate".into(),
-                environment: fields
-                    .get("environment")
-                    .cloned()
-                    .unwrap_or_else(|| "prod".to_string())
-                    .into(),
-                severity: rule.severity.clone().into(),
-                log_type: "correlation".into(),
-                message: format!(
-                    "{} [{}] — {} | hit: {}",
-                    rule.title, rule.attack, rule.message, hit
-                ),
-                fields,
-            };
-            Detection {
-                rule_id: rule.id.clone(),
-                rule_title: rule.title.clone(),
-                level: rule.severity.clone(),
-                attack: attack.to_vec(),
-                event,
-                observed_at: now,
-                realert_secs: Some(rule.realert_secs),
-            }
+        }
+    }
+    let hit = serde_json::to_string(&fields).unwrap_or_default();
+    let event = Event {
+        ts: now,
+        host: if host.is_empty() {
+            "-".into()
+        } else {
+            host.into()
+        },
+        service: "correlation".into(),
+        source: "garmr-correlate".into(),
+        environment: fields
+            .get("environment")
+            .cloned()
+            .unwrap_or_else(|| "prod".to_string())
+            .into(),
+        severity: rule.severity.clone().into(),
+        log_type: "correlation".into(),
+        message: format!(
+            "{} [{}] — {} | hit: {}",
+            rule.title, rule.attack, rule.message, hit
+        ),
+        fields,
+    };
+    Detection {
+        rule_id: rule.id.clone(),
+        rule_title: rule.title.clone(),
+        level: rule.severity.clone(),
+        attack: attack.to_vec(),
+        event,
+        observed_at: now,
+        realert_secs: Some(rule.realert_secs),
+    }
 }
 
 /// Correlation rules are operator-authored and trusted, but still guarded:

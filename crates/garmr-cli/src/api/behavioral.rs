@@ -65,14 +65,18 @@ pub(super) fn top_counts(values: impl Iterator<Item = String>, n: usize) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use garmr_baseline::ValueObs;
     use chrono::{DateTime, Utc};
+    use garmr_baseline::ValueObs;
 
     fn ts(secs: i64) -> DateTime<Utc> {
         DateTime::<Utc>::from_timestamp(secs, 0).unwrap()
     }
     fn vobs(count: u64) -> ValueObs {
-        ValueObs { count, first_seen: ts(0), last_seen: ts(count as i64) }
+        ValueObs {
+            count,
+            first_seen: ts(0),
+            last_seen: ts(count as i64),
+        }
     }
 
     #[test]

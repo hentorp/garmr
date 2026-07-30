@@ -62,7 +62,10 @@ pub fn replay_bytes(body: &[u8], as_json: bool, default_environment: &str) -> Re
                 syslog::parse_line(lines[i], default_environment)
             })
         } else {
-            lines.iter().map(|l| syslog::parse_line(l, default_environment)).collect()
+            lines
+                .iter()
+                .map(|l| syslog::parse_line(l, default_environment))
+                .collect()
         };
         Ok(events)
     }
@@ -117,10 +120,15 @@ mod replay_tests {
             ));
         }
         let parallel = replay_bytes(body.as_bytes(), false, "prod").unwrap();
-        let serial: Vec<Event> =
-            body.lines().map(|l| syslog::parse_line(l, "prod")).collect();
+        let serial: Vec<Event> = body
+            .lines()
+            .map(|l| syslog::parse_line(l, "prod"))
+            .collect();
 
-        assert!(parallel.len() >= PARALLEL_LINE_THRESHOLD, "must exercise the fan-out");
+        assert!(
+            parallel.len() >= PARALLEL_LINE_THRESHOLD,
+            "must exercise the fan-out"
+        );
         assert_eq!(parallel.len(), serial.len());
         // The deterministic (non-`ts`) parse projection, compared in order.
         let proj = |e: &Event| {

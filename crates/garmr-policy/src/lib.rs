@@ -423,12 +423,24 @@ impl Policy {
             ("resource.objects", &self.resource.objects),
             ("resource.object_types", &self.resource.object_types),
             ("resource.columns", &self.resource.columns),
-            ("resource.data_classifications", &self.resource.data_classifications),
-            ("resource.data_subject_categories", &self.resource.data_subject_categories),
+            (
+                "resource.data_classifications",
+                &self.resource.data_classifications,
+            ),
+            (
+                "resource.data_subject_categories",
+                &self.resource.data_subject_categories,
+            ),
             ("condition.environments", &self.condition.environments),
             ("condition.operations", &self.condition.operations),
-            ("condition.client_applications", &self.condition.client_applications),
-            ("condition.client_ip_prefixes", &self.condition.client_ip_prefixes),
+            (
+                "condition.client_applications",
+                &self.condition.client_applications,
+            ),
+            (
+                "condition.client_ip_prefixes",
+                &self.condition.client_ip_prefixes,
+            ),
         ];
         for (name, list) in lists {
             if list.iter().any(|s| s.trim().is_empty()) {

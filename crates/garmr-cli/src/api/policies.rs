@@ -24,9 +24,7 @@ use chrono::DateTime;
 use serde::Deserialize;
 use skade::arrow_array::{Array, RecordBatch, StringArray, TimestampMicrosecondArray};
 
-use garmr_core::{
-    ApprovalState, AuditRecord, Event, RegistryKind, RegistryRecord, RegistrySource,
-};
+use garmr_core::{ApprovalState, AuditRecord, Event, RegistryKind, RegistryRecord, RegistrySource};
 use garmr_policy::{context_from_event, policy_set_digest, simulate as run_simulate, Policy};
 use garmr_store::state::RegisterOutcome;
 

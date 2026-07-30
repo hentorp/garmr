@@ -927,7 +927,10 @@ impl Config {
     /// surfaces here as `Err`, so the API can reject an invalid change before it is
     /// ever written. `GARMR_AIRGAP` is not in this chain (env-only), so a proposed
     /// override can never flip airgap even in a dry run.
-    pub fn preview_override(base_path: &std::path::Path, override_body: &str) -> Result<Self, Error> {
+    pub fn preview_override(
+        base_path: &std::path::Path,
+        override_body: &str,
+    ) -> Result<Self, Error> {
         use figment::providers::{Env, Format, Toml};
         figment::Figment::new()
             .merge(Toml::file(base_path))
