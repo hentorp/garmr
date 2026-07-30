@@ -112,7 +112,7 @@ jobs:
       - name: Scan for private references
         run: |
           set -e
-          patterns='vetra-automation/garmr|tail4eceda|100\.97\.108|/home/(rickard|henrik)|@ubm\.se|utbetalningsmyndigheten'
+          patterns='vetra-automation/garmr|tail4eceda|100\.97\.108|10\.10\.10\.|soc-matrix|/home/(rickard|henrik)|@ubm\.se|utbetalningsmyndigheten'
           # Absolute local path deps or private git URLs in manifests:
           man='path\s*=\s*"/|git\s*=\s*"(ssh://|git@)'
           # Exclude the files that legitimately define these detection patterns.
