@@ -366,10 +366,10 @@ mod tests {
         // Captured VERBATIM from kunai 0.6.2 on Linux (a `connect` event) — the
         // real nesting: data.exe.path, data.{src,dst}.ip, info.event.name,
         // info.task.user, data.community_id, and a parent_task that must NOT win.
-        let line = r#"{"data":{"ancestors":"/usr/lib/systemd/systemd","command_line":"/usr/bin/python3 /opt/talos-log-receiver/receiver.py","exe":{"path":"/usr/bin/python3.13","md5":"","sha256":""},"socket":{"domain":"AF_INET","type":"SOCK_STREAM","proto":"TCP"},"src":{"ip":"10.10.10.2","port":0},"dst":{"hostname":"?","ip":"10.10.10.12","port":3100,"public":false,"is_v6":false},"community_id":"1:/9h2X8wc6f2MS8gJSZN37tU9hCI=","connected":true},"info":{"host":{"name":"pve","container":null},"event":{"source":"kunai","id":8,"name":"connect","uuid":"2f74"},"task":{"name":"python3","pid":4242,"uid":0,"user":"root","gid":0,"group":"root"},"parent_task":{"name":"systemd","pid":1,"uid":0,"user":"root"},"utc_time":"2026-07-16T23:09:39Z"}}"#;
+        let line = r#"{"data":{"ancestors":"/usr/lib/systemd/systemd","command_line":"/usr/bin/python3 /opt/talos-log-receiver/receiver.py","exe":{"path":"/usr/bin/python3.13","md5":"","sha256":""},"socket":{"domain":"AF_INET","type":"SOCK_STREAM","proto":"TCP"},"src":{"ip":"192.0.2.2","port":0},"dst":{"hostname":"?","ip":"192.0.2.12","port":3100,"public":false,"is_v6":false},"community_id":"1:/9h2X8wc6f2MS8gJSZN37tU9hCI=","connected":true},"info":{"host":{"name":"pve","container":null},"event":{"source":"kunai","id":8,"name":"connect","uuid":"2f74"},"task":{"name":"python3","pid":4242,"uid":0,"user":"root","gid":0,"group":"root"},"parent_task":{"name":"systemd","pid":1,"uid":0,"user":"root"},"utc_time":"2026-07-16T23:09:39Z"}}"#;
         let f = extract(line);
-        assert_eq!(f.get("src_ip").map(String::as_str), Some("10.10.10.2"));
-        assert_eq!(f.get("dst_ip").map(String::as_str), Some("10.10.10.12"));
+        assert_eq!(f.get("src_ip").map(String::as_str), Some("192.0.2.2"));
+        assert_eq!(f.get("dst_ip").map(String::as_str), Some("192.0.2.12"));
         assert_eq!(f.get("port").map(String::as_str), Some("3100")); // dst wins over src:0
         assert_eq!(
             f.get("exe").map(String::as_str),
