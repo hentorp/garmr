@@ -93,6 +93,23 @@ ignore = [
     # candle/gemm behind the `semantic` feature — no runtime attack surface, and
     # no drop-in maintained replacement exists. Clears when candle migrates off it.
     "RUSTSEC-2024-0436",
+    # lz4_flex 0.10.0 decompression info-leak (uninitialized/reused output buffer
+    # on invalid input). Transitive + feature-gated (not in the default tree); the
+    # 0.10.0 copy is reached only via cozo -> swapvec, which lz4-compresses garmr's
+    # OWN locally-spilled graph data — never attacker-supplied compressed input.
+    # The arrow/datafusion path uses the patched lz4_flex 0.13.x. Clears when
+    # cozo/swapvec bump lz4_flex.
+    "RUSTSEC-2026-0041",
+    # adler unmaintained (superseded by adler2). Checksum crate in the flate2/miniz
+    # zlib path; no runtime attack surface. Clears when the stack moves to adler2.
+    "RUSTSEC-2025-0056",
+    # bincode 1.x unmaintained. Transitive serialization dep; garmr does not
+    # deserialize untrusted input through it. Clears when upstreams move to bincode 2.
+    "RUSTSEC-2025-0141",
+    # fxhash unmaintained (non-cryptographic hasher). Transitive; used only as a
+    # fast in-memory hashmap hasher, never for anything security-relevant. Clears
+    # when upstreams move to rustc-hash.
+    "RUSTSEC-2025-0057",
 ]
 
 # --- Bans -----------------------------------------------------------------

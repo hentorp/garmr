@@ -22,12 +22,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install cargo-deny + cargo-audit
-        run: cargo install --locked cargo-deny cargo-audit
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny
       - name: cargo-deny (licenses, advisories, bans, sources)
+        # cargo-deny's advisory check IS the RustSec check (same advisory-db), with
+        # the audited `ignore` list in deny.toml — so a separate `cargo audit` step
+        # would only duplicate that ignore list. One source of truth.
         run: cargo deny check
-      - name: cargo-audit (RustSec)
-        run: cargo audit
       - name: Regenerate SBOM and fail if the committed one is stale
         run: |
           bash scripts/sbom.sh dist/sbom.cdx.json
