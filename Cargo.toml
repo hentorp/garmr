@@ -128,7 +128,7 @@ rmcp = { version = "1", features = ["server", "client", "macros", "transport-io"
 schemars = "1"
 uuid = { version = "1", features = ["v4"] }
 regex = "1"
-maxminddb = "0.24"
+maxminddb = "0.27"
 toml = "1"
 # PostgreSQL-dialect SQL parser (garmr-sql, Phase 3). Pinned to the same 0.62
 # DataFusion already resolves, so no new transitive version enters the tree.
