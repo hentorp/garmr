@@ -321,7 +321,7 @@ async fn recover_issue_admin(cli: &Cli, label: &str, hours: i64) -> Result<()> {
         "opening the store for recovery — stop `garmr serve` first (it holds the \
          single-writer state DB)"
     })?;
-    let creds = crate::api::credentials::CredentialStore::new(&store);
+    let creds = crate::api::credentials::CredentialStore::new(&store)?;
     let ledger = crate::audit::open_ledger(&cfg.audit)?;
     let expires_at = Some(Utc::now().timestamp() + hours * 3600);
 

@@ -96,6 +96,9 @@ impl AuthRegistry {
         }
         let list: Vec<UserToken> =
             serde_json::from_str(json).map_err(|e| format!("GARMR_USERS parse error: {e}"))?;
+        if list.iter().any(|u| u.token.trim().is_empty()) {
+            return Err("GARMR_USERS: token must not be empty".into());
+        }
         let n = list.len();
         self.users.extend(list);
         Ok(n)
@@ -104,6 +107,12 @@ impl AuthRegistry {
     /// Resolve a token to its principal, or `None`. Constant-time: every entry is
     /// compared even after a match, so timing does not reveal token order/length.
     pub fn resolve(&self, presented: &str) -> Option<Principal> {
+        // An empty presented secret (no/blank Authorization header) must never
+        // resolve — refuse it before the scan so a stray empty configured token
+        // can't authenticate anonymous callers.
+        if presented.is_empty() {
+            return None;
+        }
         let mut found: Option<Principal> = None;
         for u in &self.users {
             if ct_eq(presented.as_bytes(), u.token.as_bytes()) {
@@ -221,5 +230,23 @@ mod tests {
         assert!(reg.is_empty());
         assert!(reg.add_json("not json").is_err());
         assert!(reg.add_json(r#"[{"token":"t","user":"u"}]"#).is_err()); // missing role
+    }
+
+    #[test]
+    fn add_json_rejects_empty_token_and_resolve_refuses_empty() {
+        // A configured empty/whitespace token must be rejected outright: with an
+        // empty token, an anonymous (no-header) request would otherwise resolve.
+        let mut reg = AuthRegistry::new();
+        assert!(reg
+            .add_json(r#"[{"token":"","user":"root","role":"admin"}]"#)
+            .is_err());
+        assert!(reg
+            .add_json(r#"[{"token":"   ","user":"root","role":"admin"}]"#)
+            .is_err());
+        assert!(reg.is_empty());
+        // Defense in depth: even if an empty token reached the set another way,
+        // an empty presented secret never resolves.
+        reg.add("root", Role::Admin, "");
+        assert!(reg.resolve("").is_none());
     }
 }

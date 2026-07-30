@@ -119,18 +119,22 @@ pub(crate) struct CredentialStore {
 }
 
 impl CredentialStore {
-    pub(crate) fn new(store: &garmr_store::Store) -> Self {
-        let key = store
+    pub(crate) fn new(store: &garmr_store::Store) -> anyhow::Result<Self> {
+        // Fail closed: the credential-hash key MUST come from the store. Never
+        // fall back to a static/all-zero key — that would silently key every PAT
+        // digest with a known value if the state DB read errored.
+        let raw = store
             .state
             .auth_get_or_init("credential_hash_key", rand32)
-            .ok()
-            .and_then(|b| b.try_into().ok())
-            .unwrap_or([0u8; 32]);
-        Self {
+            .map_err(|e| anyhow::anyhow!("loading credential_hash_key: {e}"))?;
+        let key: [u8; 32] = raw.try_into().map_err(|v: Vec<u8>| {
+            anyhow::anyhow!("credential_hash_key wrong length: {} (want 32)", v.len())
+        })?;
+        Ok(Self {
             state: store.state.clone(),
             key,
             lock: std::sync::Arc::new(std::sync::Mutex::new(())),
-        }
+        })
     }
 
     /// Take the write lock (poison-tolerant). Hold it around any load→mutate→save

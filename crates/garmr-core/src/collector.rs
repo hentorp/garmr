@@ -70,6 +70,9 @@ impl CollectorRegistry {
         }
         let list: Vec<Collector> =
             serde_json::from_str(json).map_err(|e| format!("GARMR_COLLECTORS parse error: {e}"))?;
+        if list.iter().any(|c| c.token.trim().is_empty()) {
+            return Err("GARMR_COLLECTORS: token must not be empty".into());
+        }
         let n = list.len();
         self.collectors.extend(list);
         Ok(n)
@@ -84,6 +87,9 @@ impl CollectorRegistry {
     /// Resolve a token to its collector, or `None`. Constant-time: every entry is
     /// compared even after a match.
     pub fn resolve(&self, presented: &str) -> Option<&Collector> {
+        if presented.is_empty() {
+            return None;
+        }
         let mut found: Option<&Collector> = None;
         for c in &self.collectors {
             if ct_eq(presented.as_bytes(), c.token.as_bytes()) {
@@ -129,5 +135,13 @@ mod tests {
         assert_eq!(fw.trusted_source_id(), "fw-collector");
         // An empty allowlist may assert anything (id remains the trust anchor).
         assert!(r.resolve("tok2").unwrap().may_assert("anything"));
+    }
+
+    #[test]
+    fn add_json_rejects_empty_token() {
+        let mut r = CollectorRegistry::new();
+        assert!(r.add_json(r#"[{"id":"c","token":""}]"#).is_err());
+        assert!(r.add_json(r#"[{"id":"c","token":"   "}]"#).is_err());
+        assert!(r.is_empty());
     }
 }

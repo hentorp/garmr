@@ -617,7 +617,7 @@ pub async fn serve(
             "audit ledger DISABLED (audit.enabled = false) — admin actions are not tamper-evidently recorded"
         ),
     }
-    let creds = super::credentials::CredentialStore::new(&store);
+    let creds = super::credentials::CredentialStore::new(&store)?;
     let state = ApiState {
         store,
         search_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SEARCHES)),
