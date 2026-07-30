@@ -1,0 +1,20 @@
+# Privileged activity (sudo / root session) at night (23–05 UTC). Legitimate at
+# times on a personal lab — hence a warning that asks the human to confirm.
+id = "off_hours_privilege"
+title = "Privileged activity outside office hours"
+attack = "T1078.003"
+severity = "warning"
+schedule_secs = 900
+window_secs = 900
+realert_secs = 14400
+message = "sudo/root session between 23:00 and 05:00 UTC. Was that you?"
+sql = """
+SELECT host AS host, count(*) AS lines, min(message) AS example
+FROM events
+WHERE event_ts > to_timestamp_micros({since_us})
+  AND (date_part('hour', event_ts) >= 23 OR date_part('hour', event_ts) < 5)
+  AND (message ILIKE '%sudo:%COMMAND=%'
+       OR message ILIKE '%session opened for user root%'
+       OR message ILIKE '%su[%')
+GROUP BY host
+"""

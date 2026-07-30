@@ -1,0 +1,16 @@
+# Explicit policy: nobody may read the raw person tables directly. Curated views
+# exist for that. An explicit Deny is the strongest outcome and is never
+# suppressed by "this happens all the time" — a forbidden action stays forbidden.
+id = "deny-raw-person-data"
+title = "No direct access to raw person tables"
+description = "Raw person data is reached only via curated.* views."
+effect = "deny"
+enabled = true
+version = 1
+priority = 100
+created_by = "alice"
+approved_by = "alice"
+
+[resource]
+# schema-wildcard: raw.anything
+objects = ["raw.*"]

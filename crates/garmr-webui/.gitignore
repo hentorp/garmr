@@ -1,0 +1,3 @@
+# Build artifacts — the WASM bundle is produced by `trunk build`, not committed.
+/dist
+/target

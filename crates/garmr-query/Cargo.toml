@@ -1,0 +1,24 @@
+[package]
+name = "garmr-query"
+description = "Hybrid-search Query IR (Phase 6): a typed, safe-by-construction query the agent composes, fusing structured + full-text + semantic retrieval."
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+publish = false
+
+[features]
+# The pure default layer (the IR, the SQL compiler, the fusion math, the
+# SemanticSearch trait) needs no store. The `store` feature adds the async
+# Executor that runs the IR against the lakehouse + Tantivy + a SemanticSearch
+# impl — the exact split garmr-graph uses.
+store = ["dep:garmr-store", "dep:skade", "dep:tokio", "dep:tracing"]
+
+[dependencies]
+garmr-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+garmr-store = { workspace = true, optional = true }
+skade = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }

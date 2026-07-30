@@ -1,0 +1,28 @@
+[package]
+publish = false            # workspace-internal; the deployable is the `garmr` binary, not crates.io libs
+name = "garmr-core"
+description = "garmr shared types: the normalised Event, detections, cases, verdicts, and config."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# No code beyond flipping the default cold-archiver: when the deployable binary
+# is built with znippy (the `garmr` default), Znippy is the default archiver;
+# a no-znippy build defaults to Plain so retention is never dead-on-arrival.
+# Forwarded from garmr-cli's `znippy` feature.
+znippy = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+figment.workspace = true
+anyhow.workspace = true
+# Inventory import (parse_inventory) reads local TOML files — air-gap friendly.
+toml.workspace = true

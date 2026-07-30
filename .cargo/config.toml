@@ -1,0 +1,6 @@
+# `cargo xtask <verb>` — garmr's automation dispatcher. xtask is a DETACHED crate
+# (its own `[workspace]`, not a garmr workspace member), so it's reached by
+# manifest-path rather than `-p`; this keeps xtask + its deps out of the garmr
+# workspace and lockfile. Additive: garmr's own builds are unaffected.
+[alias]
+xtask = "run --manifest-path xtask/Cargo.toml --"

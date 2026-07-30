@@ -1,0 +1,14 @@
+# garmr automation crate. Detached (own `[workspace]`) so it never joins the
+# garmr workspace or alters its lockfile — `cargo xtask` reaches it via the
+# manifest-path alias in `.cargo/config.toml`, not workspace membership.
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-only"
+
+[workspace]
+
+[dependencies]
+anyhow = "1"

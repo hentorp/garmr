@@ -1,0 +1,74 @@
+[package]
+name    = "znippy-zoomies"
+version = "0.1.20"
+edition = "2024"
+description = "Fast parallel OSM-XML index (VTD-style) + static search tree + zero-copy slot pool + generic no-barrier streaming engine (gatling) + generic parallel merge sort (gatling_sort) + parallel sample sort (psort)"
+repository = "https://codeberg.org/nordisk/znippy-zoomies"
+# The `stree` module is derived from Ragnar Groot Koerkamp's static-search-tree (MIT).
+# His copyright notice is retained in LICENSE, as MIT requires.
+license = "MIT"
+readme = "README.md"
+
+# Standalone workspace: extracted from the znippy repo into its own leaf repo so
+# both skade (stree/gatling) and znippy (codecs/gatling) depend on it without a
+# release-cascade cycle. The codec sub-crates moved here from the deprecated
+# standalone `*-rs` repos.
+[workspace]
+members = ["gatling", "lbzip2", "lgz", "linflate", "ljar", "lzip-parallel", "osm-katana", "zip-core", "zstd-sys-rs"]
+resolver = "2"
+
+[features]
+# `vann::ragnars_emb` can memory-map its large int8 row blob (via memmap2, an
+# already-present dependency) instead of holding it fully resident.
+vann-mmap = []
+# `testmatrix` — turn the crate's `functional_status(component, check, ok, detail)`
+# self-reports (the gatling engines' run markers) into real nornir test-matrix
+# rows. Compiled OUT of the default build (no nornir dep by default); pulls
+# nornir-testmatrix's own `testmatrix` mode so the emit is a row-append, not a
+# no-op. Additive and no-op unless explicitly enabled.
+testmatrix = ["dep:nornir-testmatrix", "nornir-testmatrix/testmatrix", "gatling/testmatrix"]
+
+[dependencies]
+anyhow  = "1"
+memchr  = "2"
+memmap2 = "0.9"
+# The ONE shared no-barrier engine, extracted into a leaf crate so the codec
+# sub-crates can depend on it without a cycle. This crate re-exports its
+# modules (`pub use gatling::…`) to preserve the historical
+# `znippy_zoomies::{gatling, gatling_forkjoin, chunk_revolver}` API.
+gatling = { path = "gatling", version = "0.1.10", package = "rotaryengine" }
+# ── testmatrix feature ──────────────────────────────────────────────────────
+# Path dep to the nornir functional-status emitter; off by default so consumers
+# pull nothing. Sibling repo under /git.
+nornir-testmatrix = { version = "0.2", default-features = false, optional = true }
+
+[dev-dependencies]
+rand = "0.8"
+# vann's VectorIndex + ragnars_emb tests round-trip indexes through temp files.
+tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+serde_json = "1"
+
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[[bench]]
+name = "xml_scan"
+harness = false
+
+[[bench]]
+name = "json_scan"
+harness = false
+
+[[bench]]
+name = "gatling_roundtrip"
+harness = false
+
+[[bench]]
+name = "psort_sort"
+harness = false
+
+[[bench]]
+name = "gatling_sort"
+harness = false

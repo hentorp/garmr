@@ -1,0 +1,21 @@
+[package]
+publish = false            # workspace-internal; the deployable is the `garmr` binary
+name = "garmr-learning"
+description = "garmr safe learning plane (Phase 8): offline, LLM-free champion/challenger loop over immutable content-addressed datasets."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Pure + offline + LLM-free (invariants #1/#5): deps are all egress-free. It
+# deliberately does NOT depend on garmr-agent/garmr-llm, so the whole learning
+# loop ships in the default `cargo build` and `--no-default-features`.
+[dependencies]
+garmr-core.workspace = true
+garmr-store.workspace = true
+garmr-analytics.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true

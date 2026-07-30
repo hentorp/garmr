@@ -1,0 +1,45 @@
+MIT License
+
+Copyright (c) 2025 Rickard Lundin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+ACKNOWLEDGEMENTS
+
+The speculative parallel DEFLATE decompression algorithm in this project is
+inspired by the pugz two-pass approach:
+
+  pugz — Truly parallel gzip decompression
+  Authors: Mael Kerbiriou, Rayan Chikhi
+  License: MIT
+  Repository: https://github.com/Piezoid/pugz
+  Paper: "Parallel decompression of gzip-compressed files and random access
+         to DNA sequences", HiCOMB 2019 (DOI: 10.1109/IPDPSW.2019.00042)
+
+  The pugz algorithm uses speculative bit-level DEFLATE block boundary
+  detection with a two-pass decode: pass 1 decodes all segments in parallel
+  with empty windows (producing garbage in the first ≤32KB per segment),
+  pass 2 sequentially fixes up each segment's beginning using the correct
+  window from the previous segment's tail.
+
+  lgz-rs implements a Rust adaptation of this concept using byte-aligned
+  stored-block detection and miniz_oxide for the decode passes, optimized
+  for modern multi-core CPUs with large caches and SIMD scanning.

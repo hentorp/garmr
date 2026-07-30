@@ -1,0 +1,26 @@
+# A burst of failed SSH logins from a single source IP within the window — the
+# multi-event view Sigma's per-line rule can't express. The source IP is pulled
+# from the ingest-extracted `fields` JSON.
+id = "ssh_brute_burst"
+title = "SSH brute-force burst from a single source IP"
+attack = "T1110"
+severity = "high"
+schedule_secs = 300
+window_secs = 1800
+realert_secs = 3600
+message = ">=5 failed SSH logins from the same source IP within the window."
+sql = """
+SELECT
+  regexp_replace(fields, '.*"src_ip":"([^"]+)".*', '$1') AS src_ip,
+  max(host) AS host,
+  count(*) AS failures
+FROM events
+WHERE event_ts > to_timestamp_micros({since_us})
+  AND service = 'sshd'
+  AND fields LIKE '%"src_ip"%'
+  AND (message ILIKE '%failed password%'
+       OR message ILIKE '%invalid user%'
+       OR message ILIKE '%authentication failure%')
+GROUP BY 1
+HAVING count(*) >= 5
+"""

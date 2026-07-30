@@ -1,0 +1,5 @@
+/target
+*.swp
+test_data/liechtenstein.osm
+*.torrent
+.idea/

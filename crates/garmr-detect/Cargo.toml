@@ -1,0 +1,19 @@
+[package]
+publish = false            # workspace-internal; the deployable is the `garmr` binary, not crates.io libs
+name = "garmr-detect"
+description = "garmr detection: Sigma rules (rsigma) evaluated per event, deduped into cases."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+garmr-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+rsigma-eval.workspace = true
+rsigma-parser.workspace = true

@@ -1,0 +1,85 @@
+[package]
+name = "skade-katalog"
+version = "0.1.15"
+edition = "2024"
+rust-version = "1.85"
+description = "The katalog under skade: an embedded, single-file ACID Apache Iceberg catalog (redb) with time-travel snapshots and atomic multi-table release commits — the Norns recording the world's icebergs."
+license = "Apache-2.0"
+repository = "https://codeberg.org/nordisk/skade"
+readme = "README.md"
+keywords = ["iceberg", "catalog", "redb", "warehouse", "embedded"]
+categories = ["database", "data-structures"]
+# Keep the published package lean: the bench crate (own workspace) and the
+# .nornir design-docs/runtime dir are not part of the library.
+exclude = ["bench/", "skade/", "skade.webp", ".nornir/", "HANDOFF.md", "TODO.md", "REDB_WISHLIST.md", "design.md", "plan.md"]
+
+[dependencies]
+# arrow-58 Iceberg. The vendored fork (skade/vendor/iceberg-arrow58) is
+# published under the unique crates.io name `iceberg-arrow58` but keeps its
+# library named `iceberg`, so source `use iceberg::…` is unchanged. `path`
+# is used for local dev; `version` for the published manifest. This replaces
+# the old `[patch.crates-io] iceberg = {path=../iceberg-arrow58}` that
+# crates.io would strip on publish.
+iceberg = { package = "iceberg-arrow58", version = "0.9.1", path = "vendor/iceberg-arrow58" }
+redb = "2"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "rt"] }
+thiserror = "1"
+moka = { version = "0.12", features = ["future"] }
+arc-swap = "1"
+imbl = "3"
+# Fast, well-distributed hasher for the L1 pointer mirror (internal,
+# content-addressed keys — no HashDoS surface, so SipHash is needless cost).
+foldhash = "0.1"
+# Ragnar static search tree (STree64) for the historical snapshot-id index.
+znippy-zoomies = "0.1.8"
+# The reusable multi-aspect test-matrix engine — pulled in ONLY under the
+# `testmatrix` feature (optional dep). With the feature ON, the library's own
+# hot paths (`atomic_release` multi-table commit, `load_table` read) emit one
+# `functional_status` row per real operation via the `crate::testmatrix` shim,
+# so live catalog activity turns into test-matrix rows. A normal build (and
+# `cargo publish`) has the feature OFF: `functional_status` compiles to a no-op
+# and nornir-testmatrix is not linked. Kept a crates.io registry dep (no path)
+# so the published manifest stays clean.
+nornir-testmatrix = { version = "0.2", optional = true, default-features = false }
+
+[dev-dependencies]
+iceberg = { package = "iceberg-arrow58", version = "0.9.1", path = "vendor/iceberg-arrow58" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs"] }
+anyhow = "1"
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
+
+[features]
+# `testmatrix` pulls in nornir-testmatrix (optional dep) AND flips its own
+# `testmatrix` feature, turning `nornir_testmatrix::functional_status` from a
+# compiled-out no-op into a real row-appender. Both the library hot-path emits
+# (via `crate::testmatrix::functional_status`) and every emit call in this
+# repo's tests are wrapped in `#[cfg(feature = "testmatrix")]`, so a normal
+# build (and `cargo publish`) strips all of them and the engine edge stays
+# dormant. Build/test with `--features testmatrix` to emit the functional rows.
+testmatrix = ["dep:nornir-testmatrix", "nornir-testmatrix/testmatrix"]
+
+# `bench` (opt-in, default OFF) — a pub hook exposing the `pub(crate)` redb key
+# builders (`keys::{table_key,namespace_key,table_prefix,…}`) as
+# `skade_katalog::bench_keys::*` so the out-of-crate `skade-katalog-bench`
+# harness can time them (`skade.catalog_key`) without leaking the internals
+# into a normal build. Pulls NO extra deps and adds no code to a default build
+# (and `cargo publish`) — it only re-gates visibility of already-compiled fns.
+bench = []
+
+[lib]
+path = "src/lib.rs"
+
+# skade-katalog roots its own workspace and pulls in the vendored, separately
+# published arrow-58 Iceberg forks as members so `cargo build` here compiles
+# them and the path deps resolve. They publish under their own unique crates.io
+# names (`iceberg-arrow58`, `iceberg-datafusion-arrow58`) — skade is the single
+# canonical publisher of those global names. `iceberg-datafusion-arrow58` is a
+# member here (so its `iceberg = {path=../iceberg-arrow58}` resolves) even
+# though skade-katalog itself doesn't use it — the detached `skade/` workspace
+# (the `sql` feature) does.
+[workspace]
+members = ["vendor/iceberg-arrow58", "vendor/iceberg-datafusion-arrow58", "vendor/iceberg-catalog-rest-arrow58"]

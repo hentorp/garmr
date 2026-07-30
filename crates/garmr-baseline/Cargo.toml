@@ -1,0 +1,16 @@
+[package]
+publish = false
+name = "garmr-baseline"
+description = "User & application behavioral baselines (Phase 7): multidimensional per-entity behavior profiles (categorical novelty, temporal off-hours, numeric deviation) with candidate→trusted promotion gates, maturity states, and peer-group comparison. Detectors consult TRUSTED baselines only. Pure, no I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+garmr-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+blake3.workspace = true

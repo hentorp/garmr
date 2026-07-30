@@ -1,0 +1,35 @@
+[package]
+publish = false            # workspace-internal; the deployable is the `garmr` binary, not crates.io libs
+name = "garmr-retention"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Cold-storage / retention for garmr: seal aged event windows into immutable, queryable archives (znippy)."
+
+[features]
+# The znippy backend is on by default in the standard build. Disable it
+# (`--no-default-features`) to drop the openzl C toolchain and fall back to the
+# pure-Rust `plain` (zstd-parquet) archiver — e.g. for an airgapped source build.
+default = ["znippy"]
+znippy = ["dep:znippy-common"]
+
+[dependencies]
+garmr-core.workspace = true
+garmr-store.workspace = true
+skade.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+blake3.workspace = true
+uuid.workspace = true
+futures = "0.3"
+# S3 cold tier (optional; upload sealed archives to object storage). Already in
+# the tree transitively via datafusion — the `aws` feature adds the S3 client.
+object_store = { version = "0.13", features = ["aws"] }
+bytes = "1"
+znippy-common = { workspace = true, optional = true }

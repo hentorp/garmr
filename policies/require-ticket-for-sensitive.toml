@@ -1,0 +1,13 @@
+# Sensitive person access is allowed only with a justification (ticket/case/
+# purpose). Missing justification is flagged, not silently permitted.
+id = "require-ticket-for-sensitive-persons"
+title = "Sensitive person access needs a ticket"
+effect = "require_justification"
+enabled = true
+version = 1
+priority = 50
+created_by = "alice"
+approved_by = "alice"
+
+[resource]
+objects = ["curated.persons", "curated.persons_view"]

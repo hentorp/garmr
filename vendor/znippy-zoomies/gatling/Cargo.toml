@@ -1,0 +1,38 @@
+[package]
+# Published to crates.io as `rotaryengine` — the crate name `gatling` is squatted
+# by an unrelated third party on crates.io (an owner-403 on publish). The LIBRARY
+# name stays `gatling` (see [lib] below) so all `use gatling::…` / `gatling_forkjoin`
+# code is UNCHANGED; dependents pull it via `gatling = { package = "rotaryengine" }`.
+name    = "rotaryengine"
+readme = "README.md"
+version = "0.1.10"
+edition = "2024"
+description = "The shared no-barrier worker-pool engine — generic streaming gatling (split → N decode → in-order collect → sink), its fork-join sibling, async-I/O variant, and the zero-allocation chunk-revolver slot pool. Leaf crate: depends on no codec, so every codec + the znippy-zoomies root can share the ONE engine without a dependency cycle."
+repository = "https://codeberg.org/nordisk/znippy-zoomies"
+license = "MIT"
+
+[lib]
+# Library identity is unchanged — code everywhere still says `gatling::…`.
+name = "gatling"
+
+[features]
+# `testmatrix` — turn this crate's `functional_status(component, check, ok, detail)`
+# self-reports (the gatling engines' run markers) into real nornir test-matrix
+# rows. Compiled OUT of the default build (no nornir dep by default); pulls
+# nornir-testmatrix's own `testmatrix` mode so the emit is a row-append, not a
+# no-op. Additive and no-op unless explicitly enabled.
+testmatrix = ["dep:nornir-testmatrix", "nornir-testmatrix/testmatrix"]
+
+[dependencies]
+anyhow  = "1"
+# gatling::io — async-I/O sibling of the sync gatling engine. `futures` provides
+# the bounded `FuturesUnordered` in-flight set; `bytes` is the zero-copy payload
+# type its callers move through the job pool (no deep copy of PUT bodies).
+bytes   = "1"
+futures = "0.3"
+# testmatrix feature only; path dep to sibling nornir repo, off by default.
+nornir-testmatrix = { version = "0.2", default-features = false, optional = true }
+
+[dev-dependencies]
+# gatling::io unit tests drive the async task pool on a real multi-thread runtime.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

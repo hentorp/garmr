@@ -1,0 +1,6 @@
+# Example scheduled hunt — rename to .toml to enable.
+# Each run costs a model call (budget-capped). Findings become synthetic
+# detections in the same case flow as Sigma/correlation.
+id = "beacon-outbound"
+hypothesis = "Are there hosts making periodic outbound connections to the same external IP (beaconing)? Compare against the hosts' baseline."
+schedule_secs = 21600  # every 6 hours

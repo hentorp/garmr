@@ -1,0 +1,39 @@
+Garmr
+Copyright (C) 2026 Vetra Automation AB
+
+This product includes software developed by Vetra Automation AB and contributors.
+
+------------------------------------------------------------------------------
+Licensing summary (see LICENSE for the authoritative text)
+------------------------------------------------------------------------------
+* Original source code ........ AGPL-3.0-only        (LICENSES/AGPL-3.0-only.txt)
+* Original documentation ...... CC-BY-4.0            (LICENSES/CC-BY-4.0.txt)
+* Trademarks .................. reserved, not licensed (TRADEMARKS.md)
+* Commercial licensing ........ available separately from Vetra Automation AB
+                                (COMMERCIAL-LICENSING.md)
+
+Garmr is distributed as a combined work under AGPL-3.0-only. Third-party
+components retain their own licenses and copyrights; the Vetra Automation AB
+copyright above does NOT extend to them. See THIRD_PARTY_LICENSES.md for the
+per-component inventory.
+
+------------------------------------------------------------------------------
+Bundled third-party components (vendored under vendor/)
+------------------------------------------------------------------------------
+* vendor/skade ............... Apache-2.0 — © the skade authors
+                               (upstream: codeberg.org/nordisk/skade)
+* vendor/znippy .............. MIT — © Rickard Lundin and contributors
+                               (upstream: codeberg.org/nordisk/znippy)
+* vendor/znippy-zoomies ...... MIT — includes a module derived from
+                               "static-search-tree" © 2025 Ragnar Groot Koerkamp
+                               (upstream: codeberg.org/nordisk)
+
+Each vendored component keeps its own LICENSE file(s) in place. Do not remove
+them. See THIRD_PARTY_LICENSES.md and docs/legal/dependency-license-report.md
+for the full transitive dependency license inventory.
+
+------------------------------------------------------------------------------
+Trademark
+------------------------------------------------------------------------------
+"Garmr" and the Garmr logo are trademarks of Vetra Automation AB. The open-source
+licenses above do not grant any right to use these marks. See TRADEMARKS.md.

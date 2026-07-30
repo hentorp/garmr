@@ -1,0 +1,18 @@
+/target
+target/
+/data
+garmr.toml
+*.redb
+.env
+
+# Release build artifacts (regenerable; the 161MB binary must never enter history)
+/dist/
+
+# Generated AI context packs (nornir docs ai-context) — regenerate, do not version
+/docs/ai-context.md
+/docs/ai-context-full.md
+
+# Editor lock/scratch artifacts (LibreOffice/OnlyOffice)
+.~lock.*#
+.claude/
+.idea/

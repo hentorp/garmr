@@ -1,0 +1,70 @@
+[package]
+name        = "osm-katana"
+version     = "0.2.6"
+publish     = true
+edition     = "2024"
+description = "Fast OSM (XML/PBF) → GeoParquet/PBF converter with parallel decompression"
+license     = "MIT"
+repository  = "https://codeberg.org/nordisk/znippy"
+readme      = "README.md"
+
+[lib]
+name = "osm_katana"
+
+[[bin]]
+name = "osm-katana"
+path = "src/bin/main.rs"
+
+[[bin]]
+name = "vtd_bench"
+path = "src/bin/vtd_bench.rs"
+
+[[bin]]
+name = "planet_bench"
+path = "src/bin/planet_bench.rs"
+
+[features]
+pmtiles      = []
+search-index = []
+# Opt-in: pulls a pure-Rust BitTorrent client (librqbit) + tokio to fetch the
+# OSM planet fixture. Off by default so `cargo build`/`test`/`bench` and
+# `cargo publish` stay lean and pull nothing extra.
+planet-fixture = ["dep:librqbit", "dep:tokio"]
+# Convenience "dev mode" alias: `cargo build --features dev` turns on the
+# planet torrent fixture. Same lean default/published build either way.
+dev = ["planet-fixture"]
+# `testmatrix` — turn `functional_status(component, check, ok, detail)` self-
+# reports (the osm-katana CLI verb markers) into real nornir test-
+# matrix rows. Compiled OUT of the default build (no nornir dep by default);
+# pulls nornir-testmatrix's own `testmatrix` mode so the emit is a row-append.
+testmatrix = ["dep:nornir-testmatrix", "nornir-testmatrix/testmatrix"]
+
+[build-dependencies]
+protobuf-codegen = "3"
+
+[dependencies]
+znippy-zoomies = { path = "..", version = "0.1.20" }
+gatling        = { path = "../gatling", version = "0.1.7", package = "rotaryengine" }
+lgz            = { path = "../lgz", version = "0.3.11" }
+lbzip2         = { path = "../lbzip2", version = "0.5.9" }
+zstd-sys-rs    = { path = "../zstd-sys-rs", version = "1.5.17" }
+arrow          = "58.2.0"
+flatbuffers    = "25.12.19"
+parquet        = "58.2.0"
+anyhow         = "1"
+serde          = { version = "1", features = ["derive"] }
+serde_json     = "1"
+clap           = { version = "4", features = ["derive"] }
+indicatif      = "0.18"
+protobuf       = "3"
+flate2         = "1.1"
+ahash          = "0.8"
+memchr         = "2"
+memmap2        = "0.9"
+librqbit = { version = "8.1.1", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"], optional = true }
+# testmatrix feature only; path dep to sibling nornir repo, off by default.
+nornir-testmatrix = { version = "0.2", default-features = false, optional = true }
+
+[dev-dependencies]
+tempfile = "3"

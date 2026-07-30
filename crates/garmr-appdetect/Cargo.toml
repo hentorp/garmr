@@ -1,0 +1,20 @@
+[package]
+publish = false
+name = "garmr-appdetect"
+description = "Application-audit / insider-risk detectors (Phase 8): pure functions that turn a canonical audit access + its policy decision into SecurityFindings (forbidden access, missing justification, self/watched/peer access, privilege change, export, bulk, service-account misuse). History/baseline-dependent detectors compose the Phase-7 baselines on top."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+garmr-core.workspace = true
+garmr-policy.workspace = true
+garmr-baseline.workspace = true
+chrono.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,144 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/garmr-core",
+    "crates/garmr-audit",
+    "crates/garmr-store",
+    "crates/garmr-ingest",
+    "crates/garmr-detect",
+    "crates/garmr-sql",
+    "crates/garmr-policy",
+    "crates/garmr-appdetect",
+    "crates/garmr-catalog",
+    "crates/garmr-monitor",
+    "crates/garmr-baseline",
+    "crates/garmr-llm",
+    "crates/garmr-agent",
+    "crates/garmr-correlate",
+    "crates/garmr-search",
+    "crates/garmr-query",
+    "crates/garmr-analytics",
+    "crates/garmr-embed",
+    "crates/garmr-graph",
+    "crates/garmr-learning",
+    "crates/garmr-enrich",
+    "crates/garmr-retention",
+    "crates/garmr-route",
+    "crates/garmr-cli",
+]
+# skade, znippy and facett are vendored in so the build is self-contained and
+# portable. All carry their own nested workspaces / relative path deps to forks
+# (skade's arrow-58 iceberg forks) or trimmed features (znippy), so they must
+# NOT be absorbed as members — they're consumed as external path dependencies
+# (see [workspace.dependencies]). Excluding them also keeps their warnings out
+# of garmr's own clippy.
+exclude = ["vendor/skade", "vendor/znippy", "vendor/facett", "vendor/znippy-zoomies"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "AGPL-3.0-only"
+repository = "https://github.com/hentorp/garmr"
+authors = ["Vetra Automation AB"]
+
+[workspace.dependencies]
+# Internal crates.
+garmr-core = { path = "crates/garmr-core" }
+garmr-audit = { path = "crates/garmr-audit" }
+garmr-store = { path = "crates/garmr-store" }
+garmr-ingest = { path = "crates/garmr-ingest" }
+garmr-detect = { path = "crates/garmr-detect" }
+garmr-sql = { path = "crates/garmr-sql" }
+garmr-policy = { path = "crates/garmr-policy" }
+garmr-appdetect = { path = "crates/garmr-appdetect" }
+garmr-catalog = { path = "crates/garmr-catalog" }
+garmr-monitor = { path = "crates/garmr-monitor" }
+garmr-baseline = { path = "crates/garmr-baseline" }
+garmr-llm = { path = "crates/garmr-llm" }
+garmr-agent = { path = "crates/garmr-agent" }
+garmr-correlate = { path = "crates/garmr-correlate" }
+garmr-search = { path = "crates/garmr-search" }
+garmr-query = { path = "crates/garmr-query" }
+garmr-embed = { path = "crates/garmr-embed" }
+garmr-graph = { path = "crates/garmr-graph" }
+garmr-analytics = { path = "crates/garmr-analytics" }
+garmr-learning = { path = "crates/garmr-learning" }
+garmr-enrich = { path = "crates/garmr-enrich" }
+garmr-retention = { path = "crates/garmr-retention", default-features = false }
+garmr-route = { path = "crates/garmr-route" }
+
+# The lakehouse, vendored in at vendor/skade (git subtree from
+# codeberg.org/nordisk/skade). skade re-exports arrow/iceberg/datafusion so
+# garmr never adds its own arrow deps (no version-skew surface). Self-contained
+# and portable — `cargo build` here needs no external checkout. Sync upstream
+# with: git subtree pull --prefix=vendor/skade <skade-remote> main --squash.
+skade = { path = "vendor/skade/skade", features = ["sql"] }
+
+# znippy cold-storage codec, vendored subset at vendor/znippy/znippy-common
+# (from codeberg.org/nordisk/znippy). Only garmr-retention depends on it, and
+# only behind its `znippy` feature, so the default core build never pulls the
+# openzl C toolchain. Shares crates.io arrow 58.3.0 with skade (no version skew).
+znippy-common = { path = "vendor/znippy/znippy-common" }
+
+# NOTE: the native egui analyst console (garmr-ui) was removed in Cycle 5 — the
+# Leptos web console (garmr-webui, its own workspace) is the single console. Its
+# UI deps (facett-*, egui, eframe, ureq) went with it. garmr-map keeps its own
+# egui/facett in its independent workspace.
+
+# Async runtime + HTTP.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net", "process"] }
+axum = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+
+# Embedded state store for cases/verdicts/budget (separate from the lakehouse).
+# PINNED to 2.x: redb 3.0 removes on-disk format v2, and the v2->v3 upgrader
+# (Database::upgrade) exists ONLY on the redb 2.6.x line. A direct 2->4 bump would
+# leave existing state/catalog .redb files unopenable. Upgrading needs a staged
+# migration: ship a 2.6.x release that upgrades DBs in place on open, deploy it
+# everywhere, THEN bump to 3/4. Do not let Dependabot bump this on its own.
+redb = "2"
+
+# Detection: Sigma in Rust.
+rsigma-eval = "0.20"
+rsigma-parser = "0.20"
+
+# Ingest parsing.
+syslog_loose = "0.23"
+
+# Serialisation, errors, misc.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+# SMTP email alert sink (garmr-agent). Async tokio transport over rustls, no
+# native-tls/openssl, matching garmr's rustls-only stance.
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls", "hostname", "pool"] }
+figment = { version = "0.10", features = ["toml", "env"] }
+clap = { version = "4", features = ["derive"] }
+# MCP: the official Rust MCP SDK. `server`+`transport-io` power the garmr-mcp
+# bin (exposes garmr AS tools); `client`+`transport-child-process` power the
+# triage agent's MCP-client direction (garmr calls external intel MCP servers,
+# spawned as child processes over stdio).
+rmcp = { version = "1", features = ["server", "client", "macros", "transport-io", "transport-child-process", "schemars"] }
+schemars = "1"
+uuid = { version = "1", features = ["v4"] }
+regex = "1"
+maxminddb = "0.24"
+toml = "1"
+# PostgreSQL-dialect SQL parser (garmr-sql, Phase 3). Pinned to the same 0.62
+# DataFusion already resolves, so no new transitive version enters the tree.
+sqlparser = "0.62"
+blake3 = "1"
+# Audit-ledger signing (garmr-audit). Pure-Rust ed25519 (no OpenSSL), air-gap
+# friendly. `hex` for hash/signature text encoding; `getrandom` for key seeds.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+getrandom = "0.2"
+hex = "0.4"
+
+[profile.release]
+opt-level = 2

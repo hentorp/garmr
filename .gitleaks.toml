@@ -1,0 +1,20 @@
+# gitleaks configuration for garmr.
+#
+# Extends the upstream default ruleset, then allowlists the VENDORED third-party
+# trees (skade / znippy / znippy-zoomies / facett). Those are upstream C/Rust
+# sources that carry identifiers like `data_key_lo`/`data_key_hi` (xxHash AVX-512
+# constants) and JSON field names like "encrypted-key-metadata" (Iceberg table
+# metadata) which the heuristic `generic-api-key` rule false-positives on — they
+# are not garmr secrets. Garmr's own code (crates/, scripts/, deploy/, …) is
+# still fully scanned. The `no-private-references` CI job separately guards the
+# whole tree (vendored included) against leaked internal strings.
+title = "garmr gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Vendored third-party sources are not garmr secrets"
+paths = [
+    '''^vendor/''',
+]
