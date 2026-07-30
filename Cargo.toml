@@ -92,11 +92,16 @@ axum = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 # Embedded state store for cases/verdicts/budget (separate from the lakehouse).
+# PINNED to 2.x: redb 3.0 removes on-disk format v2, and the v2->v3 upgrader
+# (Database::upgrade) exists ONLY on the redb 2.6.x line. A direct 2->4 bump would
+# leave existing state/catalog .redb files unopenable. Upgrading needs a staged
+# migration: ship a 2.6.x release that upgrades DBs in place on open, deploy it
+# everywhere, THEN bump to 3/4. Do not let Dependabot bump this on its own.
 redb = "2"
 
 # Detection: Sigma in Rust.
-rsigma-eval = "0.18"
-rsigma-parser = "0.18"
+rsigma-eval = "0.20"
+rsigma-parser = "0.20"
 
 # Ingest parsing.
 syslog_loose = "0.23"
@@ -124,7 +129,7 @@ schemars = "1"
 uuid = { version = "1", features = ["v4"] }
 regex = "1"
 maxminddb = "0.24"
-toml = "0.8"
+toml = "1"
 # PostgreSQL-dialect SQL parser (garmr-sql, Phase 3). Pinned to the same 0.62
 # DataFusion already resolves, so no new transitive version enters the tree.
 sqlparser = "0.62"

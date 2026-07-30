@@ -74,13 +74,13 @@ hex.workspace = true
 tokio.workspace = true
 axum.workspace = true
 tower-http = { version = "0.6", features = ["fs", "trace"] }
-base64 = "0.22"
+base64 = "0.23"
 # Raise the process open-file limit at startup so a lakehouse scan/compaction
 # (opens every parquet + manifest at once) never trips the 1024 soft default.
 libc = "0.2"
 # Passkey / WebAuthn login (pure-Rust RustCrypto — no openssl, airgap-clean).
 # Runtime-enabled when GARMR_WEBAUTHN_RP_ID is set; ES256 (P-256) authenticators.
-p256 = { version = "0.13", features = ["ecdsa"] }
+p256 = { version = "0.14", features = ["ecdsa"] }
 sha2 = "0.10"
 ciborium = "0.2"
 serde.workspace = true
