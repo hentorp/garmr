@@ -1391,9 +1391,10 @@ mod tests {
     #[test]
     fn end_to_end_es256_assertion_verifies() {
         use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        use p256::elliptic_curve::sec1::ToSec1Point;
         // Deterministic P-256 "authenticator" key.
         let sk = SigningKey::from_slice(&[0x11u8; 32]).unwrap();
-        let pt = sk.verifying_key().to_encoded_point(false);
+        let pt = sk.verifying_key().as_affine().to_sec1_point(false);
         let (x, y) = (pt.x().unwrap().to_vec(), pt.y().unwrap().to_vec());
 
         let rp_id = "pve.example.ts.net";

@@ -361,7 +361,7 @@ pub(crate) async fn pgaudit_ship(_cli: &Cli, once: bool) -> Result<()> {
             let (text, new_off) = read_from(path, offset)?;
             offset = new_off;
             if !text.is_empty() {
-                let combined = std::mem::take(&mut partial) + &text;
+                let combined = std::mem::take(&mut partial) + text.as_str();
                 let (records, rest) = reassemble(&combined);
                 partial = rest;
                 for r in records {
