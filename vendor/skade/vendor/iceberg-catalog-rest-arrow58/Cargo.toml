@@ -1,0 +1,76 @@
+# iceberg-catalog-rest-arrow58 — Apache Iceberg REST catalog client
+# (iceberg-rust 0.9.1 line) on arrow-58, depending on the sibling
+# `iceberg-arrow58` crate (library name `iceberg`). ZERO source changes vs
+# the matching upstream apache/iceberg-rust commit
+# (a78bd0dd02734bf53bec7d47624a5adb4409f1d3, crates/catalog/rest) — the only
+# delta is the `iceberg` dep repointed at the arrow-58 fork. This carries
+# `RestCatalogBuilder::with_storage_factory`, which the crates.io 0.9.1
+# release predates.
+#
+# Same rationale as iceberg-arrow58 / iceberg-datafusion-arrow58: a separately
+# PUBLISHED uniquely-named crate (lib name kept as `iceberg_catalog_rest`) so
+# consumers write
+# `iceberg-catalog-rest = { package = "iceberg-catalog-rest-arrow58", version }`
+# with NO `[patch.crates-io]` to be stripped on publish.
+#
+# WHY this fork exists: the crates.io `iceberg-catalog-rest = "0.9.1"` links the
+# crates.io `iceberg` 0.9.1 (arrow-57), which clashes at the type level with the
+# arrow-58 `iceberg-arrow58` fork used everywhere else (two `iceberg` crates →
+# `iceberg::error::ErrorKind` vs the fork's flat `iceberg::ErrorKind`). This fork
+# links the SAME arrow-58 `iceberg` so the skade bench can drive Nessie/Polaris
+# (REST catalogs) head-to-head against skade-katalog.
+#
+# skade is the SINGLE canonical publisher; the bench (`rest` feature) is the
+# only consumer. Drop this crate the moment upstream iceberg-rust ships an
+# arrow-58 release — then it's a plain `iceberg-catalog-rest = "X"` bump.
+[package]
+name = "iceberg-catalog-rest-arrow58"
+version = "0.9.6"
+edition = "2024"
+rust-version = "1.92"
+description = "Apache Iceberg Rust REST API (iceberg-rust 0.9.1 line) on arrow-58. Depends on iceberg-arrow58; lib name kept as `iceberg_catalog_rest`. Carries RestCatalogBuilder::with_storage_factory."
+homepage = "https://rust.iceberg.apache.org/"
+repository = "https://codeberg.org/nordisk/skade"
+readme = "README.md"
+keywords = ["iceberg", "rest", "catalog"]
+categories = ["database"]
+license = "Apache-2.0"
+# The integration test (`tests/rest_catalog_test.rs`) pulls iceberg's internal
+# `iceberg_test_utils` (path `../../test_utils`, not present in this flattened
+# vendored layout), so keep tests + fixtures out of the package — the crate
+# ships as a library only.
+exclude = ["tests/", "testdata/", "DEPENDENCIES.rust.tsv", "Cargo.toml.orig", ".nornir/", ".cargo_vcs_info.json"]
+autotests = false
+
+# The library is still named `iceberg_catalog_rest` so downstreams
+# `use iceberg_catalog_rest::…` unchanged — only the *package* name differs.
+[lib]
+name = "iceberg_catalog_rest"
+path = "src/lib.rs"
+
+[dependencies]
+async-trait = "0.1.89"
+chrono = "0.4.41"
+http = "1.2"
+# The arrow-58 iceberg fork, addressed by its real package name but kept bound
+# to the `iceberg` crate identifier (so the source's `use iceberg::…` is
+# unchanged). path = local dev, version = published resolve.
+iceberg = { package = "iceberg-arrow58", version = "0.9.1", path = "../iceberg-arrow58" }
+itertools = "0.13"
+reqwest = { version = "0.12.12", default-features = false, features = ["json"] }
+serde = { version = "1.0.219", features = ["rc"] }
+serde_derive = "1.0.219"
+serde_json = "1.0.142"
+tokio = { version = "1.47", default-features = false, features = ["sync"] }
+tracing = "0.1.41"
+typed-builder = "0.20"
+uuid = { version = "1.18", features = ["v4"] }
+
+# Dev-deps for the inline unit tests in `src/catalog.rs` (the `tests/` dir is
+# excluded via `autotests = false`). The upstream rest crate carries these; the
+# fork dropped them, leaving the inline `#[tokio::test]` + `mockito` tests
+# uncompilable. mockito drives the mocked REST server; tokio gains the test
+# macro + runtime (the normal dep is `sync`-only).
+[dev-dependencies]
+mockito = "1"
+tokio = { version = "1.47", features = ["macros", "rt-multi-thread"] }

@@ -1,0 +1,31 @@
+# Access-audit: an access with NO justification reference. Policy is that every
+# access carries a ticket_ref / case number / registration number (or a free-text
+# reason) that justifies it, so a missing justification is an access without a
+# documented legitimate reason — the core "unauthorized access" signal. T1213.
+#
+# GENERIC: keys on log_type = 'audit'. OPT-IN — only meaningful where the audit
+# contract mandates a justification on every access; environments that don't
+# should disable this rule. If some flows legitimately omit it (batch/system
+# principals), exclude those db_users below or have them send a purpose code.
+id = "reg_lookup_without_ticket"
+title = "Access without a case/reason reference (audit)"
+attack = "T1213"
+severity = "high"
+schedule_secs = 600
+window_secs = 3600
+realert_secs = 7200
+message = "An actor made a lookup/access with no case/reason reference given (ticket_ref missing) — no documented reason."
+sql = """
+SELECT
+  regexp_replace(fields, '.*"db_user":"([^"]+)".*', '$1') AS db_user,
+  max(host) AS host,
+  count(*) AS lookups,
+  min(NULLIF(regexp_replace(fields, '.*"target_person":"([^"]+)".*', '$1'), fields)) AS sample_target
+FROM events
+WHERE event_ts > to_timestamp_micros({since_us})
+  AND log_type = 'audit'
+  AND fields LIKE '%"db_user":%'
+  AND (fields NOT LIKE '%"ticket_ref":%'
+       OR regexp_replace(fields, '.*"ticket_ref":"([^"]*)".*', '$1') = '')
+GROUP BY 1
+"""

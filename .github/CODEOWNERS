@@ -1,0 +1,20 @@
+# CODEOWNERS — default review ownership for garmr.
+# Syntax: https://docs.github.com/articles/about-code-owners
+# The last matching pattern wins. Order matters.
+
+# Default owner for everything in the repository.
+*                       @hentorp
+
+# Security-sensitive and governance surfaces (explicit for visibility;
+# same owner today, but called out so review is never skipped).
+/SECURITY.md            @hentorp
+/LICENSE                @hentorp
+/NOTICE                 @hentorp
+/COMMERCIAL-LICENSING.md @hentorp
+/TRADEMARKS.md          @hentorp
+/deny.toml              @hentorp
+/.github/               @hentorp
+/crates/garmr-audit/    @hentorp
+/crates/garmr-ingest/   @hentorp
+/crates/garmr-policy/   @hentorp
+/docs/security/         @hentorp

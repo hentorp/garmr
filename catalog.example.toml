@@ -1,0 +1,27 @@
+# Example resource catalog (Phase 4). Point detect.catalog_file at a copy of
+# this. File-imported entries are promoted to Trusted at load, so they resolve
+# for is_sensitive / classification and drive the policy + detectors.
+created_by = "alice"
+
+[[application]]
+name = "registry"
+owner = "team-registry"
+business_purpose = "Population register"
+
+[[table]]
+name = "raw.raw_persons"
+application = "registry"
+classification = "restricted"
+sensitive = true
+expected_users = ["anna", "bruno"]
+
+[[sensitive_resource]]
+object = "curated.persons"
+application = "registry"
+classification = "confidential"
+expected_users = ["anna"]
+
+[[user_role]]
+name = "registry-readers"
+application = "registry"
+members = ["anna", "bruno", "carol"]

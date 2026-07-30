@@ -1,0 +1,11 @@
+target/
+Cargo.lock
+.idea/
+
+# local dev linker config (mold) — machine-specific absolute paths
+bench/.cargo/
+
+# Rendered PDF lives only at docs/README.pdf — never a root copy.
+/README.pdf
+# Generated docs book — regenerate via `nornir docs`/docs_export, never commit (keep repo lean)
+/docs/

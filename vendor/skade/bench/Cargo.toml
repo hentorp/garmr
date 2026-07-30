@@ -1,0 +1,195 @@
+# Detached benchmark crate (own workspace → does not affect the published
+# `nornir-catalog` crate's dependency tree or lockfile).
+[package]
+name = "skade-katalog-bench"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+members = ["aegir"]
+
+[features]
+# S3 object-storage backend (RustFS/Nessie/Polaris data-plane targets). Off by
+# default so `cargo test` stays green. Backed by `aegir` (our own pure-Rust S3
+# client) — no `maybe-async`, so it compiles alongside gix where rust-s3 can't.
+s3 = ["dep:aegir"]
+# Compile aegir's io_uring TCP transport into the S3 backend. Opt-in; selected at
+# runtime per the `AEGIR_TRANSPORT=uring` env (ureq stays the default). Only the
+# plaintext RustFS hot path uses it; TLS still goes through ureq. Implies `s3`.
+uring = ["s3", "aegir/uring"]
+# Iceberg-REST client modes (nessie/polaris/skade-rest). OFF by default: it
+# pulls the REST client (and its transitive deps) into the build, which the
+# local (embedded / skade-file / skade-s3) matrix doesn't need. The REST client
+# is the arrow-58 fork (`iceberg-catalog-rest-arrow58`, ../vendor) — it links
+# the SAME arrow-58 `iceberg-arrow58` as everything else, so there is no
+# two-`iceberg`-crates type clash (`iceberg::error::ErrorKind` vs the fork's
+# flat `iceberg::ErrorKind`) and it carries `RestCatalogBuilder::with_storage_factory`.
+rest = ["dep:iceberg-catalog-rest"]
+
+[dependencies]
+# `bench` feature: exposes skade-katalog's `pub(crate)` redb key builders as
+# `skade_katalog::bench_keys::*` so the `skade.catalog_key` micro-bench can time
+# them out-of-crate (they stay private in every normal/published build).
+skade-katalog = { path = "..", features = ["bench"] }
+# arrow-58 Iceberg via the repo-root vendored, separately published fork
+# (../vendor/iceberg-arrow58 → crates.io `iceberg-arrow58`, lib name `iceberg`).
+# MUST match skade-katalog (the `..` dep above), which links the same fork — a
+# second crates.io `iceberg` 0.9.1 (arrow-57) would clash at the type level
+# (`iceberg::error::ErrorKind` vs the fork's flat `iceberg::ErrorKind`).
+iceberg = { package = "iceberg-arrow58", version = "0.9.1", path = "../vendor/iceberg-arrow58" }
+# REST client — only pulled in with the `rest` feature. The arrow-58 vendored
+# fork (../vendor/iceberg-catalog-rest-arrow58 → crates.io
+# `iceberg-catalog-rest-arrow58`, lib name `iceberg_catalog_rest`, dep on
+# `iceberg-arrow58`). MUST link the same arrow-58 `iceberg` fork as the rest of
+# the bench, else a second crates.io `iceberg` 0.9.1 (arrow-57) clashes at the
+# type level. Carries `RestCatalogBuilder::with_storage_factory`.
+iceberg-catalog-rest = { package = "iceberg-catalog-rest-arrow58", version = "0.9.1", path = "../vendor/iceberg-catalog-rest-arrow58", optional = true }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+axum = "0.7"
+# S3 FileIO for the iceberg-rust client (iceberg 0.9.1 ships no S3 backend).
+# `aegir`: our own pure-Rust S3 client (SigV4 over ureq, zero-copy reads). Chosen
+# over rust-s3 because rust-s3 uses `maybe-async`, which gix (via the nornir
+# dev-dep) flips to `is_sync` globally → rust-s3 won't compile. aegir has no
+# maybe-async, so it coexists. S3 benches: `cargo run --features s3 -- data nornir-s3`.
+aegir = { path = "aegir", optional = true }
+typetag = "0.2"
+bytes = "1"
+async-trait = "0.1"
+# Data-plane (ingest/scan): pinned to the arrow/parquet major the arrow-58
+# iceberg-arrow58 fork links (arrow 58), so RecordBatch/Parquet types interop
+# with skade-katalog's writer/reader without bridging.
+arrow-array = "58"
+arrow-schema = "58"
+# cast kernel: GeoParquet columns (Binary/Utf8) → Iceberg's widened LargeBinary/
+# LargeUtf8 field-id schema on ingest.
+arrow-cast = "58"
+parquet = "58"
+futures = "0.3"
+# gatling::io — znippy's no-barrier async I/O task pool. The concurrent S3 writer
+# (`run_concurrent_writer_ingest`) drives its bounded multi-PUT fan-out through
+# `gatling::io::run_ordered` instead of a hand-rolled FuturesUnordered loop, so the
+# bench reuses znippy's no-barrier/bounded/ordered/zero-copy engine. Points at the
+# `feat/gatling-io` worktree where the async sibling lives.
+znippy-zoomies = { path = "../../znippy-zoomies" }
+# OSM source data (PBF dense-node reader).
+osmpbf = "0.3"
+# User's own zstd bindings: statically-linked libzstd 1.5.7, raw C FFI
+# (ZSTD_compress/ZSTD_compressBound/ZSTD_decompress/ZSTD_isError). Two uses:
+#  1. zstd decode head-to-head vs the stock `zstd` crate on real OSM data;
+#  2. the `BENCH_PIPE_COMPRESSION=zstd-sys[:level]` encode codec
+#     (pipeline.rs::zstd_sys_roundtrip) — routes the CPU-heavy zstd work through
+#     these bindings while still emitting valid Parquet. The parquet crate's own
+#     `Compression::ZSTD` (the `zstd:N` codec) still uses parquet's stock `zstd`.
+zstd-sys-rs = "1.5.11"
+zstd = "0.13"
+# Container orchestration (src/containers.rs, bin bench-containers): HTTP for
+# health polling + Polaris OAuth/catalog bootstrap, ported from containers/*.sh.
+ureq = { version = "2", features = ["json"] }
+
+[dev-dependencies]
+# SQL surface: DataFusion reads the RedbCatalog via iceberg-datafusion (additive,
+# test-only — not a replacement for iceberg-rust). The arrow-58 iceberg-datafusion
+# fork (../vendor/iceberg-datafusion-arrow58, lib name `iceberg_datafusion`, dep
+# on iceberg-arrow58) is on datafusion-54 + arrow-58, matching iceberg-arrow58 so
+# the writer/reader RecordBatch types interop.
+iceberg-datafusion = { package = "iceberg-datafusion-arrow58", version = "0.9.2", path = "../vendor/iceberg-datafusion-arrow58" }
+datafusion = "54"
+# Dogfood: run the TPC-H suite's SQL through skade's own session()/sql surface
+# (the `sql` feature) instead of wiring iceberg-datafusion by hand.
+skade = { path = "../skade", features = ["sql", "bench"] }
+# nornir bencher contract: examples/nornir-bench.rs emits a BenchRun JSON that
+# `nornir bench run nornir-catalog` (driven from workspace_nornir-catalog) parses,
+# persists to the bench_runs Iceberg table, and folds into the README via
+# `nornir docs render`. Dev-dep only — nothing leaks into the published crate.
+nornir = { path = "../../nornir" }
+tpchgen = "2.0.2"
+tpchgen-arrow = "2.0.2"
+# tpchgen-arrow 2.0.2 hard-pins `arrow = "57.1"`, but the rest of the data path
+# (iceberg-arrow58 writer, datafusion-54 reader) is on arrow-58. The TPC-H
+# generator therefore emits arrow-57 RecordBatches; tpch_shared.rs bridges each
+# batch arrow-57 → arrow-58 via an Arrow IPC stream round-trip (zero-copy buffers,
+# stable IPC format). This explicit arrow-57 dep (already in the tree via
+# tpchgen-arrow) gives the IPC *writer* a name; the arrow-58 IPC *reader* comes
+# from `datafusion::arrow::ipc`. Drop once tpchgen-arrow ships an arrow-58 release.
+arrow = { version = "57.1", features = ["ipc"] }
+
+[[bin]]
+name = "catalog-bench"
+path = "src/main.rs"
+
+# Bring up / tear down the competitor backends (RustFS S3, Nessie, Polaris) with
+# all the operational fixes baked in (see src/containers.rs). Replaces the old
+# containers/*.sh scripts.
+[[bin]]
+name = "bench-containers"
+path = "src/bin/bench-containers.rs"
+
+[[example]]
+name = "cache_ab"
+path = "examples/cache_ab.rs"
+
+# s3_smoke includes src/s3_storage.rs directly, so it only builds with `s3`.
+# Declared explicitly so `cargo test` skips it unless the feature is on.
+[[example]]
+name = "s3_smoke"
+path = "examples/s3_smoke.rs"
+required-features = ["s3"]
+
+# ureq-vs-uring aegir transport micro-bench (HEAD/GET/PUT) on plaintext RustFS.
+# Build with `--features uring` to exercise the io_uring path; needs `s3` for the
+# aegir dep.
+[[example]]
+name = "aegir_transport"
+path = "examples/aegir_transport.rs"
+required-features = ["s3"]
+
+# The nornir bencher entry point. `cargo run --release --example nornir-bench`
+# (or `nornir bench run nornir-catalog`) prints one BenchRun JSON line.
+[[example]]
+name = "nornir-bench"
+path = "examples/nornir-bench.rs"
+
+# REST commit conformance test — drives the Iceberg-REST client, so it only
+# builds with the `rest` feature (which links the crates.io arrow-57 iceberg,
+# kept off the default/local matrix). Declared explicitly so `cargo test` skips
+# it unless `--features rest` is passed.
+[[test]]
+name = "rest_commit"
+path = "tests/rest_commit.rs"
+required-features = ["rest"]
+
+# NOTE: the parallel per-file partitioned Iceberg scan (one partition per file so
+# DataFusion decodes across all cores, vs upstream 0.9.1's single whole-table
+# partition) now lives in the arrow-58 fork pulled in above as
+# `iceberg-datafusion = { package = "iceberg-datafusion-arrow58", path =
+# "../vendor/iceberg-datafusion-arrow58" }`. The old `[patch.crates-io]
+# iceberg-datafusion = { path = "vendor/iceberg-datafusion" }` (arrow-57) is gone:
+# nothing requests the crates.io `iceberg-datafusion` name anymore, and a stray
+# arrow-57 datafusion would clash with the arrow-58 iceberg fork.
+
+# Pin the znippy-* registry crates to their local sources. The bench's `nornir`
+# dev-dep pulls embedded holger (holger-server-lib → holger-rust-znippy-repository),
+# which depends on `znippy-common` from crates.io. The published znippy-common
+# 0.9.5 lacks the typed read-views (`ZnippyArchive::as_rust()`) the local source
+# added, so holger fails to compile (E0599 `as_rust`). A path-dep doesn't override
+# a registry dep elsewhere in the graph — only [patch] does. This mirrors nornir's
+# own `[patch.crates-io]` so this workspace resolves the same local znippy.
+[patch.crates-io]
+# nornir's `vector` feature re-exports `znippy_zoomies::vann::…` (the extracted
+# ANN engine), which only exists in the local znippy-zoomies (0.1.14) — registry
+# 0.1.13 predates it. nornir declares `znippy-zoomies = "0.1.13"` (registry), so
+# without this patch nornir compiles against the vann-less 0.1.13 and fails with
+# `E0432: unresolved import znippy_zoomies::vann`. The bench's own path dep on
+# znippy-zoomies doesn't override nornir's registry dep — only [patch] does. This
+# mirrors nornir's own `[patch.crates-io]`.
+znippy-zoomies = { path = "../../znippy-zoomies" }
+znippy-common = { path = "../../znippy/znippy-common" }
+znippy-compress = { path = "../../znippy/znippy-compress" }
+znippy-decompress = { path = "../../znippy/znippy-decompress" }
+znippy-plugin-maven = { path = "../../znippy/znippy-plugin-maven" }
+znippy-plugin-python = { path = "../../znippy/znippy-plugin-python" }

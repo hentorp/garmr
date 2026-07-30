@@ -1,0 +1,140 @@
+# cargo-deny — garmr supply-chain gate (modgunn / M7-5).
+#
+# Runs in CI (.github/workflows/supply-chain.yml) and locally via
+# `cargo deny check`. Four independent gates: licenses, advisories, bans,
+# sources. The intent is that an operator adopting garmr can trust the
+# dependency tree without auditing 800 crates by hand — every license is on an
+# explicit allow-list, every source is crates.io, and a known RustSec
+# vulnerability fails the build.
+#
+# See docs/supply-chain.md for the provenance story and how to verify a release.
+
+[graph]
+# Check the tree as it is actually built here (x86_64 Linux), all features on,
+# so feature-gated deps (semantic/mcp/znippy) are covered too.
+all-features = true
+
+[output]
+feature-depth = 1
+
+# --- Licenses -------------------------------------------------------------
+# Allow-list only. A crate whose license isn't listed fails the check, so a
+# copyleft or unknown license can never slip into the tree unnoticed. The set
+# below is the permissive union actually present in garmr's tree (Rust/Arrow/
+# DataFusion ecosystem) — nothing GPL/AGPL/LGPL.
+[licenses]
+allow = [
+    # Garmr's own first-party crates are AGPL-3.0-only (the project license).
+    # No third-party AGPL dependency is present in the tree; this entry covers
+    # the workspace members themselves.
+    "AGPL-3.0-only",
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",             # file-level copyleft only (e.g. webpki-roots data) — acceptable
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "0BSD",
+    "BSL-1.0",
+    "OpenSSL",
+    "CDLA-Permissive-2.0",
+    # Bundled open fonts in the egui/facett UI (epaint_default_fonts) — standard
+    # redistributable font licenses, not code copyleft.
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    # bzip2 codec (libbz2-rs-sys, via parquet/arrow compression) — a permissive
+    # BSD-style license.
+    "bzip2-1.0.6",
+]
+confidence-threshold = 0.9
+# The allow-list is deliberately a superset of what's in the tree today (a few
+# permissive licenses provisioned for future deps), so don't warn on the unused
+# entries — an unmatched allowance is not a problem, an unmatched crate is.
+unused-allowed-license = "allow"
+# Crates whose license the SPDX scanner can't infer at high confidence, pinned
+# by hand after reading the crate's own license file. Empty until a real one
+# appears (cargo deny names it in the error, with the clarification recipe).
+exceptions = []
+
+# --- Advisories -----------------------------------------------------------
+# RustSec advisory DB. A crate with an unpatched vulnerability, or a yanked
+# version, fails the build. `ignore` is the audited-exceptions escape hatch:
+# each entry MUST carry a comment saying why it's tolerated and the follow-up.
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+# Each ignore is an AUDITED exception: reachability was checked by hand and the
+# follow-up is named. Anything NOT listed here still fails the build — a new
+# advisory on any of garmr's 800 crates breaks CI until it's triaged.
+ignore = [
+    # maxminddb `Reader::open_mmap` unsoundness. NOT REACHABLE: garmr's only
+    # maxminddb call site is `Reader::open_readfile` (garmr-enrich/src/lib.rs),
+    # which reads the GeoIP mmdb into memory — `open_mmap` is never invoked.
+    # Clears when maxminddb ships a fixed release we can bump to.
+    "RUSTSEC-2025-0132",
+    # quick-xml XML-parsing DoS (quadratic start-tag scan / unbounded namespace
+    # allocation). Reachable only via object_store parsing XML responses from the
+    # OPERATOR-CONFIGURED S3 endpoint (the M7-4 cold tier) — not an arbitrary
+    # remote attacker, and DoS not RCE. Fixed in quick-xml >= 0.41; object_store
+    # 0.13.2 pins ^0.39 and is itself pinned by the vendored datafusion-54 /
+    # iceberg-arrow58 stack, so the bump is out-of-scope fork surgery. Also
+    # present build-time-only via wayland-scanner (trusted local Wayland protocol
+    # XML) in the optional desktop UI, which the server binary does not link.
+    # Clears when the vendored datafusion/object_store stack reaches quick-xml >=0.41.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+    # `paste` unmaintained (archived upstream). Build-time proc-macro pulled by
+    # candle/gemm behind the `semantic` feature — no runtime attack surface, and
+    # no drop-in maintained replacement exists. Clears when candle migrates off it.
+    "RUSTSEC-2024-0436",
+    # lz4_flex 0.10.0 decompression info-leak (uninitialized/reused output buffer
+    # on invalid input). Transitive + feature-gated (not in the default tree); the
+    # 0.10.0 copy is reached only via cozo -> swapvec, which lz4-compresses garmr's
+    # OWN locally-spilled graph data — never attacker-supplied compressed input.
+    # The arrow/datafusion path uses the patched lz4_flex 0.13.x. Clears when
+    # cozo/swapvec bump lz4_flex.
+    "RUSTSEC-2026-0041",
+    # adler unmaintained (superseded by adler2). Checksum crate in the flate2/miniz
+    # zlib path; no runtime attack surface. Clears when the stack moves to adler2.
+    "RUSTSEC-2025-0056",
+    # bincode 1.x unmaintained. Transitive serialization dep; garmr does not
+    # deserialize untrusted input through it. Clears when upstreams move to bincode 2.
+    "RUSTSEC-2025-0141",
+    # fxhash unmaintained (non-cryptographic hasher). Transitive; used only as a
+    # fast in-memory hashmap hasher, never for anything security-relevant. Clears
+    # when upstreams move to rustc-hash.
+    "RUSTSEC-2025-0057",
+]
+
+# --- Bans -----------------------------------------------------------------
+# Guards against dependency-tree bloat and typosquat-style surprises.
+[bans]
+# Duplicate versions of the same crate are a warning, not an error: a tree this
+# size (Arrow + DataFusion + tokio) legitimately carries a few, and failing on
+# them would just train people to ignore the gate. CI surfaces the count.
+multiple-versions = "warn"
+# A wildcard ("*") version requirement is a real smell (unpinned, unauditable) —
+# deny it in first-party crates.
+wildcards = "deny"
+allow-wildcard-paths = true   # path deps (vendored skade/facett/znippy) may use *
+highlight = "all"
+deny = [
+    # Named crates we never want pulled in (e.g. an abandoned or risky lib) go
+    # here as { name = "...", reason = "..." }. Empty by default.
+]
+
+# --- Sources --------------------------------------------------------------
+# garmr's tree is 100% crates.io + vendored path deps (verified: 0 git sources
+# in Cargo.lock). Any future git or alternative-registry dependency must be
+# added here deliberately — an unexpected one fails the build.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

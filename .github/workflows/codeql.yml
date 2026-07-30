@@ -1,0 +1,39 @@
+# CodeQL static analysis. Rust is analyzed where CodeQL supports it; add
+# 'javascript-typescript' to the matrix if JS/TS surfaces are introduced.
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "27 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [rust]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          language: ${{ matrix.language }}
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v4
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"

@@ -1,0 +1,24 @@
+title: sudo authentication failure
+id: garmr-sudo-auth-failure
+status: experimental
+description: >
+    A failed sudo attempt. Repeated failures for a user can indicate an
+    attacker who has a foothold trying to escalate, or a misconfigured service.
+author: garmr
+logsource:
+    product: linux
+    service: sudo
+detection:
+    selection:
+        service: sudo
+        message|contains:
+            - 'authentication failure'
+            - 'incorrect password attempt'
+            - 'user NOT in sudoers'
+    condition: selection
+falsepositives:
+    - An admin fat-fingering their password.
+level: medium
+tags:
+    - attack.privilege_escalation
+    - attack.t1548.003

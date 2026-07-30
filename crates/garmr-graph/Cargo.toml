@@ -1,0 +1,45 @@
+[package]
+name = "garmr-graph"
+description = "In-memory entity graph for pivot / link-analysis (M5) — pure Rust, no external graph DB."
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+publish = false
+
+[features]
+# The `store` feature adds the async builder (Graph::build) that pulls cases +
+# event-co-occurrence edges from the store. The pure core (from_cases /
+# add_event_edges / pivot) needs none of it, so unit tests stay lean.
+store = ["dep:garmr-store", "dep:skade", "dep:tokio", "dep:tracing", "dep:chrono"]
+
+# The `cozo` feature adds an OPTIONAL CozoDB-backed entity graph (`cozo_graph`)
+# that mirrors the in-memory `Graph` traversal (pivot / shortest_path) via
+# embedded Datalog. It is OFF by default: the default build keeps the pure-Rust
+# in-memory `Graph` and never pulls cozo.
+#
+# We disable cozo's default features on purpose. Cozo's `default` (= `compact`)
+# pulls `minimal`, which bundles the SQLite C source — a C dependency garmr's
+# "embedded, pure-Rust, no external service" rule forbids. With
+# `default-features = false` cozo compiles with only its built-in `mem` engine
+# (a pure-Rust in-memory store) plus the Datalog core, which is all we need.
+cozo = ["dep:cozo"]
+
+[dependencies]
+garmr-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+garmr-store = { workspace = true, optional = true }
+skade = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+# Pure-Rust, in-memory embedded Datalog graph DB. `default-features = false`
+# drops the bundled-SQLite C dependency; the built-in `mem` engine remains.
+# NOTE: cozo 0.7 has no `storage-mem` cargo feature — the in-memory `mem`
+# engine is part of the core and is always available; there is nothing to opt
+# into, so we simply take the featureless (pure-Rust) build and add
+# `graph-algo` (pure Rust: pulls `graph` + `rayon`, no C) for the built-in
+# `ShortestPathBFS` used by `CozoGraph::shortest_path`.
+cozo = { version = "0.7", optional = true, default-features = false, features = ["graph-algo"] }
+[dev-dependencies]
+chrono.workspace = true

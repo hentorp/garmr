@@ -1,0 +1,61 @@
+name: Feature request
+description: Suggest an enhancement or new capability for garmr.
+title: "[feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. garmr is a **one-person, alpha-stage
+        SOC**; proposals are weighed against that scope (self-hosted, single
+        operator, local-first, air-gap-friendly). Please describe the problem
+        before the solution.
+
+        Security-sensitive design concerns should go through private disclosure —
+        see [`SECURITY.md`](../blob/main/SECURITY.md).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do, and what makes it hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like garmr to do? Sketch the behaviour, config, or CLI/API surface.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you evaluated, and why they fall short.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of garmr does this touch?
+      options:
+        - Ingest / collectors
+        - Storage / retention
+        - Detection / correlation / analytics
+        - Agent / LLM / model routing
+        - Audit ledger / governance
+        - Web console (webui)
+        - CLI
+        - Deployment / packaging / airgap
+        - Docs
+        - Other / not sure
+    validations:
+      required: false
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else — links, prior art, screenshots (with no sensitive data).
+    validations:
+      required: false

@@ -1,0 +1,58 @@
+[package]
+name = "lgz"
+version = "0.3.11"
+edition = "2024"
+description = "Pure Rust parallel gzip decompressor — multi-core DEFLATE decode with zero-copy ring-slot pipeline"
+license = "MIT OR Apache-2.0"
+repository = "https://codeberg.org/nordisk/znippy"
+homepage = "https://codeberg.org/nordisk/znippy"
+documentation = "https://docs.rs/lgz"
+readme = "README.md"
+keywords = ["gzip", "decompression", "parallel", "compression", "deflate"]
+categories = ["compression", "encoding"]
+
+[features]
+timing = []
+# `testmatrix` — turn `functional_status(component, check, ok, detail)` self-
+# reports into real nornir test-matrix rows. Compiled OUT of the default build
+# (no nornir dep by default); pulls nornir-testmatrix's own `testmatrix` mode.
+testmatrix = ["dep:nornir-testmatrix", "nornir-testmatrix/testmatrix"]
+
+[dependencies]
+flate2 = "1.1"
+# Error type for the shared gatling ordered-sink trait (`OrderedSink::emit`
+# returns `anyhow::Result`); used only by the `lgz` CLI binary.
+anyhow = "1"
+tar = "0.4"
+# SIMD byte scan for the concatenated-member boundary search (`find_gzip_members`)
+# — turns a byte-by-byte 0x1f scan over the whole file into a vectorised one.
+memchr = "2"
+# mmap the input in the multi-member fast path so the 700 MB+ compressed bytes
+# fault in lazily during the parallel decode instead of one serial `read` copy.
+memmap2 = "0.9"
+linflate = { path = "../linflate", version = "0.1.9" }
+# The ONE shared no-barrier engine (leaf crate). lgz's per-segment / per-split
+# DEFLATE decode fans out through `gatling_forkjoin::gatling_for_each` instead
+# of a private scoped-thread pool.
+gatling = { path = "../gatling", version = "0.1.7", package = "rotaryengine" }
+# testmatrix feature only; path dep to sibling nornir repo, off by default.
+nornir-testmatrix = { version = "0.2", default-features = false, optional = true }
+
+[dev-dependencies]
+flate2 = "1.1"
+miniz_oxide = "0.8"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# cores_busy (CPU-time / wall-time) sampling via getrusage for the decode
+# core-saturation guard (`tests/saturation.rs`), mirroring the workspace-root
+# gatling_sort saturation test.
+libc = "0.2"
+
+[[bin]]
+name = "lgz"
+path = "src/bin/lgz.rs"
+
+[[bench]]
+name = "decompress_gz"
+harness = false

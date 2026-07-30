@@ -1,0 +1,35 @@
+[package]
+name = "linflate"
+readme = "README.md"
+version = "0.1.9"
+edition = "2024"
+description = "Fast pure-Rust DEFLATE decompressor — SIMD match-copy, branchless refill, segment-aware"
+license = "MIT OR Apache-2.0"
+repository = "https://codeberg.org/nordisk/znippy"
+keywords = ["deflate", "decompression", "inflate", "simd"]
+categories = ["compression"]
+
+[features]
+# `testmatrix` — turn `functional_status(component, check, ok, detail)` self-
+# reports into real nornir test-matrix rows. Compiled OUT of the default build
+# (no nornir dep by default); pulls nornir-testmatrix's own `testmatrix` mode so
+# the emit is a row-append, not a no-op. Additive; default build stays lean.
+testmatrix = ["dep:nornir-testmatrix", "nornir-testmatrix/testmatrix"]
+
+[dependencies]
+# ── testmatrix feature ──────────────────────────────────────────────────────
+# Path dep to the nornir functional-status emitter; off by default so consumers
+# pull nothing. Sibling repo under /git.
+nornir-testmatrix = { version = "0.2", default-features = false, optional = true }
+
+[dev-dependencies]
+miniz_oxide = "0.8"
+criterion = "0.5"
+
+[[bench]]
+name = "inflate"
+harness = false
+
+[[bench]]
+name = "deflate_scan"
+harness = false

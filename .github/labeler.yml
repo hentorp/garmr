@@ -1,0 +1,70 @@
+# Path-based auto-labeling for pull requests.
+# Format: actions/labeler v5 (`changed-files` / `any-glob-to-any-file`).
+#
+# Note: labels are additive and independent of order. `crates/garmr-webui/**`
+# is a subtree of `crates/**`, so a webui-only PR matches both `area:webui` and
+# `area:core` — that is intentional (webui changes are still core changes).
+
+"area:core":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/**"
+
+"area:webui":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/garmr-webui/**"
+
+"area:ingest":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/garmr-ingest/**"
+          - "flightbeat/**"
+
+"area:audit":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/garmr-audit/**"
+
+"docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "**/*.md"
+
+"ci":
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+
+"vendored":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "vendor/**"
+
+"rules":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "correlations/**"
+          - "hunts/**"
+          - "rules/**"
+          - "policies/**"
+
+"deployment":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "deploy/**"
+          - "packaging/**"
+          - "scripts/**"
+
+"supply-chain":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "deny.toml"
+          - "supply-chain/**"
+          - "Cargo.lock"
+
+"tooling":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "xtask/**"

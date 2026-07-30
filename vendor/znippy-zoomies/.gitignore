@@ -1,0 +1,7 @@
+/target
+**/target
+liechtenstein.osm
+*.osm
+
+# rendered docs artifacts (book.pdf/html/svg) — build output, not committed
+/docs/

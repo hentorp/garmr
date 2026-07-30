@@ -1,0 +1,36 @@
+[package]
+publish = false            # workspace-internal; the deployable is the `garmr` binary, not crates.io libs
+name = "garmr-store"
+description = "garmr storage: the skade lakehouse for events + a redb store for agent state."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+garmr-core.workspace = true
+garmr-search.workspace = true
+skade.workspace = true
+redb.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+blake3.workspace = true
+# Published to crates.io as `rotaryengine`; the library name stays `gatling`.
+# The no-barrier fork-join pool that fans the per-row provenance columns (JSON +
+# BLAKE3) of a batch build across cores (ROOT LAW #0: no rayon / thread::spawn).
+gatling = { path = "../../vendor/znippy-zoomies/gatling", package = "rotaryengine", version = "0.1" }
+# The arrow buffer crate `skade::arrow_array` is built against (crates.io 58.x —
+# Cargo unifies it to the SAME instance skade's arrow-array resolves to, so no
+# version-skew surface: `StringArray::new` takes these exact `OffsetBuffer` /
+# `Buffer` / `NullBuffer` types). Needed to assemble the provenance StringArrays
+# directly from the fold's per-worker byte buffers (one bulk copy + one simd
+# UTF-8 validate) instead of a per-row `from_iter_values` tail.
+arrow-buffer = "58"
+
+[dev-dependencies]
+tempfile = "3"

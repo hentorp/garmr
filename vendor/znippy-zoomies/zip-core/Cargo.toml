@@ -1,0 +1,23 @@
+[package]
+name = "zip-core"
+readme = "README.md"
+version = "0.1.0"
+edition = "2024"
+description = "Shared streaming-ZIP machinery — Central Directory (EOCD/ZIP64) parser + parallel DEFLATE full-flush split — consumed by ljar and lzip-parallel (a JAR is a ZIP)"
+license = "MIT OR Apache-2.0"
+repository = "https://codeberg.org/nordisk/znippy"
+
+[dependencies]
+# The ONE shared no-barrier engine (leaf crate). The parallel full-flush
+# split-point search fans out through `gatling_forkjoin::gatling_for_each` — no
+# private rayon pool (ROOT LAW #0: gatling only).
+gatling = { path = "../gatling", version = "0.1.7", package = "rotaryengine" }
+# The SIMD full-flush scanner + FlushBoundary type live in linflate.
+linflate = { path = "../linflate", version = "0.1.9" }
+
+[dev-dependencies]
+# Fixture builders for the byte-identical decode / CD-parse round-trip tests.
+zip = "2"
+
+[lib]
+doctest = false

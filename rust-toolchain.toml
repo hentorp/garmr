@@ -1,0 +1,11 @@
+# Pin the Rust toolchain so CI, local dev, contributors, and the reproducible
+# release (scripts/release.sh) all build with the SAME rustc/clippy. Without
+# this, CI's rolling `stable` drifts ahead of what's verified locally and a
+# newly-added clippy lint fails a build that passed on the author's machine.
+# This is also part of the reproducible-build story — the binary hash depends on
+# the compiler version. Bump deliberately (and re-run `cargo clippy`/tests) when
+# adopting a newer toolchain.
+[toolchain]
+channel = "1.96.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

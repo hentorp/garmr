@@ -1,0 +1,37 @@
+# Access-audit: an actor accessed a WATCHED subject (VIP / watched person —
+# public figures, threatened persons, colleagues, sensitive accounts/records).
+# The single highest-value insider signal: critical + a short realert. T1213.
+#
+# GENERIC + DATA-MINIMISING: garmr holds NO watchlist. The application (or the DB
+# audit layer) sets `watched: true` on the audit event when the accessed subject
+# is on ITS watchlist, and this rule fires on that flag. So the sensitive list of
+# watched identities never leaves the app — garmr only sees a boolean — and this
+# works for watched persons, accounts, documents or records alike.
+#
+# If the producer CANNOT set the flag, replace the `watched` filter with an
+# inline CTE the operator maintains, e.g.:
+#   WITH watch(target) AS (VALUES ('id-1'),('id-2'))
+#   ... JOIN watch w ON fields LIKE '%"target_person":"' || w.target || '"%'
+# — but then THIS file holds sensitive ids: chmod 0640, keep it out of any
+# world-readable bundle. The flag is strongly preferred.
+id = "reg_watchlist_target_lookup"
+title = "Access to a watched subject (watchlist)"
+attack = "T1213"
+severity = "critical"
+schedule_secs = 120
+window_secs = 900
+realert_secs = 3600
+message = "An actor looked up/opened a watched subject (watchlist). Alert and review the case linkage immediately."
+sql = """
+SELECT
+  regexp_replace(fields, '.*"db_user":"([^"]+)".*', '$1') AS db_user,
+  max(host) AS host,
+  NULLIF(regexp_replace(fields, '.*"target_person":"([^"]+)".*', '$1'), fields) AS target_person,
+  count(*) AS lookups
+FROM events
+WHERE event_ts > to_timestamp_micros({since_us})
+  AND log_type = 'audit'
+  AND fields LIKE '%"watched":"true"%'
+  AND fields LIKE '%"db_user":%'
+GROUP BY 1, 3
+"""

@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>garmr — log in</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         background:#0b1017; color:#c7d4e3;
+         font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
+  .card { width:min(92vw,380px); background:#121a24; border:1px solid #223042; border-radius:14px;
+          padding:28px 26px; box-shadow:0 10px 40px #0007; }
+  h1 { margin:0 0 2px; font-size:22px; letter-spacing:.3px; }
+  h1 .mark { color:#5cc8ff; }
+  .sub { color:#7f93a8; font-size:13px; margin:0 0 22px; }
+  button { width:100%; padding:12px 14px; border-radius:9px; border:1px solid #2c73b8;
+           background:#173049; color:#dceaf7; font-size:15px; cursor:pointer; transition:.12s; }
+  button:hover { background:#1d3b5c; border-color:#3b8fe0; }
+  button:disabled { opacity:.6; cursor:default; }
+  button.primary { background:#1c5fa8; border-color:#3b8fe0; font-weight:600; }
+  button.primary:hover { background:#2470c4; }
+  .key { font-size:17px; margin-right:6px; }
+  .msg { margin-top:14px; font-size:13px; min-height:18px; }
+  .msg.err { color:#ff8f6b; }
+  .msg.ok { color:#4bd6a0; }
+  details { margin-top:22px; border-top:1px solid #1c2836; padding-top:16px; }
+  summary { cursor:pointer; color:#7f93a8; font-size:13px; user-select:none; }
+  summary:hover { color:#c7d4e3; }
+  label { display:block; font-size:12px; color:#7f93a8; margin:12px 0 4px; }
+  input { width:100%; padding:9px 11px; border-radius:8px; border:1px solid #223042;
+          background:#0e151d; color:#c7d4e3; font-size:14px; }
+  input:focus { outline:none; border-color:#3b8fe0; }
+  .foot { margin-top:16px; color:#5c6b7d; font-size:11px; text-align:center; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1><span class="mark">◆</span> garmr</h1>
+    <p class="sub">Log in with your passkey (e.g. YubiKey).</p>
+
+    <button id="login" class="primary"><span class="key">🔑</span> Log in with passkey</button>
+    <div id="msg" class="msg"></div>
+
+    <details>
+      <summary>Register a new passkey (requires admin token)</summary>
+      <label for="token">Admin token</label>
+      <input id="token" type="password" autocomplete="off" placeholder="GARMR_ADMIN_TOKEN">
+      <label for="user">User</label>
+      <input id="user" type="text" placeholder="operator" autocomplete="off">
+      <label for="role">Role</label>
+      <select id="role"><option value="admin">admin</option><option value="analyst">analyst</option><option value="viewer">viewer</option></select>
+      <label for="label">Label</label>
+      <input id="label" type="text" placeholder="my yubikey">
+      <button id="register" style="margin-top:14px"><span class="key">➕</span> Register passkey</button>
+    </details>
+
+    <div class="foot">Bearer tokens still work for machines (API/MCP).</div>
+  </div>
+
+<script>
+const msg = document.getElementById('msg');
+function show(t, cls){ msg.textContent = t; msg.className = 'msg ' + (cls||''); }
+
+function b64urlToBuf(s){
+  s = s.replace(/-/g,'+').replace(/_/g,'/'); while(s.length % 4) s += '=';
+  const bin = atob(s), bytes = new Uint8Array(bin.length);
+  for (let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+}
+function bufToB64url(buf){
+  const bytes = new Uint8Array(buf); let s='';
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+
+async function login(){
+  const btn = document.getElementById('login'); btn.disabled = true;
+  try {
+    show('waiting for your key …');
+    const start = await (await fetch('/auth/passkey/login/start')).json();
+    if (!start.publicKey) throw new Error(start.error || 'could not start');
+    const pk = start.publicKey;
+    pk.challenge = b64urlToBuf(pk.challenge);
+    pk.allowCredentials = (pk.allowCredentials||[]).map(c => ({...c, id: b64urlToBuf(c.id)}));
+    const cred = await navigator.credentials.get({ publicKey: pk });
+    const body = { ceremony_id: start.ceremony_id, id: cred.id, response: {
+      clientDataJSON: bufToB64url(cred.response.clientDataJSON),
+      authenticatorData: bufToB64url(cred.response.authenticatorData),
+      signature: bufToB64url(cred.response.signature),
+    }};
+    const r = await fetch('/auth/passkey/login/finish', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    if (r.ok) { show('logged in — redirecting …','ok'); location.href = '/'; }
+    else show(await r.text() || 'login denied','err');
+  } catch(e){ show(e.message || String(e), 'err'); }
+  finally { btn.disabled = false; }
+}
+
+async function register(){
+  const btn = document.getElementById('register'); btn.disabled = true;
+  const token = document.getElementById('token').value.trim();
+  const label = document.getElementById('label').value.trim() || 'passkey';
+  const user = document.getElementById('user').value.trim();
+  const role = document.getElementById('role').value;
+  const hdr = token ? { 'Authorization': 'Bearer ' + token } : {};
+  try {
+    show('starting registration …');
+    const q = user ? ('?user=' + encodeURIComponent(user)) : '';
+    const sres = await fetch('/auth/passkey/register/start' + q, { headers: hdr });
+    if (!sres.ok) throw new Error(await sres.text() || 'requires a valid admin token');
+    const start = await sres.json();
+    const pk = start.publicKey;
+    pk.challenge = b64urlToBuf(pk.challenge);
+    pk.user.id = b64urlToBuf(pk.user.id);
+    pk.excludeCredentials = (pk.excludeCredentials||[]).map(c => ({...c, id: b64urlToBuf(c.id)}));
+    const cred = await navigator.credentials.create({ publicKey: pk });
+    const body = { ceremony_id: start.ceremony_id, label, user, role, response: {
+      clientDataJSON: bufToB64url(cred.response.clientDataJSON),
+      attestationObject: bufToB64url(cred.response.attestationObject),
+    }};
+    const r = await fetch('/auth/passkey/register/finish', {
+      method:'POST', headers:{ ...hdr, 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+    if (r.ok) show('passkey registered — you can now log in.','ok');
+    else show(await r.text() || 'registration failed','err');
+  } catch(e){ show(e.message || String(e), 'err'); }
+  finally { btn.disabled = false; }
+}
+
+document.getElementById('login').onclick = login;
+document.getElementById('register').onclick = register;
+if (!window.PublicKeyCredential) show('this browser does not support passkeys','err');
+</script>
+</body>
+</html>

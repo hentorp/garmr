@@ -1,0 +1,21 @@
+[package]
+publish = false            # workspace-internal; the deployable is the `garmr` binary, not crates.io libs
+name = "garmr-search"
+description = "garmr full-text search: a Tantivy inverted index over event messages and fields."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+garmr-core.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tantivy = "0.26"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = "3"
+chrono = { workspace = true }

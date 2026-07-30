@@ -1,0 +1,50 @@
+[package]
+name = "lbzip2"
+version = "0.5.9"
+edition = "2024"
+description = "Pure Rust parallel bzip2 decompressor — fast block scanning, multi-core Burrows-Wheeler decode"
+license = "MIT OR Apache-2.0 AND bzip2-1.0.6"
+repository = "https://codeberg.org/nordisk/znippy"
+homepage = "https://codeberg.org/nordisk/znippy"
+documentation = "https://docs.rs/lbzip2"
+readme = "README.md"
+keywords = ["bzip2", "decompression", "parallel", "compression"]
+categories = ["compression", "encoding"]
+# The files under benches/ are registered as [[test]] targets below (they are
+# `--ignored` test-harness profilers, not criterion benches); disable bench
+# auto-discovery so each file is a single build target, not two.
+autobenches = false
+
+[features]
+timing = []
+# `testmatrix` — turn `functional_status(component, check, ok, detail)` self-
+# reports into real nornir test-matrix rows. Compiled OUT of the default build
+# (no nornir dep by default); pulls nornir-testmatrix's own `testmatrix` mode.
+testmatrix = ["dep:nornir-testmatrix", "nornir-testmatrix/testmatrix"]
+
+[dependencies]
+memchr = "2"
+# Error type for the shared gatling ordered-sink trait (`OrderedSink::emit`
+# returns `anyhow::Result`); used only by the `lbunzip2` CLI binary.
+anyhow = "1"
+# The ONE shared no-barrier engine (leaf crate). bzip2 block/segment decode
+# fans out through `gatling_forkjoin::gatling_for_each` instead of a private
+# scoped-thread work-stealing pool.
+gatling = { path = "../gatling", version = "0.1.7", package = "rotaryengine" }
+# testmatrix feature only; path dep to sibling nornir repo, off by default.
+nornir-testmatrix = { version = "0.2", default-features = false, optional = true }
+
+[dev-dependencies]
+bzip2 = "0.5"
+
+[[test]]
+name = "decompress_bench"
+path = "benches/decompress_bench.rs"
+
+[[test]]
+name = "profile_stages"
+path = "benches/profile_stages.rs"
+
+[[test]]
+name = "stage_breakdown"
+path = "benches/stage_breakdown.rs"

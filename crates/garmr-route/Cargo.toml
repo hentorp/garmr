@@ -1,0 +1,22 @@
+[package]
+publish = false            # workspace-internal; the deployable is the `garmr` binary, not crates.io libs
+name = "garmr-route"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Alert routing for garmr: human-approved silences and per-rule throttling in front of the notification channels."
+
+[dependencies]
+garmr-core.workspace = true
+garmr-store.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true
+tokio.workspace = true

@@ -1,0 +1,36 @@
+# Access-audit: a single actor (db_user) doing an abnormal VOLUME of accesses
+# inside the window — the classic insider-misuse "fishing" pattern (browsing many
+# records without a matching case load). T1213.
+#
+# GENERIC: keys on log_type = 'audit' (not a product-specific source string) and
+# on the normalized `db_user`/`target_person` fields, so ANY access-audit feed
+# (a person register, an account/document/record audit, an API access log) drives
+# it once its events carry log_type=audit + those fields. The row emits `db_user`
+# (no user/src_ip column) so Detection::dedup_key opens ONE case per actor.
+#
+# TUNE: `min_lookups` in [params] is the volume threshold — set it to this
+# environment's normal per-window access rate. It is DATA, not SQL.
+id = "reg_bulk_lookups_by_user"
+title = "Bulk lookups by a single actor (audit)"
+attack = "T1213"
+severity = "high"
+schedule_secs = 300
+window_secs = 3600
+realert_secs = 7200
+message = "An actor made an unusually high number of register lookups/accesses within the window. Check authorization and case linkage."
+sql = """
+SELECT
+  regexp_replace(fields, '.*"db_user":"([^"]+)".*', '$1') AS db_user,
+  max(host) AS host,
+  count(*) AS lookups,
+  count(DISTINCT NULLIF(regexp_replace(fields, '.*"target_person":"([^"]+)".*', '$1'), fields)) AS distinct_targets
+FROM events
+WHERE event_ts > to_timestamp_micros({since_us})
+  AND log_type = 'audit'
+  AND fields LIKE '%"db_user":%'
+GROUP BY 1
+HAVING count(*) >= {min_lookups}
+"""
+
+[params]
+min_lookups = 50
