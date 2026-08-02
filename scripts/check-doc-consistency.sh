@@ -123,7 +123,7 @@ else
   ok "workspace version is $WS_VERSION"
   # Every alpha tag reference in the docs must be for this version series.
   BAD=$(grep -rhoE 'v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+' \
-          README.md SECURITY.md docs/ 2>/dev/null \
+          README.md SECURITY.md CHANGELOG.md docs/ 2>/dev/null \
         | sort -u | grep -v "^v${WS_VERSION}-alpha\." || true)
   if [ -n "$BAD" ]; then
     fail "alpha tag reference(s) do not match workspace version $WS_VERSION: $(echo "$BAD" | tr '\n' ' ')"
@@ -139,7 +139,7 @@ echo
 echo "== 8. Required legal and security documents exist =="
 for f in LICENSE LICENSES/AGPL-3.0-only.txt LICENSES/CC-BY-4.0.txt NOTICE \
          COMMERCIAL-LICENSING.md TRADEMARKS.md CLA.md CONTRIBUTING.md \
-         THIRD_PARTY_LICENSES.md SECURITY.md CODE_OF_CONDUCT.md \
+         THIRD_PARTY_LICENSES.md SECURITY.md CODE_OF_CONDUCT.md CHANGELOG.md \
          docs/security/known-limitations.md docs/security/threat-model.md \
          docs/status/alpha-status.md docs/deployment/secure-deployment.md; do
   if [ -f "$f" ]; then ok "present: $f"; else fail "missing required document: $f"; fi
