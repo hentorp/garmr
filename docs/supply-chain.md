@@ -12,7 +12,9 @@ Four things are enforced, all reproducible on your own machine:
 | `deny.toml` | Every license is on an allow-list; no known-vulnerable or yanked crate; every source is crates.io | `cargo deny check` |
 | `scripts/sbom.sh` → `supply-chain/sbom.cdx.json` | A complete, deterministic bill of materials (CycloneDX 1.5) | `bash scripts/sbom.sh && git diff --exit-code` |
 | `scripts/release.sh` → `dist/SHA256SUMS` | The exact binary + SBOM you got, hashed; optionally signed | `sha256sum -c SHA256SUMS` |
-| `.github/workflows/supply-chain.yml` | All of the above run on every push and PR | CI status |
+| `.github/workflows/supply-chain.yml` | All of the above run on every push and PR (plus a weekly re-run so a newly published advisory is caught against an unchanged lockfile) | CI status |
+| `scripts/check-actions-pinned.sh` | Every external GitHub Action is pinned to a full commit SHA | `bash scripts/check-actions-pinned.sh` |
+| `scripts/check-doc-consistency.sh` | Security claims in the docs still match the code | `bash scripts/check-doc-consistency.sh` |
 
 ## The dependency gate — `cargo deny`
 
@@ -39,14 +41,66 @@ for reachability by hand:
 
 | Advisory | Crate | Why tolerated | Clears when |
 |---|---|---|---|
+| RUSTSEC-2026-0041 | lz4_flex 0.10 | Decompression info-leak on invalid input. Transitive + feature-gated; the 0.10 copy is reached only via `cozo` → `swapvec`, which lz4-compresses garmr's **own** locally-spilled graph data — never attacker-supplied compressed input. The arrow/datafusion path uses the patched 0.13.x | `cozo`/`swapvec` bump lz4_flex |
 | RUSTSEC-2025-0132 | maxminddb | **Not reachable** — garmr's only call site is `Reader::open_readfile` (reads the GeoIP db into memory); the unsound `open_mmap` is never invoked | maxminddb ships a fixed release to bump to |
 | RUSTSEC-2026-0194, -0195 | quick-xml | XML-parse DoS reachable only via `object_store` parsing responses from the **operator-configured** S3 endpoint (the cold tier) — not an arbitrary remote attacker, DoS not RCE. Fixed in quick-xml ≥ 0.41; `object_store` 0.13.2 pins `^0.39` and is itself pinned by the vendored datafusion-54 / iceberg-arrow58 stack | the vendored datafusion/object_store stack reaches quick-xml ≥ 0.41 |
 | RUSTSEC-2024-0436 | paste | Build-time proc-macro (candle/gemm, behind the `semantic` feature) — no runtime attack surface; archived upstream with no drop-in replacement | candle migrates off `paste` |
+| RUSTSEC-2025-0056/-0057/-0141 | adler, fxhash, bincode | **Unmaintained**, not vulnerable: a zlib checksum, a non-cryptographic hashmap hasher, and a transitive serializer garmr never feeds untrusted input through | upstreams move to adler2 / rustc-hash / bincode 2 |
 
 > The quick-xml path also appears **build-time only** via `wayland-scanner` in
 > the optional desktop UI (parsing trusted local Wayland protocol XML). The
 > headless `garmr` server binary does not link the UI, so that path is absent
 > from a server deployment entirely.
+
+**Reviewed but deliberately not suppressed.** Standalone `cargo audit` also lists
+`RUSTSEC-2026-0221` (event-listener 5.4.1 unsoundness). `cargo deny check` does
+not flag it against this graph, so adding it to `deny.toml`'s `ignore` would be a
+suppression that matches nothing. The review is recorded as a comment in
+`deny.toml`: event-listener is transitive only (async-lock → moka → the vendored
+iceberg table cache), garmr has no direct dependency on it, and the unsound
+`!Send`-tag path is never instantiated here.
+
+**`cargo audit` vs `cargo deny`.** CI runs `cargo deny check` as the *gate* (it
+carries the audited exception list) and `cargo audit` as an *informational* step
+that reports without the exception list, so a newly published advisory is visible
+in the log even while the gate is green.
+
+**RustSec is not the whole picture.** Both tools read the RustSec advisory
+database, which is *narrower* than GitHub's. An advisory that exists only in
+GitHub's database is invisible to `cargo deny` and `cargo audit`, and only
+Dependabot surfaces it. One is live today:
+
+| Advisory | Crate | Why tolerated | Clears when |
+|---|---|---|---|
+| CVE-2026-43868 (GitHub only) | thrift 0.17 | Excessive memory allocation from a crafted size value. `parquet` 58 uses thrift to decode Parquet **file metadata**; garmr only reads Parquet it wrote into its own warehouse, or archives an operator placed on the configured cold tier — never attacker-supplied files. Ingested events arrive as JSON/NDJSON or Arrow and never touch thrift. Fixed in thrift ≥ 0.23, but `parquet` 58.3 pins `^0.17` under the vendored datafusion-54 / iceberg-arrow58 stack | the vendored parquet/datafusion stack reaches thrift ≥ 0.23 |
+
+Keep Dependabot alerts enabled and triage them alongside `cargo deny` — treating
+a green `cargo deny check` as proof that no advisory applies would be wrong.
+
+## Workflow supply chain
+
+CI is itself a supply-chain surface — a mutable action tag is code we did not
+review running with our workflow token.
+
+- **Every external GitHub Action is pinned to a full 40-character commit SHA**,
+  with the human-readable version in a trailing comment. `scripts/check-actions-pinned.sh`
+  runs as the `actions-pinned` CI job and fails the build if an unpinned
+  reference, a bare tag, a mutable `docker://` tag, or a SHA without a version
+  comment appears. Local actions (`uses: ./...`) are exempt.
+- **Downloaded tooling is checksum-verified.** The WebUI job pins the exact
+  `trunk` release *and* its SHA-256 in the workflow, verifies the download
+  against that in-repo digest first, then cross-checks the publisher's `.sha256`
+  asset and fails on any mismatch. Bumping the version without updating the
+  digest fails the build.
+- **Minimum token permissions.** Every workflow declares `permissions: contents:
+  read` at the top level; only the CodeQL analyze job widens that, to
+  `security-events: write`, which it needs to upload results.
+- **No secrets reach untrusted code.** There is no `pull_request_target`
+  anywhere; the only secret referenced is the default `GITHUB_TOKEN`, which
+  GitHub issues read-only for fork pull requests. Workflow steps that read
+  attacker-controlled values (the `cla` job reads the PR body and author) pass
+  them through `env:` and reference them as quoted shell variables, never
+  interpolating them into the script text.
 
 ## The bill of materials — SBOM
 

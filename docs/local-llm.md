@@ -48,8 +48,7 @@ resolves as local.
 
 garmr does not manage the model process — run it as a separate service (invariant
 #6: the model is an external process, never in-process). Any OpenAI-compatible
-server works; a few notes for the Proxmox lab (see
-[lab/pve-topology](lab/pve-topology.md)):
+server works; a few notes:
 
 - **Ollama** is the simplest: install it, `ollama pull <tag>`, and it serves on
   `:11434` using the GPU automatically when one is visible. Point

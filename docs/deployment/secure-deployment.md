@@ -18,22 +18,42 @@ reverse proxy / firewall, not inside garmr.
 
 ## Network posture (do this first)
 
-- **Ingest is the weak surface.** The native endpoint binds `0.0.0.0:3100` and
-  accepts unauthenticated POSTs by default, with no request-body / event-count /
-  field-size limits, and it does **not** fail closed on a non-loopback bind. The
-  Loki endpoint has no collector auth at all; Arrow Flight is experimental.
-  - Bind ingest to loopback or a trusted management interface only.
-  - Put a reverse proxy / firewall / mTLS in front that enforces authentication,
-    size limits, and rate limits.
-  - Configure `GARMR_COLLECTORS` (below) so accepted events are source-bound.
+garmr's listeners have **different** defaults and guarantees. Know which is which:
+
+| Listener | Config key | Default | Fails closed off-loopback? | Per-request auth |
+|---|---|---|---|---|
+| Query / console API | `ingest.api_bind` | `127.0.0.1:3110` | **Yes** (`GARMR_API_TOKEN`) | Token / passkey |
+| Native ingest | `ingest.ingest_bind` | `0.0.0.0:3100` | **Yes** (`GARMR_COLLECTORS`) | Collector bearer token |
+| Loki-compat push | `ingest.loki_bind` | `0.0.0.0:3100` | **No** | **None** |
+| Arrow Flight | `ingest.flight_bind` | disabled | **Yes** (`GARMR_COLLECTORS`) | Collector bearer token |
+| Syslog | `ingest.syslog_bind` | disabled | **No** | **None** |
+
+- **Native ingest and Arrow Flight fail closed.** `serve` refuses to start when
+  either binds a non-loopback address with no collectors configured. So a default
+  `serve` on a routable host will not start until you set `GARMR_COLLECTORS` or
+  move `ingest_bind` to loopback. Do **not** reach for the
+  `GARMR_INGEST_ALLOW_UNAUTH=1` development override to get past this.
+- **Native ingest enforces its own request limits** — 8 MiB body, 50 000 events
+  per request, 256 KiB per message, 64 KiB per field value — and rejects an
+  over-limit batch wholesale. It does **not** rate-limit request *frequency*.
+- **The Loki-compat endpoint is the weak surface.** No authentication, no
+  fail-closed bind gate, no source binding, no garmr-enforced size limits. If you
+  enable `loki-compat`, bind it to loopback or a management interface and put an
+  authenticating proxy in front of it. Prefer the native endpoint.
+- **No listener has built-in TLS.** Terminate TLS at a reverse proxy, or carry
+  ingest over a private encrypted network (WireGuard / Tailscale / mTLS at a
+  proxy). Collector bearer tokens travel in an `Authorization` header — in plain
+  text without one of those.
 - **The API/console fails closed off-loopback.** Binding `api_bind` to a
   non-loopback address requires `GARMR_API_TOKEN`, or `serve` refuses to start.
   Prefer keeping it on loopback and reaching it over an SSH tunnel or a
   hostname-fronted TLS proxy (needed for passkeys anyway).
-- **Rate-limit two DoS-prone paths** at the proxy: `/api/audit/status`,
-  `/api/audit/verify` (full ledger re-verification per request, reachable by any
-  read principal), and `/auth/passkey/login/finish` (a public path that writes an
-  fsync'd audit record per request). See
+- **Rate-limit two DoS-prone paths** at the proxy: `/api/audit/status` and
+  `/api/audit/verify` (full ledger re-verification per request — now admin-gated,
+  but still uncached and unlimited in frequency), and
+  `/auth/passkey/login/finish` (a public path; anonymous failure auditing is now
+  coalesced, but signature-verification CPU and successful-login ledger writes are
+  not rate-limited). See
   [../security/known-limitations.md](../security/known-limitations.md).
 
 ## Authentication and RBAC
@@ -145,8 +165,9 @@ recovery credential. See [../security/recovery.md](../security/recovery.md).
 
 ## Hardening checklist
 
-1. Ingest / Loki / Flight off untrusted networks; proxy enforces auth + size +
-   rate limits.
+1. `GARMR_COLLECTORS` configured for native ingest (the daemon enforces this on a
+   non-loopback bind); Loki / Flight / syslog off untrusted networks; a proxy
+   terminates TLS and enforces auth + size + rate limits.
 2. `GARMR_API_TOKEN` set (and a distinct `GARMR_ADMIN_TOKEN`); named `GARMR_USERS`.
 3. Passkeys registered (≥ 2 admin keys); recovery verified once.
 4. `GARMR_COLLECTORS` configured **before** `environment.learn`.

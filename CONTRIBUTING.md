@@ -31,6 +31,10 @@ See [`docs/development/build.md`](docs/development/build.md) and
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
+
+# repo gates (fast, no build needed) — the same scripts CI runs
+bash scripts/check-doc-consistency.sh   # docs still match the code
+bash scripts/check-actions-pinned.sh    # every external Action is SHA-pinned
 ```
 
 Garmr vendors some dependencies under `vendor/` (skade, znippy, znippy-zoomies) so
@@ -46,8 +50,10 @@ WASM workspace built with `trunk`.
    ingest, auth, policy, detection, or the audit ledger. Security-relevant changes
    need tests that demonstrate the safe behavior (e.g. fail-closed, bounds enforced).
 4. Update documentation when behavior changes. Docs must match runtime behavior —
-   do not describe capabilities the code does not have.
-5. Run fmt + clippy (`-D warnings`) + the test suite locally.
+   do not describe capabilities the code does not have. `scripts/check-doc-consistency.sh`
+   enforces this for the load-bearing claims (bind defaults, fail-closed gates,
+   ingest limit constants, feature names, version references, cross-doc links).
+5. Run fmt + clippy (`-D warnings`) + the test suite and both repo gates locally.
 6. Do **not** commit secrets, real hostnames/IPs, personal data, or internal
    infrastructure details. CI runs secret scanning and a "no private references"
    check.
@@ -56,7 +62,9 @@ WASM workspace built with `trunk`.
 
 Fill out the PR template ([`.github/pull_request_template.md`](.github/pull_request_template.md)),
 including **Security impact**, **Tests**, **Documentation**, **License & provenance**,
-and **CLA status**. Merges use squash; keep the PR title in
+and **CLA status**. The CLA section is **not** optional: the `cla` check requires
+the agreement line from [`CLA.md`](CLA.md) in your PR description, and a PR without
+it will not be merged. Merges use squash; keep the PR title in
 [Conventional Commits](https://www.conventionalcommits.org/) style
 (e.g. `fix(ingest): …`, `feat(webui): …`, `docs: …`).
 

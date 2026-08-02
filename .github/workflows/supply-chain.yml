@@ -2,6 +2,9 @@
 # (cargo-audit), and a deterministic CycloneDX SBOM. Format/lint/test live in
 # ci.yml. The graph is locked (--locked): a build that would update Cargo.lock
 # fails instead. deny.toml carries audited advisory `ignore`s (each justified).
+#
+# Security posture: read-only workflow token; every external action pinned to a
+# full commit SHA; no secrets are exposed to pull-request code.
 name: supply-chain
 
 on:
@@ -9,33 +12,80 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Weekly re-run so a NEWLY published advisory against an unchanged
+    # Cargo.lock is caught without waiting for the next push.
+    - cron: "17 4 * * 1"
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.96.0"
 
 jobs:
   supply-chain:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Install cargo-deny
+        # --locked so cargo-deny itself builds from its own published lockfile.
         run: cargo install --locked cargo-deny
       - name: cargo-deny (licenses, advisories, bans, sources)
         # cargo-deny's advisory check IS the RustSec check (same advisory-db), with
-        # the audited `ignore` list in deny.toml — so a separate `cargo audit` step
-        # would only duplicate that ignore list. One source of truth.
+        # the audited `ignore` list in deny.toml — one source of truth for the
+        # exceptions. The separate `cargo audit` step below is informational: it
+        # reports WITHOUT the ignore list so a new advisory is visible in the log
+        # even while cargo-deny is green on the audited set.
         run: cargo deny check
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+      - name: cargo audit (informational — exceptions live in deny.toml)
+        continue-on-error: true
+        run: cargo audit
       - name: Regenerate SBOM and fail if the committed one is stale
         run: |
           bash scripts/sbom.sh dist/sbom.cdx.json
           bash scripts/sbom.sh supply-chain/sbom.cdx.json
           git diff --exit-code supply-chain/sbom.cdx.json \
             || { echo "::error::supply-chain/sbom.cdx.json is stale — run scripts/sbom.sh and commit"; exit 1; }
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom
           path: dist/sbom.cdx.json
+
+  dependency-review:
+    # Flag vulnerable or disallowed-license dependencies INTRODUCED by a pull
+    # request, before they are merged. PR-only (the action needs a base and a
+    # head to diff) and read-only.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          # Mirrors deny.toml's allow-list intent: third-party copyleft code
+          # licenses must not enter the dependency tree. garmr's OWN crates are
+          # AGPL-3.0-only, so AGPL is not denied here — that would flag the
+          # workspace members themselves. cargo-deny's `licenses.allow` list is
+          # the authoritative gate for the Rust graph; this is the PR-time
+          # early warning across all ecosystems.
+          deny-licenses: GPL-2.0, GPL-3.0, LGPL-2.1, LGPL-3.0
+          # Narrow, documented exception. dependency-review also treats GitHub
+          # Actions as dependencies, and Swatinem/rust-cache is itself LGPL-3.0.
+          # A CI action runs on the runner and is never linked into, distributed
+          # with, or derived from garmr's artifact, so its copyleft terms do not
+          # reach the released binary — unlike a Rust crate in the graph, which
+          # `cargo deny`'s licenses allow-list still gates strictly. Scoped to
+          # this one action so any OTHER copyleft dependency still fails.
+          allow-dependencies-licenses: pkg:githubactions/Swatinem/rust-cache
+          comment-summary-in-pr: false
