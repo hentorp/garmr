@@ -112,6 +112,20 @@ ignore = [
     "RUSTSEC-2025-0057",
 ]
 
+# --- Reviewed, NOT suppressed ---------------------------------------------
+# Advisories that standalone `cargo audit` surfaces but `cargo deny check` does
+# not flag against this graph. They are recorded here so the review is on the
+# record; they are deliberately NOT added to `ignore` above, because an ignore
+# entry that matches no crate is a false suppression (and cargo-deny warns
+# `advisory-not-detected` for it).
+#
+# * RUSTSEC-2026-0221 — event-listener 5.4.1 unsoundness: `StackSlot` allows a
+#   `!Send` tag to cross a thread boundary. Transitive only, reached via
+#   async-lock -> moka -> the vendored iceberg-arrow58 table cache. garmr has no
+#   direct dependency on event-listener and never constructs one with a
+#   non-`Send` tag, so the unsound path is not instantiated in this tree.
+#   Re-review when moka/async-lock bump the dependency.
+
 # --- Bans -----------------------------------------------------------------
 # Guards against dependency-tree bloat and typosquat-style surprises.
 [bans]

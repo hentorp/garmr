@@ -1,11 +1,19 @@
 # Garmr CI — format, lint, test, WebUI, and repo-hygiene gates.
 #
 # Security posture:
-#   * Default GITHUB_TOKEN permissions are read-only (see `permissions` below).
+#   * Default GITHUB_TOKEN permissions are read-only (`permissions: contents: read`
+#     at the workflow level); no job widens them.
 #   * No job uses repository secrets on untrusted PR code, and we do NOT use
 #     `pull_request_target`.
-#   * Third-party actions SHOULD be pinned to a commit SHA before 1.0 (they are
-#     referenced by tag here for readability — pin them as a hardening follow-up).
+#   * Every third-party action is pinned to a full 40-character commit SHA with
+#     the human-readable version in a trailing comment. `actions-pinned` below
+#     fails the build if an unpinned external action reappears.
+#   * Downloaded tooling (trunk) is checksum-verified against the publisher's
+#     released `.sha256` before extraction.
+#
+# Fast vs. deep: every job here is mandatory on pull requests. Longer-running
+# security analysis lives in codeql.yml (also PR-triggered, plus a weekly
+# schedule) and supply-chain.yml. Nothing security-critical is scheduled-only.
 name: ci
 
 on:
@@ -22,6 +30,9 @@ env:
   # Smaller/faster CI links (garmr links datafusion/arrow — big objects).
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_INCREMENTAL: "0"
+  # Single source of truth for the toolchain, kept equal to rust-toolchain.toml
+  # by scripts/check-doc-consistency.sh.
+  RUST_TOOLCHAIN: "1.96.0"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -31,29 +42,80 @@ jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16
         with:
+          toolchain: "1.96.0"
           components: rustfmt
       - run: cargo fmt --all --check
 
   clippy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16
         with:
+          toolchain: "1.96.0"
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo test --workspace --all-features --locked
+
+  # The security behaviour the docs promise, run as its own named gate so a
+  # regression is obvious in the checks list rather than buried in `test`.
+  security-behaviour:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Security-critical test groups
+        # `cargo test -- <filter>` exits 0 when the filter matches NOTHING, so a
+        # renamed test would silently turn this gate green. run_group asserts the
+        # suite actually executed at least `min` tests.
+        run: |
+          set -euo pipefail
+          run_group() {
+            local desc="$1" min="$2"; shift 2
+            echo "::group::$desc"
+            local out; out="$("$@" 2>&1)"; echo "$out"
+            echo "::endgroup::"
+            local n
+            n="$(printf '%s\n' "$out" | awk '/^running [0-9]+ test/ { s += $2 } END { print s + 0 }')"
+            if [ "$n" -lt "$min" ]; then
+              echo "::error::$desc ran $n test(s), expected at least $min — a test was renamed or removed"
+              exit 1
+            fi
+            echo "$desc: $n test(s) ran"
+          }
+          # Fail-closed bind gates (native + Arrow Flight), 5 tests.
+          run_group "ingest bind gates" 5 \
+            cargo test --locked -p garmr-cli --all-features --bin garmr -- serve::tests
+          # Collector auth, source binding, native + Flight ingest limits.
+          run_group "ingest limits and collector auth" 20 \
+            cargo test --locked -p garmr-ingest --all-features
+          # Passkey session/auth hardening incl. failed-login audit coalescing.
+          run_group "passkey auth hardening" 8 \
+            cargo test --locked -p garmr-cli --all-features --bin garmr -- api::passkey::tests
+          # Tamper-evident ledger: mutation/reorder/delete/truncate detection.
+          run_group "audit tamper detection" 8 \
+            cargo test --locked -p garmr-audit --all-features
+      - name: Airgap / egress chokepoint gates
+        run: |
+          set -euo pipefail
+          cargo test --locked -p garmr-cli --all-features --test egress_chokepoint_lint
+          cargo test --locked -p garmr-core --all-features --test egress_singleton
 
   detached-packages:
     # Packages with their own workspace (not garmr workspace members).
@@ -66,27 +128,52 @@ jobs:
           - xtask/Cargo.toml
           - crates/garmr-webui/Cargo.toml
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo test --manifest-path ${{ matrix.manifest }} --locked || cargo build --manifest-path ${{ matrix.manifest }} --locked
 
   webui:
     # Build the Leptos WebAssembly console.
     runs-on: ubuntu-latest
+    env:
+      # Pin the exact trunk release AND the SHA-256 of the linux-x64 tarball as
+      # published in that release's `.sha256` asset. Bumping the version without
+      # updating the digest fails the verification step below — deliberately.
+      TRUNK_VERSION: "0.21.14"
+      TRUNK_SHA256: "f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Pin to the rust-toolchain.toml channel so the wasm32 target lands on the
       # toolchain cargo actually uses (a stale @stable installs wasm32 on the wrong
       # toolchain -> "can't find crate for core").
-      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16
         with:
+          toolchain: "1.96.0"
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - name: Install trunk
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install trunk (pinned + checksum-verified)
         run: |
-          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz \
-            | tar -xzf - -C "$HOME/.cargo/bin" trunk
+          set -euo pipefail
+          base="https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}"
+          file="trunk-x86_64-unknown-linux-gnu.tar.gz"
+          tmp="$(mktemp -d)"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$tmp/$file" "$base/$file"
+          # Verify against the digest pinned in this workflow FIRST (a compromised
+          # release could ship a matching .sha256, so the in-repo pin is the
+          # authority). Then cross-check the publisher's own .sha256 asset.
+          echo "${TRUNK_SHA256}  $tmp/$file" | sha256sum --check --strict -
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$tmp/$file.sha256" "$base/$file.sha256"
+          published="$(tr -s ' ' < "$tmp/$file.sha256" | cut -d' ' -f1)"
+          if [ "$published" != "${TRUNK_SHA256}" ]; then
+            echo "::error::trunk digest mismatch: workflow pins ${TRUNK_SHA256}, release publishes ${published}"
+            exit 1
+          fi
+          tar -xzf "$tmp/$file" -C "$HOME/.cargo/bin" trunk
+          rm -rf "$tmp"
+          trunk --version
       - name: Build WASM frontend
         working-directory: crates/garmr-webui
         run: trunk build --release
@@ -94,26 +181,83 @@ jobs:
   reuse:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: REUSE license lint
-        uses: fsfe/reuse-action@v6
+        uses: fsfe/reuse-action@676e2d560c9a403aa252096d99fcab3e1132b0f5 # v6.0.0
 
   secret-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: gitleaks
-        uses: gitleaks/gitleaks-action@v3
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
+          # The default read-only workflow token. On a fork PR GitHub issues a
+          # read-only token regardless, so no writable secret reaches PR code.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  doc-consistency:
+    # Fail when a high-impact documentation claim drifts from the code: bind
+    # defaults, fail-closed gates, ingest limit constants, Cargo feature names,
+    # version references, required legal documents, and cross-doc links.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Documentation consistency
+        run: bash scripts/check-doc-consistency.sh
+
+  actions-pinned:
+    # Reject any external GitHub Action that is not pinned to a full 40-char
+    # commit SHA. Local actions (`uses: ./...`) and reusable workflows in this
+    # repository are exempt.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify all external actions are SHA-pinned
+        run: bash scripts/check-actions-pinned.sh
+
+  cla:
+    # Garmr is dual-licensed, so every contribution needs recorded CLA agreement
+    # (CLA.md §2 grants the relicensing right). This check records that agreement
+    # in the PR itself; there is no exemption for humans.
+    #
+    # Security: the PR body/author are attacker-controlled. They are passed
+    # through `env:` and referenced as quoted shell variables — never interpolated
+    # into the script text — so a crafted title or body cannot inject commands.
+    # The job needs no token and no secrets.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require recorded CLA agreement
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        run: |
+          set -euo pipefail
+          # Bots (Dependabot et al.) cannot agree to a CLA; their PRs are
+          # maintainer-owned automated dependency bumps.
+          case "$AUTHOR_TYPE" in
+            Bot) echo "author '$PR_AUTHOR' is a Bot — CLA check not applicable"; exit 0 ;;
+          esac
+          needle='I have read and agree to the Garmr CLA (CLA.md), version 1.0.'
+          if printf '%s' "${PR_BODY:-}" | grep -qF -- "$needle"; then
+            echo "CLA agreement recorded by '$PR_AUTHOR'."
+            exit 0
+          fi
+          echo "::error::No CLA agreement found in the PR description."
+          echo "Add this line, exactly, to the pull-request description:"
+          echo "  $needle"
+          echo "See CLA.md and CONTRIBUTING.md."
+          exit 1
 
   no-private-references:
     # Fail if internal infrastructure / private references leak into the tree.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Scan for private references
         run: |
           set -e

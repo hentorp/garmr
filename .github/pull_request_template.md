@@ -47,9 +47,14 @@ Note: heavy builds/tests can be memory-intensive; describe what you ran.
 
 ## CLA status
 
-<!--
-If the project requires a Contributor License Agreement, confirm your status.
-If no CLA process is in place yet, note that here.
--->
+Garmr is dual-licensed (AGPL-3.0-only + commercial), so **every** contribution
+requires agreement to the [Contributor License Agreement](../CLA.md). There is no
+exemption. You keep your copyright; the CLA grants the relicensing and patent
+rights the dual-license model needs.
 
-- [ ] I have signed the CLA, **or** no CLA is currently required for this contribution.
+**Paste this line, exactly, into the PR description** (the `cla` check looks for
+it and will fail without it):
+
+> I have read and agree to the Garmr CLA (CLA.md), version 1.0.
+
+- [ ] I have included the CLA agreement line above in this PR's description.
