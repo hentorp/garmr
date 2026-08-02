@@ -284,6 +284,15 @@ lz4_flex, `RUSTSEC-2025-0132` maxminddb, `RUSTSEC-2026-0194` / `RUSTSEC-2026-019
 quick-xml), plus unmaintained-crate warnings. Read `deny.toml` before trusting
 the tree; the exceptions are not blanket suppressions.
 
+Two further advisories are **reviewed but not visible to those tools**, and are
+recorded as comments in `deny.toml` rather than as suppressions:
+`RUSTSEC-2026-0221` (event-listener unsoundness, which `cargo deny` does not flag
+against this graph) and **`CVE-2026-43868`** (thrift 0.17 memory allocation —
+present only in GitHub's advisory database, so `cargo audit` and `cargo deny`
+never see it and only Dependabot surfaces it). A green `cargo deny check` is
+therefore *not* proof that no advisory applies; see
+[../supply-chain.md](../supply-chain.md).
+
 ## The agent's residual risks
 
 - The agent is read-only and propose-only, and log content is treated as data, not

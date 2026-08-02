@@ -125,6 +125,20 @@ ignore = [
 #   direct dependency on event-listener and never constructs one with a
 #   non-`Send` tag, so the unsound path is not instantiated in this tree.
 #   Re-review when moka/async-lock bump the dependency.
+#
+# * CVE-2026-43868 — thrift 0.17.0 excessive memory allocation from a crafted
+#   size value. NOTE: this advisory exists in GitHub's database but NOT in
+#   RustSec, so neither `cargo deny` nor `cargo audit` sees it — Dependabot is
+#   what surfaces it. Recorded here so the gap is explicit.
+#   Reachability: thrift is pulled by `parquet` 58 to decode Parquet FILE
+#   METADATA (the Thrift-encoded footer). garmr only ever reads Parquet files it
+#   wrote itself into its own Iceberg warehouse, or archives an operator placed
+#   on the configured cold tier — never attacker-supplied files. Ingested events
+#   arrive as JSON/NDJSON or Arrow, which do not touch thrift. Fixed in thrift
+#   >= 0.23, but `parquet` 58.3 pins `^0.17` and is itself pinned by the vendored
+#   datafusion-54 / iceberg-arrow58 stack, so bumping it is fork surgery (the
+#   standalone Dependabot bump fails CI for exactly this reason).
+#   Clears when the vendored parquet/datafusion stack reaches thrift >= 0.23.
 
 # --- Bans -----------------------------------------------------------------
 # Guards against dependency-tree bloat and typosquat-style surprises.

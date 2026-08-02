@@ -65,6 +65,18 @@ carries the audited exception list) and `cargo audit` as an *informational* step
 that reports without the exception list, so a newly published advisory is visible
 in the log even while the gate is green.
 
+**RustSec is not the whole picture.** Both tools read the RustSec advisory
+database, which is *narrower* than GitHub's. An advisory that exists only in
+GitHub's database is invisible to `cargo deny` and `cargo audit`, and only
+Dependabot surfaces it. One is live today:
+
+| Advisory | Crate | Why tolerated | Clears when |
+|---|---|---|---|
+| CVE-2026-43868 (GitHub only) | thrift 0.17 | Excessive memory allocation from a crafted size value. `parquet` 58 uses thrift to decode Parquet **file metadata**; garmr only reads Parquet it wrote into its own warehouse, or archives an operator placed on the configured cold tier — never attacker-supplied files. Ingested events arrive as JSON/NDJSON or Arrow and never touch thrift. Fixed in thrift ≥ 0.23, but `parquet` 58.3 pins `^0.17` under the vendored datafusion-54 / iceberg-arrow58 stack | the vendored parquet/datafusion stack reaches thrift ≥ 0.23 |
+
+Keep Dependabot alerts enabled and triage them alongside `cargo deny` — treating
+a green `cargo deny check` as proof that no advisory applies would be wrong.
+
 ## Workflow supply chain
 
 CI is itself a supply-chain surface — a mutable action tag is code we did not
