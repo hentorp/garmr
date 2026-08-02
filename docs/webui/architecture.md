@@ -69,7 +69,7 @@ plane renders a labelled panel explaining exactly what to configure.
 ## Backend additions
 
 Two thin, read-only endpoints were added to expose already-present backend
-capability (see [backend-capability-matrix.md](backend-capability-matrix.md)):
+capability:
 
 - `GET /api/capabilities` (`crates/garmr-cli/src/api/capabilities.rs`) — the
   runtime feature/permission/health manifest.

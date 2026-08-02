@@ -42,14 +42,23 @@ blocks every external route.
 
 ```bash
 cargo build --release -p garmr-cli
-./target/release/garmr serve      # binds loopback by default
+./target/release/garmr serve
+# The query API defaults to loopback (127.0.0.1:3110).
+# Native ingest defaults to 0.0.0.0:3100 and requires collector authentication
+# when bound to a non-loopback address — `serve` refuses to start otherwise.
 ```
 
-Before binding to a routable address, read
-[Secure deployment](docs/deployment/secure-deployment.md): configure collector
-authentication (ingest fails closed on a non-loopback bind without it), set an egress
-policy, and put the console behind authenticated TLS. Some capabilities are behind
-Cargo features, e.g. `--features "semantic loki-compat flight"`.
+So a default `serve` on a machine with a routable interface **will refuse to start**
+until you either set `GARMR_COLLECTORS` (per-collector bearer tokens) or move
+`ingest.ingest_bind` to loopback. That is deliberate: an open, unauthenticated ingest
+port lets anyone who can reach it forge events into the SOC.
+
+Read [Secure deployment](docs/deployment/secure-deployment.md) before exposing
+anything: it covers collector authentication, the API token / passkey gates, the
+egress policy, and which surfaces still need a reverse proxy in front of them. Some
+capabilities are behind Cargo features, e.g. `--features "semantic loki-compat flight"`;
+the optional Loki and Arrow Flight receivers have **different** security properties
+from native ingest — see [Known limitations](docs/security/known-limitations.md).
 
 ## Documentation
 

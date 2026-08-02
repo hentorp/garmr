@@ -104,7 +104,10 @@ Each plane maps to one or more crates under `crates/`.
 ## What runs where
 
 `garmr serve` is the daemon: it hosts the web console + read/query API (default
-`127.0.0.1:3110`) and the ingest endpoint (default `0.0.0.0:3100`). Every other
+`127.0.0.1:3110`) and the native ingest endpoint (default `0.0.0.0:3100`). Both
+fail closed on a non-loopback bind without authentication configured
+(`GARMR_API_TOKEN` and `GARMR_COLLECTORS` respectively) — see
+[deployment/secure-deployment.md](../deployment/secure-deployment.md). Every other
 `garmr` subcommand is one-shot and prefers the running daemon's API when one is
 up; the raw-file commands (offline analysis, replay, backup) run when `serve` is
 stopped, because the embedded store is single-process. See

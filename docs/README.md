@@ -40,8 +40,6 @@ The detection, governance, and learning planes.
 
 | Doc | Covers |
 |---|---|
-| [lab/pve-topology](lab/pve-topology.md) | The Proxmox lab + isolated test-role estate |
-| [lab/test-environment](lab/test-environment.md) | Standing up a test environment |
 | `scripts/resilience-harness.sh` | **DoD 23/25** resilience/airgap scenarios (safety-interlocked) |
 | `garmr synth-eval` | **DoD 21** labeled detection eval (recall/FPR over the fused pipeline) |
 
@@ -67,10 +65,8 @@ and the cross-cutting
 
 ## Status & decisions
 
-- [status/productization-roadmap](status/productization-roadmap.md) — the DoD work and its state
-- [status/pre-productization-assessment](status/pre-productization-assessment.md) — the Phase-0 subsystem map
+- [status/alpha-status](status/alpha-status.md) — what is implemented, gated, experimental, or planned
 - [adr/](adr/) — architecture decision records
-- [ai-context](ai-context.md) — the generated AI context pack
 
 ## Reference
 

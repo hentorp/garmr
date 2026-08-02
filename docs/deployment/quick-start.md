@@ -52,6 +52,14 @@ environment (see step 4).
 Default binds: the web console + read/query API on `127.0.0.1:3110` (loopback), and
 the native ingest endpoint on `0.0.0.0:3100`.
 
+> Because native ingest defaults to `0.0.0.0`, on a host with a routable interface
+> `serve` **refuses to start** until you either set `GARMR_COLLECTORS` (per-collector
+> bearer tokens) or change `ingest.ingest_bind` to a loopback address. The same
+> fail-closed rule applies to the Arrow Flight receiver, and to `api_bind` with
+> `GARMR_API_TOKEN`. The optional Loki-compat receiver (`loki_bind`, also
+> `0.0.0.0:3100`) is **not** gated and is unauthenticated — see
+> [secure-deployment.md](secure-deployment.md).
+
 ## 3. Verify the whole loop offline
 
 ```sh

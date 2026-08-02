@@ -7,8 +7,10 @@ SPDX-License-Identifier: CC-BY-4.0
 
 Garmr is **alpha software**. Treat this project as under active security
 hardening. Please read [`docs/security/known-limitations.md`](docs/security/known-limitations.md)
-before deploying — several ingest and audit surfaces are not yet safe to expose to
-untrusted networks, and some features are experimental and disabled by default.
+before deploying. In short: the native ingest and query API fail closed on a
+non-loopback bind without authentication, but the optional **Loki-compat**
+receiver does not authenticate at all, **no listener has built-in TLS or rate
+limiting**, and some features are experimental and disabled by default.
 
 ## Supported versions
 

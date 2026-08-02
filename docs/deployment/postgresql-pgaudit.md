@@ -16,6 +16,15 @@ plane.
 > deeper multidimensional behavioral analytics are partly in progress — see
 > [../architecture/application-audit.md](../architecture/application-audit.md).
 
+> **Read this before choosing a shipping path.** The pgAudit CSV/JSON parser and
+> its SQL analysis (canonical `db_user` / `statement` / `object_table` fields plus
+> a statement fingerprint) run in the **`replay`** path and in the **live Loki**
+> path — **not** in `garmr pgaudit-ship`. The recommended collector ships raw
+> csvlog rows to native ingest, which applies only the generic field extractor.
+> The table in [§2.1](#21-which-path-parses-what) is authoritative; the trade-off
+> is summarised in
+> [../security/known-limitations.md](../security/known-limitations.md).
+
 ## 1. Enable pgAudit in PostgreSQL
 
 In `postgresql.conf` (adjust the version-specific paths):
@@ -47,6 +56,30 @@ What it guarantees: no drops (every record is fsync'd to a bounded on-disk spool
 removed only after a confirmed `2xx`); bounded disk (the spool is rewritten from the
 undelivered backlog on each commit); backpressure-safe retry; and gap detection via
 `X-Garmr-Seq` / `X-Garmr-Epoch` headers.
+
+What it does **not** do: parse the csvlog. Each reassembled record is shipped as the
+event `message` with `source=postgres-csvlog`, `log_type=audit`, and no `fields`
+object, so the native endpoint derives fields with the **generic** extractor
+(`src_ip` / `user` / `port`). The pgAudit parser and `garmr_sql::analyze` are not on
+this path.
+
+### 2.1 Which path parses what
+
+| Path | Build | Authenticated | Parsing on ingest |
+|---|---|---|---|
+| `garmr pgaudit-ship` → `/ingest/v1/events` | default | **Yes** — collector bearer token, source-bound, sequence-tracked | Generic field extractor only. Raw csvlog row stored as `message`. |
+| Loki push, stream label `source=postgres-csvlog` / `postgres-jsonlog` | `loki-compat` | **No** — the Loki path has no authentication at all | **Full** pg adapter: canonical actor/database/statement/object fields + SQL fingerprint |
+| `garmr replay --format postgres-csvlog` / `postgres-jsonlog` | default | n/a (offline, local file) | **Full** pg adapter |
+
+Practical consequence: today you can have **authenticated, durable, gap-tracked
+delivery** (`pgaudit-ship`) *or* **full semantic parsing in a live path** (Loki
+adapter), not both. Records shipped by `pgaudit-ship` still land, are stored, and
+are searchable/queryable — but the typed audit record projected from them is
+largely empty, so access-policy evaluation and object-level detectors have little
+to act on. Use `replay` for a high-fidelity offline import of an existing archive.
+
+Routing the native endpoint through the adapter registry by `source` is the
+tracked fix; until it lands, size your expectations accordingly.
 
 ### Get a collector token
 
@@ -122,10 +155,17 @@ drop the unit, set the env. No network access is needed beyond reaching
 If you already ship Postgres logs through a Loki-compatible agent, garmr can parse a
 stream labeled `source = postgres-csvlog` (or `postgres-jsonlog`) through the pg
 adapter directly in the live ingest path — full canonical fields plus SQL
-fingerprint. This path requires a **`loki-compat`** build and the Loki endpoint,
-and (like all ingest paths today) is not network-hardened — keep it on a trusted
-network. Relabel the stream `source="postgres-csvlog"`, `log_type="audit"`,
+fingerprint. This path requires a **`loki-compat`** build and the Loki endpoint.
+Relabel the stream `source="postgres-csvlog"`, `log_type="audit"`,
 `host="<db-host>"`, and point it at garmr's Loki endpoint.
+
+> **Security trade-off.** The Loki receiver performs **no authentication** — the
+> collector registry is not consulted on this path even when `GARMR_COLLECTORS` is
+> set — has **no fail-closed bind gate**, no source binding, and no garmr-enforced
+> body/event/field limits. Its default bind is `0.0.0.0:3100`. Bind it to loopback
+> or a management interface and front it with a proxy that authenticates and
+> enforces size and rate limits. Anyone who can reach this port can inject
+> arbitrary "audit" events.
 
 ## 4. Turn on the detection plane
 
@@ -158,8 +198,10 @@ triage pipeline. See [../guides/policies.md](../guides/policies.md) and
 
 ## Handling notes
 
-- The full reassembled SQL is stored as `statement` and is treated as **data, never
-  instructions** everywhere downstream.
+- On the **parsing** paths (`replay`, Loki adapter) the reassembled SQL is stored as
+  the canonical `statement` field. On the `pgaudit-ship` path the raw csvlog row is
+  stored as the event `message` and there is no `statement` field. Either way, SQL
+  text is treated as **data, never instructions** everywhere downstream.
 - Sensitivity classification is **operator/collector-supplied** (`data_classification`
   tags / the catalog), not inferred by inspecting SQL. For a PII deployment, set the
   model-routing floor to `confidential` (see

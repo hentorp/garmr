@@ -25,12 +25,22 @@ use before you invest in it.
 
 Before any exposure beyond an isolated lab, read
 [security/known-limitations.md](../security/known-limitations.md) and
-[security/threat-model.md](../security/threat-model.md). The most important gaps:
-the **ingest, Loki, and Flight endpoints are not hardened** (native ingest binds
-`0.0.0.0` by default and does not fail closed without collector auth, and none of
-the ingest paths enforce request-body / event-count / field-size limits), and there
-are **unauthenticated denial-of-service surfaces** on the audit-status/verify
-endpoints and the passkey login-finish path.
+[security/threat-model.md](../security/threat-model.md). The most important gaps
+today:
+
+- **The Loki-compat receiver has no authentication and no fail-closed bind gate.**
+  Native ingest and Arrow Flight both refuse a non-loopback bind without
+  configured collectors; the Loki path does not, and never consults the collector
+  registry. It is the weakest surface in the tree.
+- **No listener has built-in TLS or rate limiting.** Transport encryption and
+  request-frequency limits must come from a reverse proxy or the network layer.
+- **`garmr pgaudit-ship` does not run the pgAudit/SQL semantic parser.** The
+  recommended collector ships raw csvlog rows to native ingest, which applies only
+  the generic field extractor. Full pg parsing runs on the offline `replay` path
+  and on the (unauthenticated) live Loki path. See known-limitations.
+- **Audit verification and passkey login remain uncapped in frequency**, though
+  both were tightened: audit status/verify are now admin-gated, and anonymous
+  failed-login audit writes are coalesced.
 
 ## Status legend
 
@@ -45,10 +55,10 @@ endpoints and the passkey login-finish path.
 
 | Area | Status |
 |---|---|
-| Native HTTP ingest (`/ingest/v1/events`) | Implemented, runtime-wired — **but not network-hardened** (see known-limitations) |
-| Loki push ingest | Feature-gated (`loki-compat`); **no collector auth on this path** |
-| Arrow Flight ingest | Feature-gated (`flight`), off by default — **experimental, treat as disabled-by-default** |
-| Authenticated collectors (`GARMR_COLLECTORS`) | Config-gated; not tied to the bind address |
+| Native HTTP ingest (`/ingest/v1/events`) | Implemented, runtime-wired; **fails closed** on a non-loopback bind without collectors, enforces body/event/message/field limits. No TLS, no rate limiting. |
+| Loki push ingest | Feature-gated (`loki-compat`); **no authentication, no fail-closed bind gate, no garmr-enforced limits** — the weakest surface |
+| Arrow Flight ingest | Feature-gated (`flight`), **off by default**; **experimental**. Authenticates against the collector registry, fails closed off-loopback, enforces per-batch/per-stream/timeout caps. No TLS. |
+| Authenticated collectors (`GARMR_COLLECTORS`) | Config-gated; **enforced by the native and Flight bind gates** (not consulted on the Loki path) |
 | Iceberg warehouse + redb state + full-text index | Implemented, runtime-wired |
 | Semantic search / embeddings | Feature-gated (`semantic`) + local model (`GARMR_EMBED_MODEL`) |
 | Hot/cold retention tiering | Config-gated (`[retention] enabled`) |
@@ -56,7 +66,7 @@ endpoints and the passkey login-finish path.
 | Anomaly / RBA / frequency baselines / environment model | Implemented, runtime-wired |
 | Application-audit detection plane (policy + audit detectors + catalog + monitoring) | Config-gated (`[detect] app_audit_enabled`) |
 | Multidimensional UEBA (per-dimension baselines, peer groups, service-account profiling) | Partly implemented / **planned** |
-| PostgreSQL / pgAudit ingestion | Config-gated (native `pgaudit-ship` collector; live Loki adapter needs `loki-compat`) |
+| PostgreSQL / pgAudit ingestion | Partly wired: `pgaudit-ship` delivers authenticated + durable but **unparsed** rows; full pg/SQL parsing runs only in `replay` and the `loki-compat` live adapter |
 | Read-only triage agent + propose-only executor + change pipeline | Implemented, runtime-wired |
 | Typed hybrid search IR (safe by construction) | Implemented, runtime-wired |
 | Model router (classification-aware; keeps classified data local) | Implemented (minimum viable); role-based routing is a design target |
@@ -67,7 +77,7 @@ endpoints and the passkey login-finish path.
 | Governed registry (versioned, audited) | Implemented; registry-backed policy/catalog/monitoring enforcement config-gated |
 | Offline learning plane (champion/challenger) | Implemented (minimum viable) |
 | Bearer-token RBAC | Implemented, runtime-wired; API fails closed off-loopback |
-| Passkey / WebAuthn login | Implemented (needs HTTPS + real hostname) — **login-finish DoS surface** noted |
+| Passkey / WebAuthn login | Implemented (needs HTTPS + real hostname); anonymous failed-login audit writes are coalesced — **still no rate limiting** |
 | Backup / restore / single-host promotion | Implemented (minimum viable); online capture deferred |
 | Multi-node HA failover | **Experimental / unverified** (single-host only) |
 | Supply chain (SBOM, `cargo deny`, signed releases, air-gap bundles) | Implemented |
