@@ -80,4 +80,12 @@ jobs:
           # the authoritative gate for the Rust graph; this is the PR-time
           # early warning across all ecosystems.
           deny-licenses: GPL-2.0, GPL-3.0, LGPL-2.1, LGPL-3.0
+          # Narrow, documented exception. dependency-review also treats GitHub
+          # Actions as dependencies, and Swatinem/rust-cache is itself LGPL-3.0.
+          # A CI action runs on the runner and is never linked into, distributed
+          # with, or derived from garmr's artifact, so its copyleft terms do not
+          # reach the released binary — unlike a Rust crate in the graph, which
+          # `cargo deny`'s licenses allow-list still gates strictly. Scoped to
+          # this one action so any OTHER copyleft dependency still fails.
+          allow-dependencies-licenses: pkg:githubactions/Swatinem/rust-cache
           comment-summary-in-pr: false
