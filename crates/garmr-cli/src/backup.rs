@@ -10,7 +10,7 @@
 //! probe, NOT `open_writable`), copies the durable trees, ed25519-signs the
 //! content-addressed manifest, and FAILS CLOSED if any secret path is staged —
 //! the ledger is copied by the SAME allow-list as `garmr audit export` (segments
-//! + checkpoints + public key, never `signing.key`). `verify` is offline and
+//! plus checkpoints and public key, never `signing.key`). `verify` is offline and
 //! fail-closed against an OUT-OF-BAND trusted key (the embedded key is never a
 //! trust root). `restore` verifies first, refuses a live writer and a
 //! warehouse-path-binding mismatch, stages + swaps atomically with rollback, and

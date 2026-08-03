@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Assembled read views: cases list + detail (with the Phase-3 `current`
-//! block), ATT&CK coverage of the configured ruleset, the entity-graph pivot
-//! + the full topology graph for the 3D map, per-host AND per-entity risk
+//! block), ATT&CK coverage of the configured ruleset, the entity-graph pivot +
+//! the full topology graph for the 3D map, per-host AND per-entity risk
 //! (RBA), the cached events-total tile (single-flight background count), and
 //! the ingest-quality surfaces: per-source event-lag/staleness and
 //! per-collector delivery-sequence integrity.
@@ -601,10 +601,6 @@ pub(super) async fn entities_search(
     State(st): State<ApiState>,
     Query(p): Query<HashMap<String, String>>,
 ) -> ApiResult {
-    /// Hard ceiling per entity kind, independent of `?limit=`. A palette shows a
-    /// handful of hits; nothing is served by letting a broad query return more.
-    const MAX_PER_KIND: usize = 10;
-
     let q = p
         .get("q")
         .map(|s| s.trim().to_lowercase())
@@ -812,6 +808,24 @@ pub(super) fn entity_search_hit(haystack: &str, query_lc: &str) -> bool {
     !query_lc.is_empty() && haystack.to_lowercase().contains(query_lc)
 }
 
+/// Percent-encode the path-unsafe characters in an entity id.
+///
+/// Entity ids here are hostnames, account names and application names, which can
+/// legitimately contain `/`, spaces or `@`. A raw id in the path would resolve to
+/// the wrong entity — or to nothing — when the console follows the link.
+fn urlencoding_min(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    for b in v.bytes() {
+        match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod entity_search_tests {
     use super::*;
@@ -851,22 +865,4 @@ mod entity_search_tests {
         assert_eq!(entity_search_cap(Some("abc")), MAX_ENTITY_HITS_PER_KIND);
         assert_eq!(entity_search_cap(Some("")), MAX_ENTITY_HITS_PER_KIND);
     }
-}
-
-/// Percent-encode the path-unsafe characters in an entity id.
-///
-/// Entity ids here are hostnames, account names and application names, which can
-/// legitimately contain `/`, spaces or `@`. A raw id in the path would resolve to
-/// the wrong entity — or to nothing — when the console follows the link.
-fn urlencoding_min(v: &str) -> String {
-    let mut out = String::with_capacity(v.len());
-    for b in v.bytes() {
-        match b {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
