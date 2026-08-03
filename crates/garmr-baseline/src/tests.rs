@@ -1,6 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
+//! Deterministic tests for the behavioral-baseline store. Each test builds a
+//! small [`BaselineStore`] with low promotion thresholds so a handful of
+//! accesses reaches Candidate, then asserts the trust discipline: only a
+//! Trusted profile answers novelty / off-hours / deviation / peer queries,
+//! hard blocks refuse promotion even for an analyst, a Suspicious profile must
+//! be human-cleared before it can re-earn trust, and the store round-trips
+//! through its flat-array JSON form with a stable, versioned digest.
+
 use super::*;
 use chrono::{TimeZone, Utc};
 use garmr_core::{AuditAction, AuditActor, AuditContext, AuditRecord, QueryType};

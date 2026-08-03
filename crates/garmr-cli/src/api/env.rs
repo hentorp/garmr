@@ -1,16 +1,18 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The admin write surface for the temporal environment model (Phase 5). Every
-//! handler here is mounted only behind `GARMR_ADMIN_TOKEN` and enforces the same
-//! hard invariant as the registry: a PROTECTED transition needs a fail-closed
-//! audit event, and — for a promotion to Trusted — the two INVIOLABLE
-//! anti-poisoning blocks (an open/malicious case, a compromised entity) are
-//! re-checked here even for an authenticated admin. A blocked attempt is itself
-//! audited (`ENV_PROMOTE_DENIED`), never a silent no-op.
-//!
-//! Demotions (→ Suspicious/KnownMalicious/Retired) are audited fail-closed but
-//! are NOT gate-blocked — flagging a compromised entity is always allowed.
+//! The temporal environment model's HTTP surface (Phase 5): the read views
+//! (facts, candidates, per-entity bitemporal lookup, integrity verify — plus
+//! the detection plane's findings list) on the always-on read block, and the
+//! admin writes behind `GARMR_ADMIN_TOKEN`. A disabled model answers 404 on
+//! the env routes (reads AND writes), so `environment.enabled` genuinely gates
+//! the surface. Writes enforce the same hard invariant as the registry: a
+//! PROTECTED transition needs a fail-closed audit event, and a promotion to
+//! Trusted re-checks the two INVIOLABLE anti-poisoning blocks (an open or
+//! malicious case, a compromised entity) even for an authenticated admin — a
+//! blocked attempt is itself audited (`ENV_PROMOTE_DENIED`), never a silent
+//! no-op. Demotions (→ Suspicious/KnownMalicious/Retired) are audited
+//! fail-closed but NOT gate-blocked — flagging a compromise is always allowed.
 
 use chrono::Utc;
 use garmr_core::{

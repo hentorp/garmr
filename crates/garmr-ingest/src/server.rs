@@ -149,7 +149,12 @@ impl IngestAuditor {
         }
     }
 
-    /// A no-op auditor (tests / when auditing is off).
+    /// A no-op auditor: accepts every record and drops it.
+    ///
+    /// Used by `tests/native_auth_e2e.rs`, which drives the real `run_ingest`
+    /// server over a socket to prove the collector-auth contract and has no
+    /// ledger to write to. Do not delete as dead code — the consumer lives in
+    /// the public tree's test suite.
     pub fn noop() -> Self {
         Self::new(Arc::new(|_| {}))
     }

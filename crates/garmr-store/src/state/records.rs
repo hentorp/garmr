@@ -280,10 +280,6 @@ impl StateStore {
         self.append_bytes(FEEDBACK_REC, &f.feedback_id, &bytes)
     }
 
-    pub fn list_feedback(&self) -> Result<Vec<FeedbackRecord>> {
-        self.scan_tolerant(FEEDBACK_REC, "feedback")
-    }
-
     // ---- false negatives (caseless-capable) ----
 
     pub fn append_false_negative(&self, f: &FalseNegativeRecord) -> Result<()> {

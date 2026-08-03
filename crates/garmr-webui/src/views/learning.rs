@@ -1,19 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Learning — the safe learning plane: the live champion detector-config, its
-//! challengers (versions awaiting evaluation/approval), and the dangerous-miss
-//! register. The lifecycle stages (suggested → evaluated → approved → active →
-//! rolled back) are shown by each registry record's approval/active state; a
-//! challenger goes live only via an audited `registry promote`.
+//! Learning — the safe learning plane, shown as the Learning tab of Detections:
+//! the live champion detector-config, its challengers (versions awaiting
+//! evaluation/approval), and the dangerous-miss register. The lifecycle stages
+//! (suggested → evaluated → approved → active → rolled back) are shown by each
+//! registry record's approval/active state; a challenger goes live only via an
+//! audited `registry promote`.
 
 use leptos::prelude::*;
 use serde_json::Value;
 
-use crate::route::Area;
 use crate::{api, ui, Store};
 
-pub fn view(store: Store) -> impl IntoView {
+pub fn tab(store: Store) -> AnyView {
     let _ = &store;
     let active = super::Fetch::new();
     let detectors = super::Fetch::new();
@@ -27,9 +27,8 @@ pub fn view(store: Store) -> impl IntoView {
     shadow_scores.load("/api/shadow/scores".into());
 
     view! {
-        <div class="page">
-            {ui::page_header("Learning", Area::Learning.blurb())}
-            <p class="sub">"Champion / challenger "{ui::help_tip("The champion is the detector configuration serving live right now. A challenger is a proposed alternative, evaluated safely without touching live decisions; it becomes champion only when an operator promotes it, and a bad promotion can be rolled back to the previous version.")}"over an immutable dataset "{ui::help_tip("Challengers are scored against a frozen, versioned copy of the data — a dataset — so every version is judged on exactly the same evidence and the results are reproducible.")}" — nothing here mutates the serving policy. A challenger goes live only through an audited registry promotion, so "<b>"suggested"</b>", "<b>"approved"</b>" and "<b>"active"</b>" are always distinct."</p>
+        <div>
+            <p class="sub">"Champion / challenger "{ui::help_tip("The champion is the detector configuration serving live right now. A challenger is a proposed alternative, evaluated safely without touching live decisions; it becomes champion only when an operator promotes it, and a bad promotion can be rolled back to the previous version.")}" over an immutable dataset "{ui::help_tip("Challengers are scored against a frozen, versioned copy of the data — a dataset — so every version is judged on exactly the same evidence and the results are reproducible.")}" — nothing here mutates the serving policy. A challenger goes live only through an audited registry promotion, so "<b>"suggested"</b>", "<b>"approved"</b>" and "<b>"active"</b>" are always distinct."</p>
 
             <section class="sect">
                 <h3>"Champion — active detector configuration"</h3>
@@ -126,6 +125,7 @@ pub fn view(store: Store) -> impl IntoView {
             </section>
         </div>
     }
+    .into_any()
 }
 
 /// A registry-record table showing the promotion lifecycle state.

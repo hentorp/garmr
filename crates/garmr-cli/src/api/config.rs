@@ -421,11 +421,6 @@ pub(super) async fn config_status(State(st): State<ApiState>) -> ApiResult {
         ));
     }
 
-    // Degraded: executor enabled but nothing to act (mirrors the capability report).
-    if st.cfg.executor.enabled && !st.read_only {
-        // Enabled is fine; note only that acting still requires an approved action.
-    }
-
     // Info: airgap posture and follower state are always worth surfacing.
     if airgap {
         out.push(diag("info", "airgap_on", "Airgap mode is active",

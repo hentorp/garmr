@@ -25,18 +25,6 @@ impl StateStore {
         Ok(())
     }
 
-    /// Fetch one cold archive by window id.
-    pub fn get_cold_archive(&self, id: &str) -> Result<Option<ColdArchive>> {
-        let rtx = self.db.begin_read().map_err(Error::store)?;
-        let t = rtx.open_table(COLD_ARCHIVES).map_err(Error::store)?;
-        match t.get(id).map_err(Error::store)? {
-            Some(v) => Ok(Some(
-                serde_json::from_slice(v.value()).map_err(Error::store)?,
-            )),
-            None => Ok(None),
-        }
-    }
-
     /// All cold archives, oldest window first.
     pub fn list_cold_archives(&self) -> Result<Vec<ColdArchive>> {
         let rtx = self.db.begin_read().map_err(Error::store)?;

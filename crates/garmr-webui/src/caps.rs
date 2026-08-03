@@ -20,9 +20,6 @@ pub struct FeatureState {
 }
 
 impl FeatureState {
-    pub fn healthy(&self) -> bool {
-        self.state == "healthy"
-    }
     /// A short human label for the state.
     pub fn label(&self) -> &str {
         match self.state.as_str() {
@@ -72,15 +69,6 @@ impl Caps {
                 .and_then(Value::as_str)
                 .map(String::from),
         }
-    }
-
-    pub fn healthy(&self, key: &str) -> bool {
-        self.feature(key).healthy()
-    }
-    /// True unless the feature is explicitly `disabled` (degraded/not_configured
-    /// still render, with a banner).
-    pub fn usable(&self, key: &str) -> bool {
-        self.feature(key).state != "disabled"
     }
 
     fn flag(&self, key: &str) -> bool {

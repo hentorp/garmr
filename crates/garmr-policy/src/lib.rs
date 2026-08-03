@@ -547,7 +547,7 @@ impl<'a> AccessContext<'a> {
 
 /// Read the SQL-resolved objects the Phase-2 pg parser stored on an event
 /// (`sql_read_tables`, `sql_written_tables`) plus the pgAudit object name.
-pub fn objects_from_event(ev: &Event) -> Vec<String> {
+fn objects_from_event(ev: &Event) -> Vec<String> {
     let mut out = BTreeSet::new();
     for key in ["sql_read_tables", "sql_written_tables"] {
         if let Some(v) = ev.field(key) {

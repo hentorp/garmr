@@ -228,8 +228,6 @@ pub struct SqlAccessAnalysis {
     pub estimated_bulk: bool,
     /// The statement uses bind parameters / placeholders (`$1`, `?`, `:name`).
     pub parameterized: bool,
-    /// Sensitive objects hit — filled by the catalog in Phase 4; empty here.
-    pub sensitive_resource_hits: Vec<String>,
     pub parser_confidence: ParserConfidence,
     /// Object names extraction could not confidently classify (kept visible so a
     /// consumer never mistakes "unresolved" for "safe").

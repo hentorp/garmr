@@ -253,12 +253,6 @@ pub fn manifest_digest(m: &BackupManifest) -> String {
     blake3::hash(&canonical_backup_body(m)).to_hex().to_string()
 }
 
-/// A file's content digest (BLAKE3-hex). For a large data file the CLI streams
-/// with `blake3::Hasher`; this is the small-input/test path.
-pub fn entry_digest(bytes: &[u8]) -> String {
-    blake3::hash(bytes).to_hex().to_string()
-}
-
 /// Verify the stamped manifest digest matches the recomputed canonical body.
 pub fn verify_manifest_digest(sb: &SignedBackup) -> bool {
     !sb.manifest_digest.is_empty() && sb.manifest_digest == manifest_digest(&sb.manifest)

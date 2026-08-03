@@ -1,15 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! `garmr-enrich` — on-demand IP intel for the agent's `ip_reputation` tool.
+//! `garmr-enrich` — local IP/domain intel for the agent's `ip_reputation` tool
+//! and the ingest IOC-tagging path.
 //!
-//! Fills the M1 stub with real context: is the address private (RFC1918 /
-//! loopback), where does it geolocate (offline MaxMind / DB-IP `mmdb` — no key,
-//! no network), and does it appear on a known-bad IOC list. Everything is
-//! local: GeoIP is a memory-mapped file, IOC feeds are parsed from local files
-//! at startup. Online feed refresh and landing intel in a lakehouse dimension
-//! table (for correlation JOINs) are follow-ups; this is the per-IP lookup the
-//! triage loop needs.
+//! Everything answers offline: is the address private (RFC1918 / loopback —
+//! [`is_private`]), where does it geolocate (MaxMind / DB-IP `mmdb`, memory-
+//! mapped — no key, no network), and is the IP or domain on a known-bad IOC
+//! list. Feeds load from local files at startup ([`load_ioc_files`]) and are
+//! hot-swapped by the CLI's online refresh loop via [`Enricher::set_iocs`] /
+//! [`Enricher::set_domains`] — fetching lives in the caller; this crate only
+//! parses ("one IP per line" via [`parse_feed_text`], STIX 2.1 bundles via
+//! [`parse_stix_bundle`]). IPv4 IOCs incl. CIDR ranges are additionally indexed
+//! in [`Ipv4IocIndex`] (RangeStree32) for firehose-scale batch tagging
+//! ([`Enricher::tag_ipv4_batch`]); IPv6 stays in the string map.
 //!
 //! Loading is best-effort and degrades gracefully: a missing mmdb or feed file
 //! is logged, and lookups simply return less — never an error.

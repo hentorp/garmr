@@ -198,15 +198,6 @@ impl EventsHandle {
         df.collect().await.map_err(Error::store)
     }
 
-    /// **O(1) events row-count** from iceberg metadata (no scan/decompression) —
-    /// the cheap source for the console's "total events" tile. A `SELECT
-    /// count(*)` over this table is a full scan (decompresses every data file);
-    /// polling that on a timer pegs the box, so dashboards use this. `None` if
-    /// the metadata lacks it (caller falls back to a scan count if it must).
-    pub async fn count_hint(&self) -> Option<u64> {
-        self.wh.table(T_EVENTS).await.ok()?.count_hint()
-    }
-
     /// Like [`sql`](Self::sql) but STREAMS result batches — the caller pulls
     /// them one at a time, so an arbitrarily large result set never
     /// materialises fully in RAM. Retention uses this to seal windows of any

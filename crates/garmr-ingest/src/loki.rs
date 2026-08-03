@@ -1,12 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The Loki push protocol — garmr's primary ingest.
+//! Loki push protocol decoding (opt-in `loki-compat` feature).
 //!
-//! The whole home SOC fans in through Alloy's `loki.write`, which POSTs
-//! snappy-block-compressed protobuf to `/loki/api/v1/push`. We decode that
-//! (the wire format Alloy actually emits) and also accept the JSON body used by
-//! `curl`, tests, and `garmr replay`. Both paths converge on [`Event`]s.
+//! The compatibility path for environments still fanning in through Grafana
+//! Alloy's `loki.write`, which POSTs snappy-block-compressed protobuf to
+//! `/loki/api/v1/push`. We decode that wire format (the one Alloy actually
+//! emits) and also accept the JSON body used by `curl`, tests, and
+//! `garmr replay`. Both paths converge on [`Event`]s. The native
+//! `/ingest/v1/events` endpoint is garmr's primary ingest; this module is not
+//! part of the default build.
+//!
+//! A stream whose `source` label names a PostgreSQL adapter
+//! (`postgres-csvlog` / `postgres-jsonlog`) is newline-joined and parsed
+//! through that adapter — reconstructing multiline csvlog records Alloy ships
+//! as separate values — while every other source takes the generic per-entry
+//! label classifier.
 
 use std::collections::BTreeMap;
 

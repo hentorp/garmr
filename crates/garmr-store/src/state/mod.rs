@@ -2,9 +2,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Agent state in an embedded redb database, kept entirely separate from the
-//! events lakehouse: cases + their transcripts, the per-rule suppression
-//! window, the daily budget ledger, per-host baselines, the cold-storage
-//! manifest, rule/action proposals, hunt reports, and notification silences.
+//! events lakehouse: cases + their transcripts, detection memory (suppression
+//! window + new-template set), the daily budget ledger, the cold-storage
+//! manifest, rule/action proposals, hunt reports, notification silences, the
+//! console's auth blobs, the Phase 3 append-only prediction/decision/outcome
+//! records, the Phase 4 versioned registries, the Phase 5 environment model,
+//! Phase 7 findings, the Phase 8 datasets and app-audit baseline/stateful
+//! blobs, Phase 12 per-collector ingest sequences, stored query plans, and the
+//! DoD 19 shadow-evaluation summary.
 //!
 //! redb is synchronous and embedded; every operation here is microsecond-scale
 //! for a single-person SOC, so the methods are plain sync calls rather than
@@ -12,12 +17,11 @@
 //! be handed to any task.
 //!
 //! [`StateStore`] is one type whose methods are split by persistence domain
-//! across the sibling modules — [`cases`], [`budget`], [`baselines`],
-//! [`hunts`], [`proposals`], [`actions`], [`cold`], [`silences`], and
-//! [`detection_memory`] (suppression window + new-template memory) — each a
-//! thin `impl StateStore` block over one or two redb tables. The table
-//! definitions and the open-all-tables constructor live here so every domain
-//! shares one schema.
+//! across the sibling modules — each a thin `impl StateStore` block over one or
+//! two redb tables. The table definitions and the open-all-tables constructor
+//! live here so every domain shares one schema and a pre-existing DB upgrades
+//! transparently (open() ensures every table, so read txns never fault on a
+//! missing one).
 
 use std::sync::Arc;
 
@@ -29,7 +33,6 @@ mod app_baselines;
 mod app_shadow;
 mod app_stateful;
 mod auth;
-mod baselines;
 mod budget;
 mod cases;
 mod cold;
@@ -55,8 +58,6 @@ const CASES: TableDefinition<&str, &[u8]> = TableDefinition::new("cases");
 const SUPPRESSION: TableDefinition<&str, u64> = TableDefinition::new("suppression");
 /// "YYYY-MM-DD" -> spend in micro-USD (integer to avoid float value types).
 const BUDGET: TableDefinition<&str, u64> = TableDefinition::new("budget");
-/// host -> JSON baseline blob.
-const BASELINES: TableDefinition<&str, &[u8]> = TableDefinition::new("baselines");
 /// window id ("YYYY-MM-DD") -> JSON `ColdArchive` (the cold-storage manifest).
 const COLD_ARCHIVES: TableDefinition<&str, &[u8]> = TableDefinition::new("cold_archives");
 /// report id (uuid) -> JSON `HuntReport` (the threat-hunt audit trail).
@@ -118,8 +119,7 @@ const INGEST_SEQ: TableDefinition<&str, &[u8]> = TableDefinition::new("ingest_se
 
 /// Phase 7/8 application-audit behavioral-baseline store — a single serialized
 /// `garmr_baseline::BaselineStore` blob (all per-entity behavior profiles),
-/// stored under one reserved key. Distinct from [`BASELINES`], which the
-/// analytics anomaly plane keys per host.
+/// stored under one reserved key.
 const APP_BASELINES: TableDefinition<&str, &[u8]> = TableDefinition::new("app_baselines");
 
 /// Phase 8 application-audit **stateful detector** plane — a single serialized
@@ -153,7 +153,6 @@ impl StateStore {
             wtx.open_table(CASES).map_err(Error::store)?;
             wtx.open_table(SUPPRESSION).map_err(Error::store)?;
             wtx.open_table(BUDGET).map_err(Error::store)?;
-            wtx.open_table(BASELINES).map_err(Error::store)?;
             wtx.open_table(COLD_ARCHIVES).map_err(Error::store)?;
             wtx.open_table(COLD_META).map_err(Error::store)?;
             wtx.open_table(SILENCES).map_err(Error::store)?;

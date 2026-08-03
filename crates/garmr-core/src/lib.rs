@@ -39,9 +39,9 @@ pub use app_audit::{
 };
 pub use auth::{AuthRegistry, Principal, Role, UserToken};
 pub use bundle::{
-    canonical_manifest_body, diff_entries, entry_digest, is_safe_relative_path, manifest_digest,
-    release_digest, verify_manifest_digest, verify_release_binding, BundleEntry, BundleEntryKind,
-    BundleFinding, BundleManifest, ModelNote, SignedBundle, BUNDLE_FORMAT,
+    canonical_manifest_body, diff_entries, is_safe_relative_path, manifest_digest, release_digest,
+    verify_manifest_digest, verify_release_binding, BundleEntry, BundleEntryKind, BundleFinding,
+    BundleManifest, ModelNote, SignedBundle, BUNDLE_FORMAT,
 };
 pub use case::{Case, CaseState, Disposition, TranscriptEntry, Verdict};
 pub use collector::{Collector, CollectorRegistry};
@@ -63,7 +63,7 @@ pub use event::Event;
 pub use finding::*;
 pub use hunt::{HuntFinding, HuntOutcome, HuntReport};
 pub use injection::{scan_text, INJECTION_MARKERS};
-pub use label::{intern, interned_len, Label};
+pub use label::{intern, Label};
 pub use lesson::{
     category_guidance, category_tag, validate_lesson_set, Lesson, LessonCaps, LessonFinding,
     LessonSet, LessonSetSpec, LESSON_CAPS,

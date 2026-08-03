@@ -307,8 +307,8 @@ mod tests {
     fn extracts_for_user_on_real_account() {
         // The "for <user>" shape (successful + real-account failed logins) —
         // previously dropped, degrading baseline/user-keyed detection.
-        let f = extract("Accepted publickey for alice from 192.168.1.50 port 40222 ssh2");
-        assert_eq!(f.get("user").map(String::as_str), Some("alice"));
+        let f = extract("Accepted publickey for henrik from 192.168.1.50 port 40222 ssh2");
+        assert_eq!(f.get("user").map(String::as_str), Some("henrik"));
         assert_eq!(f.get("src_ip").map(String::as_str), Some("192.168.1.50"));
     }
 
@@ -405,10 +405,10 @@ mod tests {
 
     #[test]
     fn kunai_acting_task_wins_over_parent_lineage() {
-        // Privilege boundary: the parent (sudo) ran as alice, the execve'd task
+        // Privilege boundary: the parent (sudo) ran as henrik, the execve'd task
         // is root. The normalized `user`/`process` must be the ACTING task, even
         // though `parent_task` sorts first alphabetically.
-        let line = r#"{"info":{"event":{"name":"execve"},"parent_task":{"name":"sudo","user":"alice","pid":10},"task":{"name":"id","user":"root","pid":11}},"data":{"command_line":"id","exe":{"path":"/usr/bin/id"}}}"#;
+        let line = r#"{"info":{"event":{"name":"execve"},"parent_task":{"name":"sudo","user":"henrik","pid":10},"task":{"name":"id","user":"root","pid":11}},"data":{"command_line":"id","exe":{"path":"/usr/bin/id"}}}"#;
         let f = extract(line);
         assert_eq!(
             f.get("user").map(String::as_str),

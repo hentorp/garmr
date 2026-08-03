@@ -5,7 +5,7 @@
 //! `cases` table. Includes the monotonic `event_count` merge (burst-collapse)
 //! and the institutional-memory search over past cases.
 
-use garmr_core::{Case, CaseState, Error, Result};
+use garmr_core::{Case, Error, Result};
 use redb::{ReadableTable, ReadableTableMetadata};
 
 use super::{StateStore, CASES};
@@ -103,15 +103,6 @@ impl StateStore {
         }
         wtx.commit().map_err(Error::store)?;
         Ok(removed)
-    }
-
-    /// Cases in a given state (e.g. `New` for the agent worker to pick up).
-    pub fn cases_in_state(&self, state: CaseState) -> Result<Vec<Case>> {
-        Ok(self
-            .list_cases()?
-            .into_iter()
-            .filter(|c| c.state == state)
-            .collect())
     }
 
     /// Search past cases by a substring over host / IP / rule / rationale —

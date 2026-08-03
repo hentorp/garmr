@@ -27,9 +27,6 @@ pub enum AuditError {
     /// closed (do not acknowledge the state change).
     #[error("durable audit write failed (fail closed): {0}")]
     DurabilityFailed(String),
-
-    #[error("audit config: {0}")]
-    Config(String),
 }
 
 pub type Result<T> = std::result::Result<T, AuditError>;

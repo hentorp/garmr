@@ -139,11 +139,6 @@ impl Ipv4IocIndex {
         out
     }
 
-    /// Whether `ip` is on any indexed IPv4 IOC range.
-    pub fn contains(&self, ip: u32) -> bool {
-        self.index.as_ref().map(|i| i.contains(ip)).unwrap_or(false)
-    }
-
     /// Number of merged ranges indexed (0 if empty).
     pub fn len(&self) -> usize {
         self.index.as_ref().map(|i| i.len()).unwrap_or(0)

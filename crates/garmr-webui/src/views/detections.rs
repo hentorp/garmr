@@ -1,15 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Detections — the detection surface, kept distinct from Policies. Four tabs:
+//! Detections — the detection surface, kept distinct from Policies. Five tabs:
 //! Findings (behavioral detector output, with the detector + baseline context),
 //! Rule proposals (agent-drafted rules → human approve/reject), Baselines (the
-//! grant-of-trust lifecycle), and Silences (active throttles). Every write is a
-//! server-authorized, audited admin action.
+//! grant-of-trust lifecycle), Silences (active throttles), and Learning (the
+//! champion/challenger detector-config loop — see `views::learning`). Every
+//! write is a server-authorized, audited admin action.
 
 use leptos::prelude::*;
 use serde_json::{json, Value};
 
+use crate::confirm::{ConfirmSpec, Reversibility};
 use crate::route::Area;
 use crate::{api, ui, Store};
 
@@ -25,11 +27,13 @@ pub fn view(store: Store) -> impl IntoView {
                 ("proposals", "Rule proposals"),
                 ("baselines", "Baselines"),
                 ("silences", "Silences"),
+                ("learning", "Learning"),
             ], tab(), set_tab)}
             {move || match tab().as_str() {
                 "proposals" => proposals_tab(store),
                 "baselines" => baselines_tab(store),
                 "silences" => silences_tab(store),
+                "learning" => crate::views::learning::tab(store),
                 _ => findings_tab(),
             }}
         </div>
@@ -66,6 +70,9 @@ fn proposals_tab(store: Store) -> AnyView {
     let f = super::Fetch::new();
     f.load("/api/rules/proposals".into());
     let note = RwSignal::new(Option::<Result<String, api::ApiError>>::None);
+    // The rule change a confirmation will commit.
+    let pending_rule = RwSignal::new(Option::<(&'static str, String)>::None);
+    let confirm = RwSignal::new(Option::<ConfirmSpec>::None);
     let act = move |path: &'static str, id: String| {
         note.set(None);
         leptos::task::spawn_local(async move {
@@ -107,13 +114,38 @@ fn proposals_tab(store: Store) -> AnyView {
                                 <td class="mono dimtext">{format!("{hits} hits")}</td>
                                 <td class="msg">{api::clean(&api::s(&r, "title"))}</td>
                                 <td>{pending.then(move || view! {
-                                    <button class="btn primary sm" on:click=move |_| act("/admin/rules/approve", ia.clone())>"Approve"</button>
-                                    <button class="btn ghost sm" on:click=move |_| act("/admin/rules/reject", ir.clone())>"Reject"</button>
+                                    <button class="btn primary sm" on:click=move |_| {
+                                        pending_rule.set(Some(("/admin/rules/approve", ia.clone())));
+                                        confirm.set(Some(ConfirmSpec::new(
+                                            "Approve rule proposal",
+                                            ia.clone(),
+                                            "The rule joins the active ruleset and starts producing \
+                                             detections on live events.",
+                                            Reversibility::Reversible(
+                                                "the rule can be disabled again from the ruleset".into()),
+                                            "Approve rule",
+                                        )));
+                                    }>"Approve"</button>
+                                    <button class="btn ghost sm" on:click=move |_| {
+                                        pending_rule.set(Some(("/admin/rules/reject", ir.clone())));
+                                        confirm.set(Some(ConfirmSpec::new(
+                                            "Reject rule proposal",
+                                            ir.clone(),
+                                            "The proposal is dismissed and will not join the ruleset. \
+                                             Anything it would have detected stays undetected.",
+                                            Reversibility::Reversible(
+                                                "the proposal can be raised again by the learning loop".into()),
+                                            "Reject proposal",
+                                        )));
+                                    }>"Reject"</button>
                                 })}</td>
                             </tr>
                         }
                     }).collect_view().into_any())
             })}
+            <ui::ConfirmDialog spec=confirm on_confirm=move || {
+                if let Some((path, id)) = pending_rule.get() { act(path, id); }
+            }/>
         </div>
     }.into_any()
 }
@@ -122,6 +154,8 @@ fn baselines_tab(store: Store) -> AnyView {
     let f = super::Fetch::new();
     f.load("/api/appaudit/baselines".into());
     let note = RwSignal::new(Option::<Result<String, api::ApiError>>::None);
+    let pending_b = RwSignal::new(Option::<(&'static str, String, String)>::None);
+    let confirm_b = RwSignal::new(Option::<ConfirmSpec>::None);
     let act = move |path: &'static str, kind: String, id: String| {
         note.set(None);
         leptos::task::spawn_local(async move {
@@ -175,14 +209,49 @@ fn baselines_tab(store: Store) -> AnyView {
                                 <td class="dimtext">{api::s(&b, "maturity")}</td>
                                 <td class="mono dimtext">{stats}</td>
                                 <td>
-                                    {can_p.then(move || { let (k,i)=(kp.clone(),ip.clone()); view! { <button class="btn primary sm" on:click=move |_| act("/admin/appaudit/baselines/promote", k.clone(), i.clone())>"Promote to Trusted"</button> } })}
-                                    {can_s.then(move || { let (k,i)=(ks.clone(),is_.clone()); view! { <button class="btn ghost sm" on:click=move |_| act("/admin/appaudit/baselines/suspect", k.clone(), i.clone())>"Mark suspicious"</button> } })}
-                                    {can_c.then(move || { let (k,i)=(kc.clone(),ic.clone()); view! { <button class="btn ghost sm" on:click=move |_| act("/admin/appaudit/baselines/clear", k.clone(), i.clone())>"Clear suspicion"</button> } })}
+                                    {can_p.then(move || { let (k,i)=(kp.clone(),ip.clone()); view! { <button class="btn primary sm" on:click=move |_| {
+                                        pending_b.set(Some(("/admin/appaudit/baselines/promote", k.clone(), i.clone())));
+                                        confirm_b.set(Some(ConfirmSpec::new(
+                                            "Trust this baseline",
+                                            i.clone(),
+                                            "Behaviour matching this baseline stops being treated as unusual, so activity \
+                                             like it will no longer raise detections.",
+                                            Reversibility::Reversible(
+                                                "the baseline state can be changed again here".into()),
+                                            "Promote to Trusted",
+                                        ).danger()));
+                                    }>"Promote to Trusted"</button> } })}
+                                    {can_s.then(move || { let (k,i)=(ks.clone(),is_.clone()); view! { <button class="btn ghost sm" on:click=move |_| {
+                                        pending_b.set(Some(("/admin/appaudit/baselines/suspect", k.clone(), i.clone())));
+                                        confirm_b.set(Some(ConfirmSpec::new(
+                                            "Mark this baseline suspicious",
+                                            i.clone(),
+                                            "Activity matching this baseline starts being surfaced for review, which will \
+                                             increase what needs an analyst.",
+                                            Reversibility::Reversible(
+                                                "the baseline state can be changed again here".into()),
+                                            "Mark suspicious",
+                                        )));
+                                    }>"Mark suspicious"</button> } })}
+                                    {can_c.then(move || { let (k,i)=(kc.clone(),ic.clone()); view! { <button class="btn ghost sm" on:click=move |_| {
+                                        pending_b.set(Some(("/admin/appaudit/baselines/clear", k.clone(), i.clone())));
+                                        confirm_b.set(Some(ConfirmSpec::new(
+                                            "Clear the suspicion",
+                                            i.clone(),
+                                            "The baseline returns to normal monitoring; it stops being surfaced as suspicious.",
+                                            Reversibility::Reversible(
+                                                "the baseline state can be changed again here".into()),
+                                            "Clear suspicion",
+                                        )));
+                                    }>"Clear suspicion"</button> } })}
                                 </td>
                             </tr>
                         }
                     }).collect_view().into_any())
             }}
+            <ui::ConfirmDialog spec=confirm_b on_confirm=move || {
+                if let Some((path, kind, id)) = pending_b.get() { act(path, kind, id); }
+            }/>
         </div>
     }.into_any()
 }
@@ -195,7 +264,6 @@ fn silences_tab(store: Store) -> AnyView {
             <p class="sub">"Active notification silences "{ui::help_tip("A silence temporarily stops a specific rule from alerting, without disabling detection. Its scope narrows it to a host or set of hosts, and every silence is time-bounded and recorded in the audit ledger.")}" — a bounded, audited quieting of a noisy rule. Requires operator authorization (System › Access)."</p>
             {move || {
                 if let Some(e) = f.err.get() {
-                    if e.is_authz() { return super::error_state(e); }
                     return super::error_state(e);
                 }
                 let rows = f.rows("silences");

@@ -53,6 +53,7 @@ pub fn list_view(store: Store) -> impl IntoView {
                 <input type="search" class="grow" placeholder="filter by rule or host…"
                     prop:value=move || text.get()
                     on:input=move |ev| text.set(event_target_value(&ev))/>
+                {ui::help_tip("Filter by lifecycle state. Needs human: automated triage could not decide, an analyst must rule. Escalated: judged serious enough to surface immediately. Investigating: the agent is still gathering evidence. Triaged: the agent reached a verdict. Closed: decided and done.")}
             </div>
 
             {move || {
@@ -94,9 +95,15 @@ fn case_row(store: Store, c: &Value) -> impl IntoView {
         .get("event")
         .map(|e| api::s(e, "host"))
         .unwrap_or_default();
+    // A real link on the id: the row stays clickable for convenience, but the
+    // destination is now copyable, middle-clickable and reachable by keyboard.
+    let short_id = api::short(c, "id");
+    let row_target = View::Investigation(idc.clone());
     view! {
         <tr class="rowlink" on:click=move |_| store.nav.go(View::Investigation(idc.clone()))>
-            <td class="mono dimtext">{api::short(c, "id")}</td>
+            <td class="mono dimtext">
+                <ui::ViewLink view=row_target class="rowtarget">{short_id}</ui::ViewLink>
+            </td>
             <td>{ui::state_badge(&state)}</td>
             <td>{ui::sev_badge(&level)}</td>
             <td>{api::clean(&rule)}</td>

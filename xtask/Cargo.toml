@@ -6,7 +6,7 @@ name = "xtask"
 version = "0.0.0"
 edition = "2021"
 publish = false
-license = "AGPL-3.0-only"
+license = "MIT OR Apache-2.0"
 
 [workspace]
 

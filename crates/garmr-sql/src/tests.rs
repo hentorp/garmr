@@ -1,6 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
+//! Unit tests for the layered SQL analyzer: statement classification and
+//! structural extraction (tables/columns/CTEs, COPY directions, GRANT/REVOKE
+//! targets, derived tables, aliases), the two MANDATORY fingerprint contracts
+//! (stable across literals/params/whitespace/case/comments; changed by every
+//! security-relevant difference), graceful degradation on unparseable input
+//! (Low confidence, unresolved objects stay visible), and the regression set
+//! from the adversarial review (ON TABLE objects, REVOKE grantees, ALL ... IN
+//! SCHEMA, derived-table sources, TRUNCATE, MERGE, plain SET).
+
 use super::*;
 
 #[test]

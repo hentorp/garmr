@@ -128,12 +128,6 @@ fn intern_in(pool: &Pool, s: &str) -> Arc<str> {
     arc
 }
 
-/// Number of distinct strings currently interned (across all shards). For tests
-/// and diagnostics only.
-pub fn interned_len() -> usize {
-    pool().shards.iter().map(|s| s.read().unwrap().len()).sum()
-}
-
 /// An interned, cheaply-cloneable string for a low-cardinality label field.
 ///
 /// See the [module docs](self). Backed by an `Arc<str>` drawn from the bounded

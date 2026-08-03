@@ -1,9 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The LLM-backed surface: natural-language `ask`, ad-hoc threat `hunt`,
-//! rule drafting (`rules/propose`), plus the read-only hunt/rule inspection
-//! endpoints. The write ones charge the daily model-budget ledger.
+//! The LLM-backed surface: natural-language `ask`, ad-hoc threat `hunt`, rule
+//! drafting (`rules/propose`), the read-only hunt/rule inspection endpoints,
+//! and the LLM/AI-center diagnostics — the provider read-model
+//! (`/api/llm/status`, admin-gated, never a secret value) and the real
+//! completion probe (`/admin/llm/test`, rate-limited process-wide; a paid call,
+//! deliberately NOT charged to the daily budget). The ask/hunt/propose writes
+//! charge the daily model-budget ledger and require the admin bearer whenever
+//! an Admin principal is configured.
 
 use super::*;
 use axum::http::HeaderMap;

@@ -1,6 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
+//! Tests for the policy engine's decision semantics: explicit [`Effect::Deny`]
+//! always wins and repetition never legitimizes a forbidden access; Require*
+//! effects resolve to Allow when the justification/approval is actually present
+//! and are flagged as missing otherwise; the default is Allow when nothing
+//! matches; condition axes (hour windows, service-account, privilege) gate
+//! correctly; [`Policy::validate`] rejects empty ids, empty pattern entries and
+//! fully unscoped restrictive policies; [`simulate`] reports a proposed
+//! policy's blast radius and likely false positives; and the set/single-policy
+//! digests are stable and content-distinguishing. Synthetic [`AuditRecord`]
+//! fixtures, no I/O.
+
 use super::*;
 use garmr_core::{
     ActorType, AuditAction, AuditActor, AuditClassification, AuditContext, AuditJustification,
@@ -45,8 +56,8 @@ fn deny_raw_persons() -> Policy {
         },
         condition: ConditionMatch::default(),
         effect: Effect::Deny,
-        created_by: "alice".into(),
-        approved_by: Some("alice".into()),
+        created_by: "henrik".into(),
+        approved_by: Some("henrik".into()),
     }
 }
 

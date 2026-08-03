@@ -1,12 +1,18 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! `garmr-store` — two stores behind one facade.
+//! `garmr-store` — the storage facade: two stores plus the full-text index
+//! behind one handle.
 //!
 //! - [`events`]: the skade lakehouse (Apache Iceberg over an embedded catalog)
 //!   holding the columnar event history, queried with DataFusion SQL.
 //! - [`state`]: an embedded redb database holding agent state — cases,
-//!   suppression windows, the daily budget ledger, and host baselines.
+//!   detection memory, the budget ledger, registries, the environment model,
+//!   and the rest of the per-domain tables (see [`state`]).
+//! - the Tantivy [`SearchIndex`] (from `garmr-search`): opened read-only by
+//!   [`Store::open`], or with the exclusive writer lock by
+//!   [`Store::open_writable`] — which is also the single choke point that
+//!   refuses a writable open on a restored-but-unpromoted node (Phase 13).
 //!
 //! [`Store`] bundles a clonable handle to each so the rest of garmr takes one
 //! dependency.
@@ -20,7 +26,7 @@ pub mod state;
 use garmr_core::{Config, Result};
 
 pub use events::EventsHandle;
-pub use garmr_search::{Hit, SearchIndex};
+pub use garmr_search::SearchIndex;
 pub use lock::{restored_marker_path, try_acquire_exclusion, WriterExclusion};
 pub use sql_guard::reject_non_readonly;
 pub use state::StateStore;

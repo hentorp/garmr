@@ -1,3 +1,5 @@
 # Build artifacts — the WASM bundle is produced by `trunk build`, not committed.
 /dist
 /target
+# CI layout-check captures, uploaded as artifacts rather than committed
+screenshots/

@@ -1,13 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The pipeline: ingested events → store → detection → deduped case → agent.
+//! The live pipeline: ingested events → store → detection → deduped case →
+//! agent, plus every scheduled serve loop (correlation, hunts, the response
+//! executor, template/frequency anomaly, source-silence, env learn/promote/
+//! detect, risk, retention, baseline auto-promote) — all funnelling their hits
+//! through the one [`handle_detection`] case path.
 //!
-//! Runs as the consumer end of the ingest channel. Each batch is appended to
-//! the lakehouse, evaluated against the Sigma rules, and a fired detection
-//! either bumps an open case (within the realert window) or opens a new one and
-//! hands it to the agent. Triage runs in a spawned task so ingest never blocks
-//! on an LLM call.
+//! [`run`] is the consumer end of the ingest channel. Each coalesced batch is
+//! appended to the lakehouse (one group commit), indexed, ACKed, and evaluated
+//! against the Sigma rules; a fired detection either bumps an open case (within
+//! the realert window) or opens a new one and hands it to the agent. Triage
+//! runs in a spawned task so ingest never blocks on an LLM call.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

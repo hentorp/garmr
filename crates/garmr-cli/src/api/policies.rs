@@ -64,7 +64,7 @@ fn load(dir: &std::path::Path) -> Vec<Policy> {
 /// coverage and honors the registry / hot-reload gate — falling back to the file
 /// loader only when the plane is disabled. This is what keeps the Policies view
 /// and the Resources view from disagreeing about which rules are live.
-fn enforced_policies(st: &ApiState) -> (Vec<Policy>, &'static str) {
+pub(super) fn enforced_policies(st: &ApiState) -> (Vec<Policy>, &'static str) {
     match &st.app_audit {
         Some(aa) => (aa.policy_snapshot(), "enforced"),
         None => (load(&st.cfg.detect.policies_dir), "files"),
@@ -462,8 +462,8 @@ mod tests {
             },
             condition: ConditionMatch::default(),
             effect: Effect::Deny,
-            created_by: "alice".into(),
-            approved_by: Some("alice".into()),
+            created_by: "henrik".into(),
+            approved_by: Some("henrik".into()),
         }
     }
 

@@ -83,7 +83,11 @@ pub fn list_view(store: Store) -> impl IntoView {
                         let (score, over) = risk_of.get(&id).copied().unwrap_or((0.0, false));
                         view! {
                             <tr class="rowlink" on:click=move |_| store.nav.go(View::User(idc.clone()))>
-                                <td class="mono">{id}</td>
+                                <td class="mono">
+                                    <ui::ViewLink view=View::User(id.clone()) class="rowtarget">
+                                        {id.clone()}
+                                    </ui::ViewLink>
+                                </td>
                                 <td>{ui::pill("dim", crate::status::humanize(&kind))}</td>
                                 <td>{ui::pill(crate::status::baseline_class(&state), if state.is_empty() { "—".into() } else { state })}</td>
                                 <td>{api::s(&b, "maturity")}</td>

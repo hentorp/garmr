@@ -13,12 +13,18 @@
 use leptos::prelude::*;
 
 mod api;
+mod auth;
 mod caps;
 mod command;
+mod confirm;
 mod drawer;
+mod palette;
 mod route;
+mod setup;
 mod shell;
+mod srcstate;
 mod status;
+mod timerange;
 mod ui;
 mod views;
 
@@ -27,7 +33,7 @@ use route::{Nav, View};
 
 /// The global dashboard time range (Splunk/Elastic-style): live tail, a
 /// last-N-hours preset, or an absolute `[from, to)` epoch-millis range.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TimeRange {
     Live,
     Last(u32),
@@ -126,6 +132,13 @@ pub struct Store {
     /// Whether an operator token is held this session (mirrors `api::has_operator_token`
     /// reactively so controls update when it changes).
     pub operator: RwSignal<bool>,
+    /// Whether the off-canvas navigation drawer is open. Only meaningful below the
+    /// layout breakpoint, where the sidebar is not permanently on screen.
+    pub nav_open: RwSignal<bool>,
+    /// Whether first-run setup is complete. `None` until `/api/setup/status`
+    /// answers — deliberately not defaulted, so the console neither nags before it
+    /// knows nor claims readiness it has not confirmed.
+    pub setup_complete: RwSignal<Option<bool>>,
 }
 
 impl Store {
@@ -140,6 +153,8 @@ impl Store {
             cmd_open: RwSignal::new(false),
             activity: RwSignal::new(Vec::new()),
             operator: RwSignal::new(false),
+            nav_open: RwSignal::new(false),
+            setup_complete: RwSignal::new(None),
         }
     }
 
@@ -178,11 +193,6 @@ impl Store {
             a.truncate(50);
         });
     }
-
-    /// Convenience: is a capability usable (not explicitly disabled)?
-    pub fn cap_usable(&self, key: &str) -> bool {
-        self.caps.get().map(|c| c.usable(key)).unwrap_or(true)
-    }
 }
 
 #[component]
@@ -196,10 +206,38 @@ pub fn App() -> impl IntoView {
     leptos::task::spawn_local(async move {
         match api::get("/api/capabilities").await {
             Ok(v) => {
-                store.caps.set(Some(Caps::from_value(v)));
+                let c = Caps::from_value(v);
+                // Teach the request layer how this deployment authenticates, so
+                // a 401 bounces to the passkey login page only when that page
+                // can actually resolve it (otherwise: an actionable operator
+                // prompt, never a console↔login loop).
+                api::set_auth_mode(auth::AuthMode::from_caps(
+                    c.auth_enabled(),
+                    c.passkey_enabled(),
+                ));
+                store.caps.set(Some(c));
                 store.api_ok.set(true);
             }
             Err(e) => store.set_err("capabilities", Some(e)),
+        }
+    });
+
+    // Setup readiness, fetched once alongside capabilities: it decides the
+    // persistent banner and which System tab opens by default.
+    leptos::task::spawn_local(async move {
+        if let Ok(v) = api::get("/api/setup/status").await {
+            store
+                .setup_complete
+                .set(v.get("complete").and_then(|c| c.as_bool()));
+        }
+    });
+
+    // The document title follows the route, so browser history, bookmarks and the
+    // window switcher all name the actual screen instead of repeating "garmr".
+    Effect::new(move |_| {
+        let v = store.nav.view.get();
+        if let Some(d) = web_sys::window().and_then(|w| w.document()) {
+            d.set_title(&format!("{} — garmr", v.title()));
         }
     });
 
@@ -209,10 +247,14 @@ pub fn App() -> impl IntoView {
     restore_session(store);
 
     view! {
+        // First thing in the tab order: a way past the twelve navigation items
+        // straight to the content, for keyboard and screen-reader users.
+        <a class="skip-link" href="#main">"Skip to main content"</a>
         <div class="app">
             <shell::Sidebar/>
             <div class="workspace">
                 <shell::TopBar/>
+                <shell::SetupBanner/>
                 <main id="main" tabindex="-1">
                     {move || views::render(store, store.nav.view.get())}
                 </main>
@@ -280,10 +322,13 @@ fn install_keyboard(store: Store) {
                 ev.prevent_default();
                 store.cmd_open.update(|o| *o = !*o);
             } else if k == "Escape" {
+                // Innermost surface first, so Escape peels one layer at a time.
                 if store.cmd_open.get_untracked() {
                     store.cmd_open.set(false);
                 } else if store.drawer.get_untracked().is_some() {
                     store.drawer.set(None);
+                } else if store.nav_open.get_untracked() {
+                    store.nav_open.set(false);
                 }
             }
         },

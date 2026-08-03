@@ -67,7 +67,7 @@ pub fn list_view(store: Store) -> impl IntoView {
                 <div class="grow"><h1>"Resources"</h1><div class="sub">{Area::Resources.blurb()}</div></div>
                 <button class="btn ghost" on:click=move |_| reload()>"↻ Refresh"</button>
             </div>
-            <p class="sub">"The resource catalog is authored as reviewed files and promoted through the audited registry — shown read-only. Access tallies cover a recent bounded window. "{ui::help_tip("Data classification is the sensitivity label each resource carries — public, internal, confidential, restricted or secret. It sets how alarming access to the resource looks and which policies apply; \"sensitive\" additionally flags resources that need extra care.")}</p>
+            <p class="sub">"The resource catalog is authored as reviewed files and promoted through the audited registry — shown read-only. Access tallies cover a recent bounded window. "{ui::help_tip("Data classification is the sensitivity label each resource carries — public, internal, confidential, restricted or secret. It sets how alarming access to the resource looks and which policies apply; \"sensitive\" additionally flags resources that need extra care.")}" "{ui::help_tip("A trusted resource is one whose catalog entry has been reviewed, approved and promoted through the audited registry. An entry that is not yet trusted shows its pending approval state instead — its classification has not been signed off.")}</p>
             {move || store.caps.get().and_then(|c| {
                 let fs = c.feature("app_audit");
                 (fs.state == "disabled").then(|| ui::disabled_panel("Application audit", &fs))
@@ -115,9 +115,15 @@ pub fn list_view(store: Store) -> impl IntoView {
                             let last = fmt_ts(&api::s(&access, "last_access"));
                             let trusted = r.get("trusted").and_then(Value::as_bool).unwrap_or(false);
                             let approval = api::s(&r, "approval");
+                            let link_id = idc.clone();
                             view! {
                                 <tr class="rowlink" on:click=move |_| store.nav.go(View::Resource(idc.clone()))>
-                                    <td><div class="mono">{object}</div><div class="dimtext">{status::humanize(&kind)}</div></td>
+                                    <td>
+                                        <div class="mono">
+                                            <ui::ViewLink view=View::Resource(link_id) class="rowtarget">{object}</ui::ViewLink>
+                                        </div>
+                                        <div class="dimtext">{status::humanize(&kind)}</div>
+                                    </td>
                                     <td>{classification_cell(&cls, sensitive)}</td>
                                     <td>
                                         <div class="mono">{format!("{count} · {users} users")}</div>
@@ -244,9 +250,19 @@ fn resource_detail(store: Store, d: &Value) -> AnyView {
                         let reasons = super::arr(p, "match").iter()
                             .filter_map(|m| m.as_str().map(String::from)).collect::<Vec<_>>().join(", ");
                         let title = api::s(p, "title");
+                        let link_pid = pid.clone();
+                        let pid_text = pid.clone();
+                        let head = if title.is_empty() { pid.clone() } else { title };
                         view! {
                             <tr class="rowlink" on:click=move |_| store.nav.go(View::Policy(pidc.clone()))>
-                                <td><div>{if title.is_empty() { pid.clone() } else { title }}</div><div class="mono dimtext">{pid}</div></td>
+                                <td>
+                                    <div>
+                                        <ui::ViewLink view=View::Policy(link_pid) class="rowtarget">
+                                            {head}
+                                        </ui::ViewLink>
+                                    </div>
+                                    <div class="mono dimtext">{pid_text}</div>
+                                </td>
                                 <td>{ui::pill(effect_class(&effect), effect.replace('_', " "))}</td>
                                 <td>{if enabled { ui::pill("pass", "enabled") } else { ui::pill("dim", "disabled") }}</td>
                                 <td class="dimtext">{reasons}</td>

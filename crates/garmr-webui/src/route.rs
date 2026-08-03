@@ -6,15 +6,19 @@
 //! The console is a client-rendered SPA, but every meaningful state has a stable
 //! URL: navigating pushes a History entry, browser back/forward and a hard
 //! refresh all restore the same view (the server serves `index.html` for any
-//! unmatched path, so a deep link cold-loads correctly). Filters, the time range,
-//! the active sub-tab and the search query live in the query string, so a shared
-//! link reproduces the exact screen.
+//! unmatched path, so a deep link cold-loads correctly). Filters, the active
+//! sub-tab and the search query live in the query string, so a shared link
+//! reproduces the exact screen. The global time range rides in the query too (as
+//! `t=`) and is the one parameter [`Nav::go`] carries across areas, so narrowing
+//! to a window and pivoting elsewhere keeps that window. Sensitive values are
+//! never placed in the URL.
 //!
-//! [`View`] is the parsed *path* (which area + which entity). Query parameters are
-//! kept separately (a reactive `nav_search` signal) so a filter change re-renders
-//! without changing the `View`. Sensitive values are never placed in the URL.
+//! [`View`] is the parsed *path* (which area + which entity). Query parameters
+//! are kept separately (the reactive [`Nav::query`] signal) so a filter change
+//! re-renders without changing the `View`.
 
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 
 /// A top-level task area — one primary sidebar destination. The IA is organised
 /// around what an analyst wants to *do*, not around backend crates.
@@ -29,14 +33,12 @@ pub enum Area {
     Detections,
     Policies,
     Intelligence,
-    Map,
-    Learning,
     DataSources,
     System,
 }
 
 impl Area {
-    pub const ALL: [Area; 13] = [
+    pub const ALL: [Area; 11] = [
         Area::CommandCenter,
         Area::Investigations,
         Area::Audit,
@@ -46,8 +48,6 @@ impl Area {
         Area::Detections,
         Area::Policies,
         Area::Intelligence,
-        Area::Map,
-        Area::Learning,
         Area::DataSources,
         Area::System,
     ];
@@ -63,8 +63,6 @@ impl Area {
             Area::Detections => "Detections",
             Area::Policies => "Policies",
             Area::Intelligence => "Intelligence",
-            Area::Map => "Map",
-            Area::Learning => "Learning",
             Area::DataSources => "Data Sources",
             Area::System => "System",
         }
@@ -84,11 +82,13 @@ impl Area {
             Area::Users => "People and accounts: behaviour, risk, monitoring",
             Area::Applications => "Applications, databases and the sensitive resources they touch",
             Area::Resources => "Data resources: classification, access history and policy coverage",
-            Area::Detections => "Detectors, rules, behavioral baselines and their proposals",
+            Area::Detections => {
+                "Detectors, rules, baselines, silences — and the champion/challenger learning loop"
+            }
             Area::Policies => "Access policies, their scope and their violations",
-            Area::Intelligence => "Relationships, ATT&CK, threat hunts and the environment model",
-            Area::Map => "The whole host↔ip↔user↔case topology as a live 3D graph",
-            Area::Learning => "Champion, challengers, feedback and dangerous misses",
+            Area::Intelligence => {
+                "Relationships and the 3D map, ATT&CK coverage, threat hunts and the environment model"
+            }
             Area::DataSources => "Collectors, ingest health, source silence and freshness",
             Area::System => "Audit integrity, models, registry, backup, HA and air-gap",
         }
@@ -117,8 +117,6 @@ impl Area {
             Area::Detections => View::Detections,
             Area::Policies => View::Policies,
             Area::Intelligence => View::Intelligence,
-            Area::Map => View::Map,
-            Area::Learning => View::Learning,
             Area::DataSources => View::DataSources,
             Area::System => View::System,
         }
@@ -142,8 +140,6 @@ pub enum View {
     Policies,
     Policy(String),
     Intelligence,
-    Map,
-    Learning,
     DataSources,
     System,
     /// Universal entity deep-link (kind, name) — resolves to the right detail.
@@ -165,8 +161,6 @@ impl View {
             View::Detections => Area::Detections,
             View::Policies | View::Policy(_) => Area::Policies,
             View::Intelligence => Area::Intelligence,
-            View::Map => Area::Map,
-            View::Learning => Area::Learning,
             View::DataSources => Area::DataSources,
             View::System => Area::System,
             View::Entity(..) => return None,
@@ -191,10 +185,6 @@ impl View {
             View::Policies => "/policies".into(),
             View::Policy(id) => format!("/policies/{}", enc(id)),
             View::Intelligence => "/intelligence".into(),
-            // NB: NOT "/map" — that path is the backend-served CodeVault 3D
-            // sub-app (ServeDir mount); the SPA Map view iframes it.
-            View::Map => "/topology".into(),
-            View::Learning => "/learning".into(),
             View::DataSources => "/data-sources".into(),
             View::System => "/system".into(),
             View::Entity(k, n) => format!("/entity/{}/{}", enc(k), enc(n)),
@@ -220,8 +210,10 @@ impl View {
             [a] if a == "policies" => View::Policies,
             [a, id] if a == "policies" => View::Policy(id.clone()),
             [a] if a == "intelligence" => View::Intelligence,
-            [a] if a == "topology" => View::Map,
-            [a] if a == "learning" => View::Learning,
+            // Legacy paths from when these were top-level areas; normalize_legacy
+            // also maps them to the right sub-tab when the query is empty.
+            [a] if a == "topology" => View::Intelligence,
+            [a] if a == "learning" => View::Detections,
             [a] if a == "data-sources" => View::DataSources,
             [a] if a == "system" => View::System,
             [a, k, n] if a == "entity" => View::Entity(k.clone(), n.clone()),
@@ -260,16 +252,25 @@ pub struct Nav {
 impl Nav {
     pub fn new() -> Self {
         let (path, query) = current_location();
+        let (path, query) = normalize_legacy(&path, query);
         Self {
             view: RwSignal::new(View::from_path(&path)),
             query: RwSignal::new(query),
         }
     }
 
-    /// Navigate to a view (no query). Pushes a History entry and updates the
-    /// reactive state.
+    /// Navigate to a view, dropping the previous view's filters but CARRYING the
+    /// global time range.
+    ///
+    /// The range is the one query parameter that is not a property of the view
+    /// being left: an analyst who narrows to a two-hour window and then opens
+    /// another area means to stay in that window. Dropping it silently widened
+    /// the investigation back out — and left the URL unshareable.
     pub fn go(&self, view: View) {
-        self.push(&view.to_path(), view, String::new());
+        let carried = param_of(&self.query.get_untracked(), crate::timerange::PARAM)
+            .map(|v| format!("{}={v}", crate::timerange::PARAM))
+            .unwrap_or_default();
+        self.go_query(view, carried);
     }
 
     /// Navigate to a view carrying a query string (already `key=val&…`, no `?`).
@@ -306,10 +307,15 @@ impl Nav {
         }
         self.view.set(view);
         self.query.set(query);
-        // Return focus/scroll to the top of the main region on navigation.
+        // Return focus AND scroll to the top of the main region on navigation.
+        // Without the focus move, a keyboard user who activates a nav link stays
+        // parked in the sidebar and a screen reader never announces the new page.
         if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
             if let Some(main) = doc.query_selector("main").ok().flatten() {
                 main.set_scroll_top(0);
+                if let Some(el) = main.dyn_ref::<web_sys::HtmlElement>() {
+                    let _ = el.focus();
+                }
             }
         }
     }
@@ -317,8 +323,33 @@ impl Nav {
     /// Re-sync from the actual location (called on `popstate`).
     pub fn sync_from_location(&self) {
         let (path, query) = current_location();
+        let (path, query) = normalize_legacy(&path, query);
         self.view.set(View::from_path(&path));
         self.query.set(query);
+    }
+}
+
+/// Map legacy top-level paths (from when Map and Learning were their own areas)
+/// onto the merged area + sub-tab, so old bookmarks land on the same content.
+fn normalize_legacy(path: &str, query: String) -> (String, String) {
+    match path.trim_end_matches('/') {
+        "/topology" => (
+            "/intelligence".into(),
+            if query.is_empty() {
+                "tab=map".into()
+            } else {
+                query
+            },
+        ),
+        "/learning" => (
+            "/detections".into(),
+            if query.is_empty() {
+                "tab=learning".into()
+            } else {
+                query
+            },
+        ),
+        _ => (path.to_string(), query),
     }
 }
 
@@ -345,7 +376,7 @@ fn current_location() -> (String, String) {
 }
 
 /// Parse one `key` out of a `k=v&k2=v2` query string (values percent-decoded).
-pub fn param_of(query: &str, key: &str) -> Option<String> {
+pub(crate) fn param_of(query: &str, key: &str) -> Option<String> {
     query.split('&').find_map(|kv| {
         let (k, v) = kv.split_once('=')?;
         (k == key).then(|| dec(v))
@@ -366,13 +397,172 @@ pub fn build_query(pairs: &[(&str, String)]) -> String {
 fn enc(v: &str) -> String {
     crate::api::enc(v)
 }
-/// Percent-decode via the browser (no url crate in the wasm bundle).
+/// Percent-decode one path segment (public wrapper over [`dec`]).
+pub(crate) fn decode_path_segment(v: &str) -> String {
+    dec(v)
+}
+
+/// Percent-decode a path/query component.
+///
+/// Implemented in plain Rust rather than via `js_sys::decode_uri_component` so
+/// the routing layer has no JS dependency and can therefore be unit-tested on the
+/// host target — the round-trip between `to_path` and `from_path` is exactly the
+/// kind of thing that silently breaks a deep link, so it needs tests that run in
+/// CI without a browser. Invalid escapes are left verbatim, matching the
+/// browser's lenient behaviour rather than dropping characters.
 fn dec(v: &str) -> String {
-    js_sys::decode_uri_component(v)
-        .map(String::from)
-        .unwrap_or_else(|_| v.to_string())
+    let b = v.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let hex = |c: u8| match c {
+                b'0'..=b'9' => Some(c - b'0'),
+                b'a'..=b'f' => Some(c - b'a' + 10),
+                b'A'..=b'F' => Some(c - b'A' + 10),
+                _ => None,
+            };
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| v.to_string())
 }
 /// First 8 chars (short id).
 fn short(v: &str) -> String {
     v.chars().take(8).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every view must survive the round trip its URL implies: a deep link that
+    /// cold-loads has to land on exactly the screen that produced it.
+    #[test]
+    fn every_view_round_trips_through_its_path() {
+        let views = [
+            View::CommandCenter,
+            View::Investigations,
+            View::Investigation("1da42587-ef93-4efc".into()),
+            View::Audit,
+            View::Users,
+            View::User("root@pam".into()),
+            View::Applications,
+            View::Application("pve-daemon".into()),
+            View::Resources,
+            View::Resource("res-1".into()),
+            View::Detections,
+            View::Policies,
+            View::Policy("pol1".into()),
+            View::Intelligence,
+            View::DataSources,
+            View::System,
+            View::Entity("host".into(), "pve".into()),
+        ];
+        for v in views {
+            let path = v.to_path();
+            assert_eq!(View::from_path(&path), v, "path {path} did not round-trip");
+        }
+    }
+
+    /// Ids that contain URL-significant characters must survive encoding, or a
+    /// deep link to them silently resolves to the wrong entity.
+    #[test]
+    fn awkward_entity_ids_survive_the_url() {
+        for raw in [
+            "user with spaces",
+            "domain\\user",
+            "a/b",
+            "q?x=1",
+            "hash#frag",
+            "unicode-ÅÄÖ",
+            "plus+sign",
+            "percent%20already",
+        ] {
+            let v = View::User(raw.to_string());
+            let path = v.to_path();
+            assert!(
+                !path[7..].contains('/'),
+                "unescaped separator in {path} for {raw}"
+            );
+            assert_eq!(View::from_path(&path), v, "{raw} did not round-trip");
+        }
+    }
+
+    #[test]
+    fn an_unknown_path_becomes_a_not_found_that_keeps_the_url() {
+        let v = View::from_path("/no/such/place");
+        assert_eq!(v, View::NotFound("/no/such/place".into()));
+        // The URL is preserved so the address bar keeps naming what was asked for.
+        assert_eq!(v.to_path(), "/no/such/place");
+    }
+
+    #[test]
+    fn every_area_home_belongs_to_that_area() {
+        for a in Area::ALL {
+            assert_eq!(
+                a.home().area(),
+                Some(a),
+                "{a:?}'s home view reports a different area"
+            );
+        }
+    }
+
+    #[test]
+    fn detail_views_belong_to_their_list_area() {
+        assert_eq!(
+            View::Investigation("x".into()).area(),
+            Some(Area::Investigations)
+        );
+        assert_eq!(View::User("x".into()).area(), Some(Area::Users));
+        assert_eq!(
+            View::Application("x".into()).area(),
+            Some(Area::Applications)
+        );
+        assert_eq!(View::Resource("x".into()).area(), Some(Area::Resources));
+        assert_eq!(View::Policy("x".into()).area(), Some(Area::Policies));
+    }
+
+    // ---- query-state parsing ------------------------------------------------
+
+    #[test]
+    fn query_parameters_are_read_by_exact_key() {
+        let q = "tab=access&mode=text&q=ssh";
+        assert_eq!(param_of(q, "tab"), Some("access".into()));
+        assert_eq!(param_of(q, "mode"), Some("text".into()));
+        assert_eq!(param_of(q, "q"), Some("ssh".into()));
+        assert_eq!(param_of(q, "missing"), None);
+        // A key must not match a prefix of another key.
+        assert_eq!(param_of("tabby=1", "tab"), None);
+    }
+
+    #[test]
+    fn query_parsing_survives_odd_shapes() {
+        assert_eq!(param_of("", "tab"), None);
+        assert_eq!(param_of("tab=", "tab"), Some(String::new()));
+        assert_eq!(param_of("&&tab=x&&", "tab"), Some("x".into()));
+        assert_eq!(param_of("flag", "flag"), None, "a bare key has no value");
+        // First occurrence wins, deterministically.
+        assert_eq!(param_of("t=1&t=2", "t"), Some("1".into()));
+    }
+
+    #[test]
+    fn a_title_exists_for_every_view() {
+        for v in [
+            View::CommandCenter,
+            View::Investigations,
+            View::Investigation("abcdef1234".into()),
+            View::Audit,
+            View::System,
+            View::NotFound("/x".into()),
+        ] {
+            assert!(!v.title().trim().is_empty(), "{v:?} has no title");
+        }
+    }
 }

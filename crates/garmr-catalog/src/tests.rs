@@ -1,6 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
+//! Tests for the catalog's core invariants: only Trusted entries resolve — a
+//! Candidate sensitive resource confers nothing, and a Retired entry or an
+//! access outside a validity window stops resolving; [`ObjectIndex`] resolution
+//! is byte-identical to the linear [`Catalog::resolve_object_at`] across all
+//! three pattern kinds; [`Catalog::stamp`] is additive and never downgrades an
+//! already-sensitive record; the highest classification wins on overlap; TOML
+//! import yields Candidates, never Trusted; and the `cat1:` digest is stable
+//! and order-independent. Pure in-memory fixtures, no I/O.
+
 use super::*;
 use chrono::TimeZone;
 use garmr_core::{AuditAction, AuditRecord};
@@ -38,9 +47,9 @@ fn entry(id: &str, resource: Resource, approval: ApprovalState) -> CatalogEntry 
         version: 1,
         valid_from: None,
         valid_until: None,
-        created_by: "alice".into(),
+        created_by: "henrik".into(),
         approved_by: if approval == ApprovalState::Trusted {
-            Some("alice".into())
+            Some("henrik".into())
         } else {
             None
         },
@@ -156,7 +165,7 @@ fn candidate_sensitive_resource_is_not_treated_as_sensitive() {
     assert_eq!(cat.candidates().count(), 1);
 
     // Human promotion is the only path to Trusted → now it resolves.
-    cat.entries[0].promote("alice");
+    cat.entries[0].promote("henrik");
     assert!(cat.is_sensitive("curated.persons"));
     assert_eq!(
         cat.classification_of("curated.persons").as_deref(),
@@ -293,7 +302,7 @@ fn digest_is_stable_and_order_independent() {
 #[test]
 fn toml_import_yields_candidates_not_trusted() {
     let text = r#"
-created_by = "alice"
+created_by = "henrik"
 
 [[application]]
 name = "registry"
@@ -329,7 +338,7 @@ members = ["anna", "bruno", "carol"]
         .entries
         .iter()
         .all(|e| e.source == CatalogSource::FileImport));
-    assert!(cat.entries.iter().all(|e| e.created_by == "alice"));
+    assert!(cat.entries.iter().all(|e| e.created_by == "henrik"));
     assert!(
         !cat.is_sensitive("raw.raw_persons"),
         "imported facts must not resolve until promoted"
@@ -338,7 +347,7 @@ members = ["anna", "bruno", "carol"]
     // Promote everything → now it resolves.
     let mut cat = cat;
     for e in &mut cat.entries {
-        e.promote("alice");
+        e.promote("henrik");
     }
     assert!(cat.is_sensitive("raw.raw_persons"));
     assert_eq!(

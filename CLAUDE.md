@@ -20,7 +20,7 @@ When adding or editing anything user-facing or human-readable, write it in Engli
 
 ## Commits
 
-Author commits under the **human contributor only** — Alice, or whichever named
+Author commits under the **human contributor only** — Henrik, or whichever named
 contributor is doing the work. Do **not** add a `Co-Authored-By: Claude …` trailer,
 a "Generated with Claude" line, or any other attribution to Claude / the assistant
 in commit messages or PR descriptions.

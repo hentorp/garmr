@@ -28,7 +28,7 @@ pub fn view(store: Store) -> impl IntoView {
 
             <section class="sect">
                 <h3>"Collectors & ingest health "{ui::help_tip("Collector health is whether each source is still delivering events and how current its data is. A healthy source is fresh (delivering recently); one that falls silent goes stale, which usually means a broken collector or an outage worth investigating.")}</h3>
-                <p class="sub">"Per source: how many events it has delivered, how far behind real time it is, and whether it is still current. "<b>"Freshness"</b>" is how recently a source last delivered; a "<b>"STALE"</b>" source has gone silent."</p>
+                <p class="sub">"Per source: how many events it has delivered, how far behind real time it is, and whether it is still current. "<b>"Ingest lag"</b>" is how long an event takes from happening on the source to arriving here. "<b>"Staleness"</b>" is how long since the source last delivered anything; a "<b>"STALE"</b>" source has gone silent — usually a broken collector or an outage worth investigating."</p>
                 {ingest.framed("sources", "No source has delivered any events yet — point a collector or log source at garmr (for example a syslog forwarder or the garmr agent) and its events will appear here.", |rows| {
                     super::table(&["source", "events", "ingest lag", "staleness", "freshness"],
                         rows.into_iter().map(|s| {

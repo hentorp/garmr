@@ -1,9 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The admin / governance surface: notification silences (silence/prune),
-//! the propose→approve→act approvals for rules and response-actions, and the
-//! action listing. Every mutating call is gated by [`check_admin`] (admin bearer).
+//! The admin / governance surface: notification silences (announced on the
+//! Matrix alerts room so a stolen token can't silence QUIETLY), online case
+//! pruning, the propose→approve→act decisions for rules and response-actions,
+//! the action listing, and the audit-ledger verification reads
+//! (`/api/audit/status` + `/api/audit/verify` — admin-gated in the HANDLER,
+//! not the mount, so an unauthenticated caller can't trigger the O(ledger)
+//! scan while passkey-only deployments still resolve the routes). Every
+//! mutating call is gated by [`check_admin`] and audited fail-closed before
+//! the change is applied.
 
 use super::*;
 

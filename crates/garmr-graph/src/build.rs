@@ -1,8 +1,22 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The `store`-backed graph builder: pull cases + event-co-occurrence edges
-//! straight from the store (feature `store`).
+//! The `store`-backed graph builder (feature `store`): [`build`] pulls case
+//! edges from the state store, then enriches best-effort from the event lake —
+//! a wide-window host pass (every monitored host appears as a node, tagged
+//! with a device type via `garmr_core::resolve_asset_role`), a DISTINCT
+//! `(host, src_ip, user)` co-occurrence scan for event edges, and a
+//! staff↔person register-lookup overlay. Each lake scan is time-boxed
+//! ([`EVENT_QUERY_TIMEOUT`]); on timeout/failure the graph degrades to
+//! case-only (`set_degraded`) instead of holding up an interactive pivot —
+//! the lookup overlay just drops out without degrading.
+//!
+//! [`GraphCache`] wraps the build in a stale-while-revalidate cache: a fresh
+//! entry returns at once, a stale one returns immediately and kicks a
+//! single-flight background rebuild, and only the first-ever build blocks —
+//! warmed at startup so pivots and the topology map never wait on the
+//! multi-second wide-window scan. [`TimeWindow`] is the relative/absolute
+//! `event_ts` span the scans cover.
 
 use std::time::Duration;
 

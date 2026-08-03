@@ -16,3 +16,18 @@ garmr.toml
 .~lock.*#
 .claude/
 .idea/
+
+# Long-running agent harness runtime state (local-only; see .claude/CLAUDE.md)
+/PROGRESS.md
+/test-results.json
+/NEXT_FINDINGS.md
+/AGENT_STOP
+/STEER.md
+/evidence/
+
+# Written into an exported public tree by scripts/public-export.sh (manifest,
+# digests and source-commit provenance). Useful for verifying an export in
+# place; never part of the tracked tree.
+.export-manifest.txt
+.export-digests.sha256
+.export-provenance

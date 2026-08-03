@@ -1,7 +1,7 @@
 # Example resource catalog (Phase 4). Point detect.catalog_file at a copy of
 # this. File-imported entries are promoted to Trusted at load, so they resolve
 # for is_sensitive / classification and drive the policy + detectors.
-created_by = "alice"
+created_by = "henrik"
 
 [[application]]
 name = "registry"

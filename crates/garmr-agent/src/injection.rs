@@ -179,8 +179,8 @@ mod tests {
     fn ordinary_security_log_is_not_a_false_positive() {
         // Real-world lines that must NOT trip the scanner.
         for line in [
-            "systemd[1]: Started Session 3 of user alice.",
-            "sudo: alice : TTY=pts/0 ; PWD=/home ; USER=root ; COMMAND=/bin/ls",
+            "systemd[1]: Started Session 3 of user henrik.",
+            "sudo: henrik : TTY=pts/0 ; PWD=/home ; USER=root ; COMMAND=/bin/ls",
             "kernel: [UFW BLOCK] IN=eth0 SRC=10.0.0.5 DST=10.0.0.1",
             "nginx: 10.0.0.5 - - GET /admin HTTP/1.1 403",
         ] {

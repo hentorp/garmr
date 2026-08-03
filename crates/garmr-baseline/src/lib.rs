@@ -102,25 +102,7 @@ pub enum Dimension {
     DistinctSubjects,
 }
 
-/// How a dimension is tracked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DimClass {
-    Categorical,
-    Temporal,
-    Numeric,
-}
-
 impl Dimension {
-    pub fn class(self) -> DimClass {
-        use Dimension::*;
-        match self {
-            QueryFingerprint | Client | SourceHost | Object | Operation | Database | Schema
-            | SubjectType => DimClass::Categorical,
-            HourOfDay | Weekday => DimClass::Temporal,
-            RowsRead | BytesRead | DistinctSubjects => DimClass::Numeric,
-        }
-    }
-
     /// All categorical dimensions (the ones novelty checks apply to).
     pub const CATEGORICAL: &'static [Dimension] = &[
         Dimension::QueryFingerprint,

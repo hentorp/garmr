@@ -972,11 +972,6 @@ impl Catalog {
         Catalog { entries }
     }
 
-    /// Append an entry.
-    pub fn push(&mut self, entry: CatalogEntry) {
-        self.entries.push(entry);
-    }
-
     /// The Trusted entries — the only ones that resolve.
     pub fn trusted(&self) -> impl Iterator<Item = &CatalogEntry> {
         self.entries.iter().filter(|e| e.is_trusted())
@@ -1099,7 +1094,7 @@ impl Catalog {
     /// top-level `created_by`:
     ///
     /// ```toml
-    /// created_by = "alice"
+    /// created_by = "henrik"
     ///
     /// [[application]]
     /// name = "registry"

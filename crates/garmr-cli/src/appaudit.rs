@@ -1129,8 +1129,8 @@ mod tests {
                 },
                 condition: ConditionMatch::default(),
                 effect: Effect::Deny,
-                created_by: "alice".into(),
-                approved_by: Some("alice".into()),
+                created_by: "henrik".into(),
+                approved_by: Some("henrik".into()),
             }]),
             policies_dir: PathBuf::new(),
             catalog_file: None,
@@ -1419,8 +1419,8 @@ mod tests {
                 },
                 condition: ConditionMatch::default(),
                 effect: Effect::Deny,
-                created_by: "alice".into(),
-                approved_by: Some("alice".into()),
+                created_by: "henrik".into(),
+                approved_by: Some("henrik".into()),
             }]),
             policies_dir: PathBuf::new(),
             catalog_file: None,
@@ -1662,8 +1662,8 @@ mod tests {
             },
             condition: ConditionMatch::default(),
             effect: Effect::Deny,
-            created_by: "alice".into(),
-            approved_by: Some("alice".into()),
+            created_by: "henrik".into(),
+            approved_by: Some("henrik".into()),
         }
     }
 
@@ -1692,7 +1692,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "promotion_id": id, "kind": "policy", "name": name, "op": op,
             "to_version": "v2", "to_state": "approved", "channel": "production",
-            "target_digest": digest, "actor": "alice", "audit_id": format!("audit-{id}"),
+            "target_digest": digest, "actor": "henrik", "audit_id": format!("audit-{id}"),
             "at": at,
         }))
         .unwrap()
@@ -1795,7 +1795,7 @@ mod tests {
             "promotion_id": "cp1", "kind": "catalog", "name": "curated.persons",
             "op": "promote", "to_version": "v1", "to_state": "approved",
             "channel": "production", "target_digest": "c1",
-            "actor": "alice", "audit_id": "audit-cp1", "at": "2026-01-01T00:00:00Z",
+            "actor": "henrik", "audit_id": "audit-cp1", "at": "2026-01-01T00:00:00Z",
         }))
         .unwrap();
         state.append_promotion(&promo).unwrap();
@@ -1824,7 +1824,7 @@ mod tests {
                 MonitoringTarget::User(user.into()),
                 MonitoringState::Investigation,
                 chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
-                "alice",
+                "henrik",
             )
         };
         let mon_record = |user: &str, digest: &str| -> garmr_core::RegistryRecord {
@@ -1848,7 +1848,7 @@ mod tests {
             "promotion_id": "mp1", "kind": "monitoring", "name": "mallory",
             "op": "promote", "to_version": "v1", "to_state": "approved",
             "channel": "production", "target_digest": "m1",
-            "actor": "alice", "audit_id": "audit-mp1", "at": "2026-01-01T00:00:00Z",
+            "actor": "henrik", "audit_id": "audit-mp1", "at": "2026-01-01T00:00:00Z",
         }))
         .unwrap();
         state.append_promotion(&promo).unwrap();
