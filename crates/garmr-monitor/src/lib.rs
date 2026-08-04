@@ -357,17 +357,6 @@ impl UserMonitoringProfile {
         self.application_scope = scope;
         self
     }
-    /// Constrain to a set of resource patterns.
-    pub fn with_resource_scope(mut self, scope: Vec<String>) -> Self {
-        self.resource_scope = scope;
-        self
-    }
-    /// Record who approved the profile.
-    pub fn with_approved_by(mut self, approved_by: impl Into<String>) -> Self {
-        self.approved_by = Some(approved_by.into());
-        self
-    }
-
     /// True if the profile is live at `now`: its state is not
     /// [`Retired`](MonitoringState::Retired), and `now` is within
     /// `[valid_from, valid_until]` (an unset `valid_until` is open-ended). A
@@ -377,16 +366,6 @@ impl UserMonitoringProfile {
         self.state.is_active_state()
             && self.valid_from <= now
             && self.valid_until.is_none_or(|until| now <= until)
-    }
-
-    /// The attention multiplier this profile currently contributes: its state's
-    /// [`sensitivity_multiplier`] while active, else the neutral `1.0`.
-    pub fn active_multiplier(&self, now: DateTime<Utc>) -> f64 {
-        if self.is_active(now) {
-            self.state.sensitivity_multiplier()
-        } else {
-            1.0
-        }
     }
 
     /// True if this profile applies to a bare user lookup at `now`: it is active

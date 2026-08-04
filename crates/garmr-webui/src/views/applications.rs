@@ -95,7 +95,11 @@ pub fn list_view(store: Store) -> impl IntoView {
                             view! {
                                 <tr class="rowlink" on:click=move |_| store.nav.go(View::Application(nc.clone()))>
                                     <td>
-                                        <div class="mono">{if name.is_empty() { "—".into() } else { name.clone() }}</div>
+                                        <div class="mono">
+                                            <ui::ViewLink view=View::Application(name.clone()) class="rowtarget">
+                                                {if name.is_empty() { "—".to_string() } else { name.clone() }}
+                                            </ui::ViewLink>
+                                        </div>
                                         <div class="dimtext">{if owner.is_empty() && team.is_empty() { "—".to_string() } else if team.is_empty() { owner } else { format!("{owner} · {team}") }}</div>
                                     </td>
                                     <td>{governance_badges(&r)}</td>

@@ -1,8 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Read/inspect commands: `query` (read-only SQL), `tail`, and `cases`
-//! (list/show/prune).
+//! Read/inspect commands: `query` (read-only SQL), `tail`, `cases`
+//! (list/show/prune), `findings` (the detection plane's SecurityFindings),
+//! `shadow` (the DoD-19 champion/challenger comparison summary), and `models`
+//! (the model-router catalog + per-class fence decision, offline). Daemon-first
+//! where a live in-memory view exists; direct store reads otherwise.
 
 use super::*;
 

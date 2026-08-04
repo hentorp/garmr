@@ -1,18 +1,22 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Phase 13 — `garmr backup` (create + show). The garmr-cli edge of the pure
-//! [`garmr_core::backup`] vocabulary: it opens the stores (fenced by the redb
-//! exclusive lock), copies the durable trees, ed25519-signs the content-addressed
-//! manifest, and prints it back — mirroring the Phase-11 `bundle` twin.
+//! Phase 13 — `garmr backup`: create / verify / restore / promote / show. The
+//! garmr-cli edge of the pure [`garmr_core::backup`] vocabulary, mirroring the
+//! Phase-11 `bundle` twin.
 //!
 //! `create` is OFFLINE / writer-stopped: it acquires the redb exclusion over the
 //! state DB and the warehouse catalog (a non-destructive [`try_acquire_exclusion`]
-//! probe, NOT `open_writable`), so a live `serve` makes it refuse fail-closed and
-//! no writer can start mid-copy. Secrets never enter the artifact: the ledger is
-//! copied by the SAME allow-list as `garmr audit export` (segments + checkpoints +
-//! public key — never `signing.key`), and a denylist over the whole staged tree
-//! FAILS THE BUILD CLOSED if any secret path slips in.
+//! probe, NOT `open_writable`), copies the durable trees, ed25519-signs the
+//! content-addressed manifest, and FAILS CLOSED if any secret path is staged —
+//! the ledger is copied by the SAME allow-list as `garmr audit export` (segments
+//! plus checkpoints and public key, never `signing.key`). `verify` is offline and
+//! fail-closed against an OUT-OF-BAND trusted key (the embedded key is never a
+//! trust root). `restore` verifies first, refuses a live writer and a
+//! warehouse-path-binding mismatch, stages + swaps atomically with rollback, and
+//! writes the restored-follower marker BEFORE the swap commits — a restored node
+//! is a read-only FOLLOWER until the audited `promote` clears the marker
+//! (invariant #2: a restored node never silently becomes a writer).
 
 use std::path::{Path, PathBuf};
 

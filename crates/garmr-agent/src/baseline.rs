@@ -3,10 +3,10 @@
 
 //! Host baselines — "what is normal for this host?".
 //!
-//! For M1 the baseline is computed on demand from the events table (distinct
-//! services, source IPs, and ports seen for the host over the retention
-//! window). A periodic rollup into the redb `baselines` table is a follow-up;
-//! the tool contract (`get_host_baseline`) is stable either way.
+//! The baseline is computed on demand from the events table — the top
+//! services, source IPs, and users seen for the host over a fixed 30-day
+//! window. A persisted periodic rollup is a possible follow-up; the tool
+//! contract (`get_host_baseline`) is stable either way.
 
 use garmr_core::Result;
 use garmr_store::Store;

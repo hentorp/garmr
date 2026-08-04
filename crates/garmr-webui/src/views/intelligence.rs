@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Intelligence — relationships, ATT&CK coverage, the environment model, and
-//! threat hunts. The relationship view leads with an accessible table + the graph
-//! as an accompaniment (never graph-only), per the accessibility mandate.
+//! Intelligence — relationships (table + 2D graph), the embedded 3D topology map,
+//! ATT&CK coverage, the environment model, and threat hunts. The relationship
+//! view leads with an accessible table + the graph as an accompaniment (never
+//! graph-only), per the accessibility mandate; the 3D map is a sibling tab so
+//! both views of the same host↔ip↔user↔case graph live in one place.
 
 use leptos::prelude::*;
 use serde_json::Value;
@@ -24,11 +26,13 @@ pub fn view(store: Store) -> impl IntoView {
             {ui::page_header("Intelligence", Area::Intelligence.blurb())}
             {super::tabs(&[
                 ("relationships", "Relationships"),
-                ("attack", "ATT&CK"),
-                ("environment", "Environment"),
-                ("hunts", "Hunts"),
+                ("map", "3D map"),
+                ("attack", "ATT&CK coverage"),
+                ("environment", "Environment model"),
+                ("hunts", "Threat hunts"),
             ], tab(), set_tab)}
             {move || match tab().as_str() {
+                "map" => map_tab(store),
                 "attack" => attack_tab(),
                 "environment" => environment_tab(store),
                 "hunts" => hunts_tab(),
@@ -70,7 +74,7 @@ fn relationships_tab(store: Store) -> AnyView {
                 </select>
                 <button class="btn primary" on:click=move |_| run()>"Pivot"</button>
                 <label class="toggle"><input type="checkbox" prop:checked=move || show_graph.get() on:change=move |ev| show_graph.set(event_target_checked(&ev))/>" graph"</label>
-                <button class="btn ghost" on:click=move |_| store.nav.go(crate::route::View::Map)>"Open 3D Map →"</button>
+                <button class="btn ghost" on:click=move |_| store.nav.set_query("tab=map".to_string())>"Open the 3D map →"</button>
             </div>
             {move || {
                 if let Some(e) = f.err.get() { return super::error_state(e); }
@@ -84,6 +88,44 @@ fn relationships_tab(store: Store) -> AnyView {
             }}
         </div>
     }.into_any()
+}
+
+/// The embedded 3D entity topology (host↔ip↔user↔case), served by the backend at
+/// `/map/` and shown in an iframe. Case nodes glow red as findings; clicking a
+/// node posts a same-origin message that the shell turns into an entity-drawer
+/// peek or a jump to the investigation (see `install_message_bridge` in
+/// `lib.rs`). Never the *only* way to read relationships — the accessible
+/// table lives in the Relationships tab. Follows the global time range.
+fn map_tab(store: Store) -> AnyView {
+    // The map reads the same time window as the rest of the console; pass it on
+    // the iframe URL so a preset/absolute range scopes the graph.
+    let src = move || format!("/map/{}", store.time_range.get().graph_query());
+    view! {
+        <div>
+            <div class="row">
+                <p class="sub grow">"The same host↔ip↔user↔case links as the Relationships tab, drawn as a live 3D graph — investigation nodes glow red as findings. Click a node to peek the entity or open its investigation."</p>
+                <button
+                    class="btn ghost"
+                    title="Accessible alternative: the same relationships as a table + attack paths"
+                    on:click=move |_| store.nav.set_query("tab=relationships".to_string())
+                >
+                    "Accessible relationship table →"
+                </button>
+            </div>
+            <div class="map-embed">
+                <iframe
+                    class="map-frame"
+                    title="3D topology"
+                    src=src
+                    referrerpolicy="no-referrer"
+                ></iframe>
+            </div>
+            <p class="sub map-note">
+                "The 3D view is not keyboard-navigable; use the Relationships tab for the same links as an accessible table."
+            </p>
+        </div>
+    }
+    .into_any()
 }
 
 fn attack_tab() -> AnyView {

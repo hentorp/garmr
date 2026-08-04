@@ -44,7 +44,7 @@ SPDX-License-Identifier = "CC-BY-4.0"
 
 # Root metadata / projection tooling config.
 [[annotations]]
-path = ["NOTICE", "public-export.allowlist", "public-export.denylist"]
+path = ["NOTICE", "public-export.allowlist", "public-export.denylist", "public-export.keeplist", "**/webdriver.json"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Vetra Automation AB"
 SPDX-License-Identifier = "AGPL-3.0-only"

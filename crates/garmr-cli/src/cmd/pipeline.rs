@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The analysis/pipeline commands: replay + eval harness, ad-hoc correlate/
-//! anomaly/risk/baseline runs, the entity graph, semantic index/search (feature),
-//! and the retention + cold-tier query commands.
+//! anomaly/risk/baseline runs, full-text `search` + hybrid `hsearch` (the safe
+//! Query IR), the entity graph, semantic index/search/verify (`semantic`
+//! feature), `reindex` (full-text rebuild — including moving a genuinely
+//! corrupt index aside, fenced behind the single-writer exclusion), and the
+//! retention + cold-tier query commands.
 
 use super::*;
 

@@ -13,6 +13,8 @@ use serde_json::Value;
 
 use std::cell::RefCell;
 
+use crate::auth::AuthMode;
+
 thread_local! {
     /// An optional operator (admin) bearer token, held in memory for the session.
     /// In production the passkey session cookie authorizes admin actions and this
@@ -21,6 +23,23 @@ thread_local! {
     /// Admin principal — exactly how a CLI/machine caller holds the token. It is
     /// never placed in a URL and never persisted to disk by the app.
     static OPERATOR_TOKEN: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+thread_local! {
+    /// How this deployment authenticates browser callers, learned from the
+    /// public capability manifest. Until it loads we stay [`AuthMode::Unknown`],
+    /// which is deliberately the non-redirecting branch — guessing "passkey"
+    /// and being wrong is what produces a console↔login loop.
+    static AUTH_MODE: RefCell<AuthMode> = const { RefCell::new(AuthMode::Unknown) };
+}
+
+/// Record how the deployment authenticates, from `GET /api/capabilities`.
+pub fn set_auth_mode(mode: AuthMode) {
+    AUTH_MODE.with(|m| *m.borrow_mut() = mode);
+}
+/// The current authentication mode.
+pub fn auth_mode() -> AuthMode {
+    AUTH_MODE.with(|m| *m.borrow())
 }
 
 /// Set (or clear) the in-memory operator token used to authorize admin actions.
@@ -33,6 +52,70 @@ pub fn has_operator_token() -> bool {
 }
 fn operator_token() -> Option<String> {
     OPERATOR_TOKEN.with(|t| t.borrow().clone())
+}
+
+/// The console's own origin (`https://host[:port]`), used to decide whether a
+/// request stays same-origin and may therefore carry the operator token.
+fn page_origin() -> String {
+    web_sys::window()
+        .and_then(|w| w.location().origin().ok())
+        .unwrap_or_default()
+}
+
+/// The in-app path+query the operator is currently on, for `next=` preservation.
+fn current_path() -> String {
+    web_sys::window()
+        .map(|w| {
+            let l = w.location();
+            let p = l.pathname().unwrap_or_else(|_| "/".into());
+            let s = l.search().unwrap_or_default();
+            format!("{p}{s}")
+        })
+        .unwrap_or_else(|| "/".into())
+}
+
+/// Attach the operator bearer token when — and only when — the request stays on
+/// the console's own origin. Shared by every verb so a protected GET is
+/// authorized exactly like a protected POST.
+fn authorize(req: gloo_net::http::RequestBuilder) -> gloo_net::http::RequestBuilder {
+    if !crate::auth::should_attach_token(&base(), &page_origin(), has_operator_token()) {
+        return req;
+    }
+    match operator_token() {
+        Some(t) => req.header("Authorization", &format!("Bearer {t}")),
+        None => req,
+    }
+}
+
+/// Act on a 401/403 the same way everywhere: bounce to the passkey login page
+/// only when passkey auth can actually resolve it, preserving the destination;
+/// otherwise leave the error for the view to render as an actionable
+/// authorization state (which routes to System › Access).
+///
+/// Returns `true` when a navigation was started, so the caller can stop.
+fn handle_unauthorized(status: u16) -> bool {
+    use crate::auth::UnauthorizedAction as A;
+    let action = crate::auth::unauthorized_action(
+        status,
+        auth_mode(),
+        &current_path(),
+        has_operator_token(),
+    );
+    match action {
+        A::RedirectToLogin { next } => {
+            if let Some(w) = web_sys::window() {
+                // The destination is a sanitized in-app path; `safe_next` has
+                // already dropped anything credential-shaped.
+                let url = format!("/login?next={}", enc(&next));
+                let _ = w.location().set_href(&url);
+                return true;
+            }
+            false
+        }
+        // Rendered by the view: "authorize as an operator" with a route to
+        // System › Access, plus Retry once a token is set.
+        A::PromptForOperatorToken | A::Forbidden | A::None => false,
+    }
 }
 
 /// A structured API error: the HTTP status (0 = transport/parse failure) plus a
@@ -106,20 +189,18 @@ pub fn base() -> String {
 }
 
 /// GET `path` and parse JSON. `path` starts with `/`.
+///
+/// Carries the operator token on same-origin requests (so a token-only
+/// deployment can read protected endpoints) and defers 401/403 handling to the
+/// shared policy in [`crate::auth`].
 pub async fn get(path: &str) -> Result<Value, String> {
     let url = format!("{}{path}", base());
-    let resp = gloo_net::http::Request::get(&url)
+    let resp = authorize(gloo_net::http::Request::get(&url))
         .send()
         .await
         .map_err(|e| format!("GET {path}: {e}"))?;
     if !resp.ok() {
-        // 401 = no/expired session → bounce to the passkey login page (when the
-        // deployment runs passkey auth; token-only deployments 401 as before).
-        if resp.status() == 401 {
-            if let Some(w) = web_sys::window() {
-                let _ = w.location().set_href("/login");
-            }
-        }
+        handle_unauthorized(resp.status());
         return Err(format!("GET {path}: HTTP {}", resp.status()));
     }
     resp.json::<Value>()
@@ -153,17 +234,22 @@ pub async fn post(path: &str, body: Value, bearer: Option<&str>) -> Result<Value
 }
 
 /// Structured GET: like [`get`] but returns an [`ApiError`] carrying the status
-/// so views can distinguish 401/403/404/5xx. Still bounces to `/login` on a 401
-/// when a passkey deployment expects a session.
+/// so views can distinguish 401/403/404/5xx.
+///
+/// This is the read path used by the protected views. It attaches the operator
+/// bearer token on same-origin requests — without that, a token-only deployment
+/// authorizes every POST but no GET, so protected read views stay unusable even
+/// after a valid admin token has been entered.
 pub async fn send_get(path: &str) -> Result<Value, ApiError> {
     let url = format!("{}{path}", base());
-    let resp = gloo_net::http::Request::get(&url)
+    let resp = authorize(gloo_net::http::Request::get(&url))
         .send()
         .await
         .map_err(|e| ApiError::transport(format!("GET {path}: {e}")))?;
     let status = resp.status();
     if !resp.ok() {
         let body = resp.text().await.unwrap_or_default();
+        handle_unauthorized(status);
         return Err(ApiError {
             status,
             message: trim_body(&body, path),
@@ -181,11 +267,7 @@ pub async fn send_get(path: &str) -> Result<Value, ApiError> {
 /// server state and can surface the audit reference on success.
 pub async fn send_post(path: &str, body: Value) -> Result<Value, ApiError> {
     let url = format!("{}{path}", base());
-    let mut req = gloo_net::http::Request::post(&url);
-    if let Some(t) = operator_token() {
-        req = req.header("Authorization", &format!("Bearer {t}"));
-    }
-    let resp = req
+    let resp = authorize(gloo_net::http::Request::post(&url))
         .json(&body)
         .map_err(|e| ApiError::transport(format!("POST {path}: {e}")))?
         .send()
@@ -194,6 +276,7 @@ pub async fn send_post(path: &str, body: Value) -> Result<Value, ApiError> {
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !(200..300).contains(&status) {
+        handle_unauthorized(status);
         return Err(ApiError {
             status,
             message: trim_body(&text, path),

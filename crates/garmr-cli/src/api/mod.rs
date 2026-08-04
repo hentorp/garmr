@@ -1,14 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The read-only query API on `serve`.
+//! The query/console HTTP API on `serve`.
 //!
 //! The embedded store is single-process, so you can't point a second CLI at it
-//! while the daemon runs. Instead the daemon exposes a small localhost HTTP API
-//! over its own in-process store — this is how you query garmr *while* it
-//! ingests (the same model as Splunk/Elastic: query the service, not the raw
-//! index files). A browser, `curl`, a future facett UI, or a CLI-over-HTTP all
-//! consume it. Everything here is strictly read-only.
+//! while the daemon runs. Instead the daemon exposes an HTTP API over its own
+//! in-process store — this is how you use garmr *while* it ingests (the same
+//! model as Splunk/Elastic: query the service, not the raw index files). The
+//! Leptos web console, `curl`, and machine credentials all consume it.
+//!
+//! The read surface is always mounted. Writes are additive and gated: the
+//! LLM-spend + analyst-feedback endpoints exist only on a writer (never an HA
+//! follower), and the `/admin/*` surface only when an admin token is set.
+//! Every protected change is gated → audited fail-closed → applied, in that
+//! order (see [`ApiState::record_admin`]): a state change is never acknowledged
+//! without a durable audit record.
 
 use std::collections::HashMap;
 

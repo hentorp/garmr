@@ -72,10 +72,15 @@ pub fn entity_page(store: Store, kind: &str, _name: &str, page: &Value) -> AnyVi
                     cases.into_iter().map(|c| {
                         let id = api::s(&c, "id");
                         let idc = id.clone();
+                        let short_id = api::short(&c, "id");
                         let st = api::s(&c, "state");
                         view! {
                             <tr class="rowlink" on:click=move |_| store.nav.go(View::Investigation(idc.clone()))>
-                                <td class="mono dimtext">{api::short(&c, "id")}</td>
+                                <td class="mono dimtext">
+                                    <ui::ViewLink view=View::Investigation(id) class="rowtarget">
+                                        {short_id}
+                                    </ui::ViewLink>
+                                </td>
                                 <td>{ui::state_badge(&st)}</td>
                                 <td>{api::clean(&api::s(&c, "rule"))}</td>
                                 <td class="mono dimtext">{api::num(&c, "event_count").to_string()}</td>

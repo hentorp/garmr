@@ -1,9 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Read-only registry views. Every record carries its derived `effective_state`
-//! (the promotion fold); `/active` resolves the live record per `(kind, name)`
-//! on the production channel. Writes/promotions are admin-gated in Commit 5.
+//! The governed-registry surface: the read views + the admin write path.
+//! Every record carries its derived `effective_state` (the promotion fold);
+//! `/active` resolves the live record per `(kind, name)` on the production
+//! channel. Register/promote/rollback/retire/reject are admin-gated and
+//! enforce the hard invariant: a promotion needs an EXISTING versioned record
+//! AND a fail-closed audit event (with auditing disabled the promotion is
+//! refused, never persisted inert). A lesson is re-validated at the approval
+//! boundary — never trusted from its Draft — and a governed-kind promotion on
+//! the production channel auto-reloads the enforced app-audit config.
 
 use garmr_core::{
     active, effective_state, ApprovalState, PromotionEvent, PromotionOp, RegistryKind,

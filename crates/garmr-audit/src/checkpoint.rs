@@ -113,18 +113,4 @@ impl Checkpoint {
     pub fn verify_with(&self, trusted_public_key: &[u8; 32]) -> bool {
         verify(trusted_public_key, &self.signed_body(), &self.signature)
     }
-
-    /// Verify against the checkpoint's own embedded public key. This proves
-    /// internal consistency (the signature matches the stated key) but NOT
-    /// authenticity — use only when the caller has already established that the
-    /// embedded key is the trusted one.
-    pub fn verify_self_consistent(&self) -> bool {
-        match hex::decode(&self.public_key)
-            .ok()
-            .and_then(|v| <[u8; 32]>::try_from(v).ok())
-        {
-            Some(pk) => self.verify_with(&pk),
-            None => false,
-        }
-    }
 }

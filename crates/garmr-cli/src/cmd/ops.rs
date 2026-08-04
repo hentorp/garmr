@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Operational commands: notification `silence` management (direct or via the
-//! daemon API) and `selftest` (an end-to-end pipeline smoke test).
+//! daemon API), `compact` (offline events-table compaction — run with `serve`
+//! stopped), `selftest` (an end-to-end pipeline smoke test), and `recover`
+//! (break-glass emergency-admin issuance — local-only, serve stopped, audited
+//! fail-closed before the credential is persisted).
 
 use super::*;
 

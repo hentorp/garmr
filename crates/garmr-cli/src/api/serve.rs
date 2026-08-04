@@ -79,6 +79,7 @@ pub(super) fn build_router(state: ApiState, opts: RouterOpts) -> Router {
         // fingerprint only — never a value. Writes are on /admin/secrets.
         .route("/api/secrets", get(super::secrets::secrets_status))
         .route("/api/search", get(search))
+        .route("/api/entities/search", get(super::views::entities_search))
         .route("/api/query", get(query))
         .route("/api/query/cold", get(query_cold))
         .route("/api/cold-query", get(cold_query))

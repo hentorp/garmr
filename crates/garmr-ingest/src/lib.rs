@@ -89,13 +89,6 @@ pub fn replay_format(body: &[u8], format: &str, default_environment: &str) -> Re
     }
 }
 
-/// The format names `replay_format` accepts, for CLI help / validation.
-pub fn replay_formats() -> Vec<String> {
-    let mut v = vec!["json".to_string(), "syslog".to_string()];
-    v.extend(AdapterRegistry::with_builtin().names());
-    v
-}
-
 #[cfg(test)]
 mod replay_tests {
     use super::*;

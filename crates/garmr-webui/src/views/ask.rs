@@ -3,8 +3,9 @@
 
 //! Ask — natural-language answers ("ask, don't SPL"). The daemon's model plans
 //! a read-only query, runs it, and answers grounded in the rows with `[n]`
-//! citations. No longer a standalone route: the investigate hub calls `/api/ask`
-//! and renders the result with [`answer_card`], the reusable card kept here.
+//! citations. No longer a standalone route: the Audit Explorer's natural-language
+//! mode calls `/api/ask` and renders the result with [`answer_card`], the
+//! reusable card kept here.
 
 use leptos::prelude::*;
 use serde_json::Value;

@@ -1,6 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
+//! Deterministic tests for the per-access detector planes. The stateless plane
+//! ([`detect_access`]): every detector fires on its trigger and stays quiet on a
+//! clean access, one access can fire several detectors, non-audit events are
+//! ignored, and the policy/standalone buckets stay disjoint and cover
+//! [`POLICY_DETECTORS`]. The behavioral plane ([`detect_behavioral`]): findings
+//! are Trusted-only by construction — a Candidate (still-learning) baseline, an
+//! actorless access, or an empty store never fires, while genuine novelty,
+//! off-hours, volume and peer deviations do. Synthetic events only; no timing,
+//! no randomness.
+
 use super::*;
 use garmr_core::app_audit::keys;
 use garmr_policy::Effect;

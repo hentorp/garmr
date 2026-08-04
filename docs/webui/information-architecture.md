@@ -1,7 +1,7 @@
 # garmr WebUI — information architecture
 
 Navigation is organised around **what an analyst wants to accomplish**, not around
-backend crates or implementation phases. Twelve top-level areas, grouped into four
+backend crates or implementation phases. Eleven top-level areas, grouped into four
 intents in the sidebar.
 
 ## Before → after
@@ -12,11 +12,10 @@ intents in the sidebar.
 | Investigate + Cases | **Investigations** (queue + evidence-driven detail) |
 | Events + semantic-in-Investigate + (hidden hsearch/ask) | **Audit Explorer** (Simple / Advanced / Natural language) |
 | (entity pages only inside Investigate) | **Users**, **Applications** |
-| Findings + Baselines + (Ops › Rules) | **Detections** (findings / proposals / baselines / silences) |
+| Findings + Baselines + (Ops › Rules) | **Detections** (findings / proposals / baselines / silences / learning) |
 | (none — no policy API) | **Policies** |
-| ATT&CK + Environment + (Ops › Hunts) | **Intelligence** (relationships / ATT&CK / environment / hunts) |
-| (none — new) | **Map** (3D host↔ip↔user↔case topology, iframe of `/map/`; the accessible relationship table lives in Intelligence › Relationships) |
-| (none) | **Learning** (champion / challengers / dangerous misses) |
+| ATT&CK + Environment + (Ops › Hunts) + the former top-level Map | **Intelligence** (relationships / 3D map / ATT&CK coverage / environment model / threat hunts) |
+| (none) | **Detections › Learning** (champion / challengers / dangerous misses — formerly the top-level Learning area) |
 | Ingest | **Data Sources** |
 | Registry + (audit/HA/posture unсurfaced) | **System** (audit integrity / registry / posture & HA / access) |
 | Risk (standalone list) | folded into Command Center + entity detail |
@@ -25,9 +24,9 @@ intents in the sidebar.
 ## Sidebar grouping
 
 - **Monitor** — Command Center
-- **Investigate** — Investigations, Audit Explorer, Users, Applications
-- **Detect & govern** — Detections, Policies, Intelligence, Map
-- **Improve & operate** — Learning, Data Sources, System
+- **Investigate** — Investigations, Audit Explorer, Users, Applications, Resources
+- **Detect & govern** — Detections, Policies, Intelligence
+- **Operate** — Data Sources, System
 
 ## URL map (deep links)
 
@@ -41,12 +40,12 @@ intents in the sidebar.
 | `/users/:name` | User detail (behaviour, risk, monitoring, cases) |
 | `/applications` | Application / asset inventory |
 | `/applications/:name` | Application detail (coverage, findings, cases) |
-| `/detections` | Detections (`?tab=findings|proposals|baselines|silences`) |
+| `/detections` | Detections (`?tab=findings|proposals|baselines|silences|learning`) |
 | `/policies` | Access-policy list |
 | `/policies/:id` | Policy detail + related violation cases |
-| `/intelligence` | Intelligence (`?tab=relationships|attack|environment|hunts`) |
-| `/topology` | Map (embedded 3D host↔ip↔user↔case topology, iframe of `/map/`; the accessible relationship table lives at `/intelligence?tab=relationships`) |
-| `/learning` | Learning center |
+| `/intelligence` | Intelligence (`?tab=relationships|map|attack|environment|hunts`) |
+| `/topology` | *Legacy* — normalised to `/intelligence?tab=map` (the embedded 3D topology, iframe of `/map/`) |
+| `/learning` | *Legacy* — normalised to `/detections?tab=learning` |
 | `/data-sources` | Collectors, ingest health, retention |
 | `/system` | System (`?tab=audit|registry|posture|access`) |
 | `/entity/:kind/:name` | Universal entity deep link → the right detail/drawer |
@@ -66,10 +65,12 @@ state; unauthorized deep links render an *access-denied* state (from the API's
 - **Promotion / grant-of-trust** uses one control primitive, placed by *what* is
   promoted: baselines → Detections, registry artifacts → System, environment facts
   → Intelligence.
-- **Map** and Intelligence › Relationships are deliberately *two views of the same*
-  host↔ip↔user↔case graph — the 3D Map for exploration, the relationship table for
-  an accessible, keyboard-navigable alternative — not an accidental duplicate.
+- The **3D map** and the **relationship table** are deliberately *two views of the
+  same* host↔ip↔user↔case graph — the map for exploration, the table for an
+  accessible, keyboard-navigable alternative. They live as sibling tabs of
+  Intelligence so the duplicate is visible as such, not spread across two
+  top-level areas.
 
-> This document is authoritative for the shipped console (12 areas, matching
+> This document is authoritative for the shipped console (11 areas, matching
 > `crates/garmr-webui/src/route.rs`). The older `docs/architecture/webui-information-architecture.md`
 > is the historical Phase-16 target design and is superseded by this file.

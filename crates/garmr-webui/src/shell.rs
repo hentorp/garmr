@@ -7,8 +7,10 @@
 //! every destination is a real URL.
 
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 
 use crate::route::{Area, View};
+use crate::timerange;
 use crate::{api, ui, Store, TimeRange};
 
 /// Sidebar nav grouped by the analyst's phase of work, so the destinations read
@@ -27,27 +29,62 @@ const GROUPS: [(&str, &[Area]); 4] = [
     ),
     (
         "Detect & govern",
-        &[
-            Area::Detections,
-            Area::Policies,
-            Area::Intelligence,
-            Area::Map,
-        ],
+        &[Area::Detections, Area::Policies, Area::Intelligence],
     ),
-    (
-        "Improve & operate",
-        &[Area::Learning, Area::DataSources, Area::System],
-    ),
+    ("Operate", &[Area::DataSources, Area::System]),
 ];
 
 #[component]
 pub fn Sidebar() -> impl IntoView {
     let store = expect_context::<Store>();
+
+    // Below the layout breakpoint the sidebar is an off-canvas drawer. Closing it
+    // on navigation is what makes it usable on a phone: tapping a destination
+    // should take you there, not leave the menu covering it.
+    Effect::new(move |_| {
+        store.nav.view.get();
+        store.nav_open.set(false);
+    });
+
+    // Lock background scrolling while the drawer covers the page, so a swipe
+    // scrolls the menu rather than the content behind it.
+    Effect::new(move |_| {
+        let open = store.nav_open.get();
+        if let Some(b) = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.body())
+        {
+            let _ = if open {
+                b.class_list().add_1("nav-locked")
+            } else {
+                b.class_list().remove_1("nav-locked")
+            };
+        }
+        // Move focus into the drawer when it opens, and back to the toggle when it
+        // closes, so a keyboard or screen-reader user is never stranded.
+        let id = if open { "primary-nav" } else { "nav-toggle" };
+        if let Some(el) = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id(id))
+            .and_then(|e| e.dyn_into::<web_sys::HtmlElement>().ok())
+        {
+            let _ = el.focus();
+        }
+    });
+
     view! {
-        <nav class="sidebar" aria-label="Primary">
+        // The backdrop only exists while the drawer is open; clicking it closes.
+        {move || store.nav_open.get().then(|| view! {
+            <div class="nav-scrim" on:click=move |_| store.nav_open.set(false)
+                aria-hidden="true"></div>
+        })}
+        <nav class="sidebar" id="primary-nav" tabindex="-1" aria-label="Primary"
+            class:open=move || store.nav_open.get()>
             <div class="brand">
                 <span class="brand-mark" aria-hidden="true">"◈"</span>
                 <span class="brand-name">"garmr"</span>
+                <button class="iconbtn sm nav-close" aria-label="Close navigation menu"
+                    on:click=move |_| store.nav_open.set(false)>"✕"</button>
             </div>
             {GROUPS.into_iter().map(|(group, areas)| view! {
                 <div class="nav-group">
@@ -90,12 +127,13 @@ fn nav_item(store: Store, area: Area) -> impl IntoView {
             })
         })
     };
+    // A real <a>, so an analyst can middle-click an area into a new tab and copy
+    // its link — gestures a router-calling <button> silently swallowed.
     view! {
-        <button class="navbtn" class:active=active title=area.blurb()
-            on:click=move |_| store.nav.go(area.home())>
-            <span class="navbtn-label">{area.label()}</span>
+        <ui::ViewLink view=area.home() class="navbtn" active=Signal::derive(active)>
+            <span class="navbtn-label" title=area.blurb()>{area.label()}</span>
             {badge}
-        </button>
+        </ui::ViewLink>
     }
 }
 
@@ -104,6 +142,16 @@ pub fn TopBar() -> impl IntoView {
     let store = expect_context::<Store>();
     view! {
         <header class="topbar">
+            // The drawer's only affordance. CSS hides it at desktop widths, where
+            // the sidebar is permanently on screen; below the breakpoint it is the
+            // one thing standing between the operator and unreachable navigation.
+            <button class="iconbtn nav-toggle" id="nav-toggle"
+                aria-controls="primary-nav"
+                aria-expanded=move || store.nav_open.get().to_string()
+                aria-label="Open navigation menu"
+                on:click=move |_| store.nav_open.update(|o| *o = !*o)>
+                <span aria-hidden="true">"☰"</span>
+            </button>
             <Breadcrumbs/>
             <button class="cmd-trigger" title="Search & commands (Ctrl/Cmd-K)"
                 on:click=move |_| store.cmd_open.set(true)>
@@ -127,13 +175,15 @@ fn Breadcrumbs() -> impl IntoView {
                 let area = v.area();
                 let is_detail = area.map(|a| a.home() != v).unwrap_or(true);
                 view! {
-                    <button class="crumb" on:click=move |_| store.nav.go(View::CommandCenter)>"garmr"</button>
+                    <ui::ViewLink view=View::CommandCenter class="crumb">"garmr"</ui::ViewLink>
                     {area.map(|a| {
                         let home = a.home();
                         view! {
                             <span class="crumb-sep" aria-hidden="true">"/"</span>
-                            <button class="crumb" class:current=move || !is_detail
-                                on:click=move |_| store.nav.go(home.clone())>{a.label()}</button>
+                            <ui::ViewLink view=home.clone() class="crumb"
+                                active=Signal::derive(move || !is_detail)>
+                                {a.label()}
+                            </ui::ViewLink>
                         }
                     })}
                     {is_detail.then(|| view! {
@@ -154,21 +204,58 @@ fn TimePicker() -> impl IntoView {
     let from = RwSignal::new(String::new());
     let to = RwSignal::new(String::new());
     let show_custom = RwSignal::new(false);
+    let err = RwSignal::new(Option::<timerange::RangeError>::None);
 
-    let apply = move |tr: TimeRange| store.time_range.set(tr);
+    // Restore the range from the URL — on first load, on reload, and on browser
+    // Back/Forward (the popstate handler republishes `nav.query`). Without this
+    // the picker was memory-only: a shared link showed a colleague a different
+    // window of time than the one being discussed.
+    Effect::new(move |_| {
+        if let Some(tr) = timerange::read_param(&store.nav.query.get()) {
+            if tr != store.time_range.get_untracked() {
+                store.time_range.set(tr);
+            }
+        }
+    });
+
+    // Every change publishes to the URL, so the range is shareable and survives a
+    // reload. Views that read `time_range` re-run on the signal, so dependent data
+    // refreshes without a manual reload.
+    let apply = move |tr: TimeRange| {
+        store.time_range.set(tr);
+        err.set(None);
+        let q = timerange::write_param(&store.nav.query.get_untracked(), tr);
+        store.nav.set_query(q);
+    };
     let apply_custom = move || {
-        if let (Some(f), Some(t)) = (
-            api::parse_local(&from.get_untracked()),
-            api::parse_local(&to.get_untracked()),
-        ) {
-            if f < t {
-                apply(TimeRange::Absolute(f, t));
+        let (rf, rt) = (from.get_untracked(), to.get_untracked());
+        match timerange::validate_custom(&rf, &rt, api::parse_local(&rf), api::parse_local(&rt)) {
+            Ok(tr) => {
+                apply(tr);
                 show_custom.set(false);
             }
+            // Previously this branch did nothing at all — the operator pressed
+            // Apply and the console silently ignored them.
+            Err(e) => err.set(Some(e)),
         }
     };
 
+    // The picker governs only the time-aware areas. Where it does nothing, it is
+    // hidden rather than left implying a filter that is not applied.
+    let applies = move || {
+        store
+            .nav
+            .view
+            .get()
+            .area()
+            .map(|a| timerange::governs(a.label()))
+            .unwrap_or(false)
+    };
+
     view! {
+        {move || {
+            if !applies() { return ().into_any(); }
+            view! {
         <div class="timebar" role="group" aria-label="Time range">
             <span class="tb-label">{move || store.time_range.get().label()}</span>
             <button class="chip" class:active=move || store.time_range.get() == TimeRange::Live
@@ -181,21 +268,45 @@ fn TimePicker() -> impl IntoView {
                 }
             }).collect_view()}
             <button class="chip" class:active=move || show_custom.get()
+                aria-expanded=move || show_custom.get().to_string()
                 on:click=move |_| show_custom.update(|v| *v = !*v)>"Custom…"</button>
             {move || show_custom.get().then(|| view! {
                 <span class="tb-custom">
-                    <input type="datetime-local" aria-label="From"
+                    <input type="datetime-local" aria-label="Range start (local time)"
+                        aria-invalid=move || err.get().is_some().to_string()
+                        aria-describedby="tr-err"
                         prop:value=move || from.get()
-                        on:input=move |ev| from.set(event_target_value(&ev))/>
+                        on:input=move |ev| { from.set(event_target_value(&ev)); err.set(None); }/>
                     "→"
-                    <input type="datetime-local" aria-label="To"
+                    <input type="datetime-local" aria-label="Range end (local time)"
+                        aria-invalid=move || err.get().is_some().to_string()
+                        aria-describedby="tr-err"
                         prop:value=move || to.get()
-                        on:input=move |ev| to.set(event_target_value(&ev))/>
+                        on:input=move |ev| { to.set(event_target_value(&ev)); err.set(None); }/>
                     <button class="btn primary" on:click=move |_| apply_custom()>"Apply range"</button>
+                    // Times are entered and displayed in the browser's zone; say so
+                    // rather than leaving the operator to guess against UTC data.
+                    <span class="dimtext tz-note">{local_zone_label()}</span>
                 </span>
             })}
+            <span id="tr-err" role="alert" class="tr-err">
+                {move || err.get().map(|e| e.message())}
+            </span>
         </div>
+            }.into_any()
+        }}
     }
+}
+
+/// A plain label for the browser's current UTC offset, e.g. "times in UTC+02:00".
+/// Uses `Date::getTimezoneOffset` so the bundle needs no timezone database.
+fn local_zone_label() -> String {
+    // getTimezoneOffset returns minutes to ADD to local to reach UTC, so the sign
+    // is inverted relative to how offsets are written.
+    let mins = -(js_sys::Date::new_0().get_timezone_offset() as i32);
+    let sign = if mins < 0 { '-' } else { '+' };
+    let a = mins.abs();
+    format!("times in UTC{sign}{:02}:{:02}", a / 60, a % 60)
 }
 
 /// Light/dark toggle. Persists to localStorage and flips the `data-theme` on the
@@ -314,5 +425,44 @@ fn set_theme(dark: bool) {
         .flatten()
     {
         let _ = storage.set_item("garmr-theme", if dark { "dark" } else { "light" });
+    }
+}
+
+/// A persistent, non-blocking reminder that first-run setup is unfinished.
+///
+/// Non-blocking on purpose: an operator with an incomplete setup still needs the
+/// console to investigate with. It appears only for someone who can actually
+/// resolve it — a read-only viewer cannot, so for them it would be pure noise —
+/// and it disappears the moment setup completes rather than nagging forever.
+#[component]
+pub fn SetupBanner() -> impl IntoView {
+    let store = expect_context::<Store>();
+    let may_administer = move || {
+        store
+            .caps
+            .get()
+            .map(|c| c.writes_enabled() && !c.read_only())
+            .unwrap_or(false)
+    };
+    view! {
+        {move || {
+            if !crate::setup::show_setup_banner(store.setup_complete.get(), may_administer()) {
+                return ().into_any();
+            }
+            view! {
+                <div class="setup-banner" role="status">
+                    <span class="pill warn">"setup incomplete"</span>
+                    <span class="grow">
+                        "Some first-run steps are unfinished. The console works, but \
+                         detection coverage or recovery may be incomplete."
+                    </span>
+                    <button class="btn sm" on:click=move |_| {
+                        store.nav.go(Area::System.home());
+                        store.nav.set_query("tab=setup".to_string());
+                    }>"Finish setup"</button>
+                </div>
+            }
+            .into_any()
+        }}
     }
 }

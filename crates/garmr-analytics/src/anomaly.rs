@@ -444,8 +444,8 @@ mod tests {
             .append(vec![
                 ev("Failed password for root from 10.0.0.1 port 22"),
                 ev("Failed password for root from 10.0.0.2 port 33"),
-                ev("Accepted publickey for alice from 10.0.0.3 port 44"),
-                ev("Accepted publickey for alice from 10.0.0.4 port 55"),
+                ev("Accepted publickey for henrik from 10.0.0.3 port 44"),
+                ev("Accepted publickey for henrik from 10.0.0.4 port 55"),
             ])
             .await
             .unwrap();

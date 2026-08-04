@@ -18,6 +18,14 @@ pub fn EntityDrawer() -> impl IntoView {
     let store = expect_context::<Store>();
     let f = Fetch::new();
 
+    // Focus moves into the drawer when it opens and returns to the control that
+    // opened it when it closes, so pivoting into an entity and back does not
+    // strand a keyboard user at the top of the document.
+    let opener = StoredValue::new_local(None::<web_sys::HtmlElement>);
+    Effect::new(move |_| {
+        crate::ui::manage_modal_focus(store.drawer.get().is_some(), "entity-drawer", opener);
+    });
+
     // Refetch whenever the drawer target changes.
     Effect::new(move |_| {
         if let Some((kind, name)) = store.drawer.get() {
@@ -42,7 +50,9 @@ pub fn EntityDrawer() -> impl IntoView {
             };
             view! {
                 <div class="drawer-scrim" on:click=move |_| store.drawer.set(None)></div>
-                <aside class="drawer" role="dialog" aria-label="Entity details">
+                <aside class="drawer" id="entity-drawer" tabindex="-1"
+                    role="dialog" aria-modal="true" aria-label="Entity details"
+                    on:keydown=move |ev: web_sys::KeyboardEvent| crate::ui::trap_tab(&ev, "entity-drawer")>
                     <div class="drawer-head">
                         <div>
                             <span class="pill dim">{kind.clone()}</span>

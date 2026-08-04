@@ -1,8 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Assembled read views: cases list + detail, ATT&CK coverage, the entity
-//! graph pivot, and per-host risk.
+//! Assembled read views: cases list + detail (with the Phase-3 `current`
+//! block), ATT&CK coverage of the configured ruleset, the entity-graph pivot +
+//! the full topology graph for the 3D map, per-host AND per-entity risk
+//! (RBA), the cached events-total tile (single-flight background count), and
+//! the ingest-quality surfaces: per-source event-lag/staleness and
+//! per-collector delivery-sequence integrity.
 
 use super::*;
 
@@ -578,4 +582,287 @@ pub(super) async fn ingest_health(
         "generated_us": now_us,
         "sources": sources,
     })))
+}
+
+/// GET /api/entities/search?q=&limit= — a bounded, read-only lookup across the
+/// entity types the console can navigate to.
+///
+/// The command palette previously had no server-side search to call, so it
+/// pulled whole collections into the browser and filtered them there — and, for
+/// users and hosts, simply fabricated a destination from whatever had been typed.
+/// This endpoint is the honest floor: it returns only entities that exist, it is
+/// hard-bounded so a one-character query cannot become a table scan into the DOM,
+/// and it never invents a row.
+///
+/// Read-only by construction: it lists what other read views already expose and
+/// applies a substring filter. Authorization is the same as every other `/api`
+/// read — the server decides, not the caller.
+pub(super) async fn entities_search(
+    State(st): State<ApiState>,
+    Query(p): Query<HashMap<String, String>>,
+) -> ApiResult {
+    let q = p
+        .get("q")
+        .map(|s| s.trim().to_lowercase())
+        .unwrap_or_default();
+    // An empty query matches nothing. Returning "everything" for "" is how a
+    // search endpoint becomes an accidental bulk export.
+    if q.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "query": "", "groups": [], "truncated": false,
+        })));
+    }
+    let per_kind = entity_search_cap(p.get("limit").map(String::as_str));
+
+    let hit = |hay: &str| entity_search_hit(hay, &q);
+    let mut groups: Vec<serde_json::Value> = Vec::new();
+    let mut truncated = false;
+
+    // ---- investigations ----------------------------------------------------
+    let cases = st.store.state.list_cases().map_err(oops)?;
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    let mut total = 0usize;
+    for c in &cases {
+        let v = serde_json::to_value(c).unwrap_or(serde_json::Value::Null);
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default();
+        let title = v
+            .get("trigger")
+            .and_then(|t| t.get("rule_title").or_else(|| t.get("rule_id")))
+            .and_then(|x| x.as_str())
+            .unwrap_or_default();
+        let host = v
+            .get("trigger")
+            .and_then(|t| t.get("event"))
+            .and_then(|e| e.get("host"))
+            .and_then(|x| x.as_str())
+            .unwrap_or_default();
+        if !hit(id) && !hit(title) && !hit(host) {
+            continue;
+        }
+        total += 1;
+        if items.len() < per_kind {
+            items.push(serde_json::json!({
+                "id": id, "label": title, "hint": host, "path": format!("/investigations/{id}"),
+            }));
+        }
+    }
+    if total > items.len() {
+        truncated = true;
+    }
+    if total > 0 {
+        groups.push(serde_json::json!({
+            "kind": "investigation", "label": "Investigations",
+            "total": total, "items": items,
+        }));
+    }
+
+    // ---- policies ----------------------------------------------------------
+    // Policies come from the same enforced set the /api/policies view exposes, so
+    // search can never surface a policy that view would not show.
+    let (all, _source) = super::policies::enforced_policies(&st);
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    let mut total = 0usize;
+    for pol in &all {
+        let v = serde_json::to_value(pol).unwrap_or(serde_json::Value::Null);
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default();
+        let title = v.get("title").and_then(|x| x.as_str()).unwrap_or_default();
+        if !hit(id) && !hit(title) {
+            continue;
+        }
+        total += 1;
+        if items.len() < per_kind {
+            items.push(serde_json::json!({
+                "id": id,
+                "label": if title.is_empty() { id } else { title },
+                "hint": id,
+                "path": format!("/policies/{id}"),
+            }));
+        }
+    }
+    if total > items.len() {
+        truncated = true;
+    }
+    if total > 0 {
+        groups.push(serde_json::json!({
+            "kind": "policy", "label": "Policies", "total": total, "items": items,
+        }));
+    }
+
+    // ---- users and applications --------------------------------------------
+    // Both come from the app-audit baseline snapshot, which is the same source
+    // the Users and Applications views list from. Deliberately NOT joined against
+    // the activity SQL those views also run: search needs names, and a per-query
+    // warehouse scan is exactly the cost this endpoint exists to avoid.
+    if let Some(aa) = &st.app_audit {
+        use garmr_baseline::EntityKind;
+        let store = aa.baseline_snapshot();
+
+        for (kind, entity_kind, label, prefix) in [
+            ("user", EntityKind::User, "Users", "/users"),
+            (
+                "application",
+                EntityKind::Application,
+                "Applications",
+                "/applications",
+            ),
+        ] {
+            let mut items: Vec<serde_json::Value> = Vec::new();
+            let mut total = 0usize;
+            for pf in store.profiles().filter(|pf| pf.entity.kind == entity_kind) {
+                let name = pf.entity.id.as_str();
+                if !hit(name) {
+                    continue;
+                }
+                total += 1;
+                if items.len() < per_kind {
+                    items.push(serde_json::json!({
+                        "id": name,
+                        "label": name,
+                        "hint": kind,
+                        "path": format!("{prefix}/{}", urlencoding_min(name)),
+                    }));
+                }
+            }
+            if total > items.len() {
+                truncated = true;
+            }
+            if total > 0 {
+                groups.push(serde_json::json!({
+                    "kind": kind, "label": label, "total": total, "items": items,
+                }));
+            }
+        }
+
+        // ---- resources ------------------------------------------------------
+        // Catalogued data resources, matched on id and object pattern. Like the
+        // two kinds above, this deliberately skips the access scan the Resources
+        // view runs — that is a warehouse query per request, and search does not
+        // need access counts to point at the right resource.
+        let catalog = aa.catalog_snapshot();
+        let mut items: Vec<serde_json::Value> = Vec::new();
+        let mut total = 0usize;
+        for e in catalog.entries.iter() {
+            let Some(pattern) = e.object_pattern() else {
+                continue;
+            };
+            let id = e.id.as_str();
+            if !hit(id) && !hit(pattern) {
+                continue;
+            }
+            total += 1;
+            if items.len() < per_kind {
+                let app = e
+                    .object_summary()
+                    .and_then(|sm| sm.application.clone())
+                    .unwrap_or_default();
+                items.push(serde_json::json!({
+                    "id": id,
+                    "label": if pattern.is_empty() { id } else { pattern },
+                    "hint": if app.is_empty() { "resource".to_string() } else { app },
+                    "path": format!("/resources/{}", urlencoding_min(id)),
+                }));
+            }
+        }
+        if total > items.len() {
+            truncated = true;
+        }
+        if total > 0 {
+            groups.push(serde_json::json!({
+                "kind": "resource", "label": "Resources", "total": total, "items": items,
+            }));
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "query": q,
+        "groups": groups,
+        // Stated, never silent: the console says "N more not shown" from this.
+        "truncated": truncated,
+        "per_kind_cap": per_kind,
+    })))
+}
+
+/// Hard ceiling on entity-search results per kind, independent of `?limit=`.
+///
+/// A palette shows a handful of hits. Letting the caller raise this would turn a
+/// one-character query into a table scan served over HTTP.
+pub(super) const MAX_ENTITY_HITS_PER_KIND: usize = 10;
+
+/// The effective per-kind result cap for a caller-supplied `?limit=`.
+///
+/// Anything unparseable, zero, negative-shaped or absurd resolves to something
+/// safe rather than to an error — a search box should not 400 because of a typo
+/// in a query string it built itself.
+pub(super) fn entity_search_cap(limit: Option<&str>) -> usize {
+    limit
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(MAX_ENTITY_HITS_PER_KIND)
+        .clamp(1, MAX_ENTITY_HITS_PER_KIND)
+}
+
+/// Does `haystack` match the already-lowercased, already-trimmed query?
+///
+/// An empty query matches NOTHING. Answering "" with everything is how a search
+/// endpoint quietly becomes a bulk export of the case store.
+pub(super) fn entity_search_hit(haystack: &str, query_lc: &str) -> bool {
+    !query_lc.is_empty() && haystack.to_lowercase().contains(query_lc)
+}
+
+/// Percent-encode the path-unsafe characters in an entity id.
+///
+/// Entity ids here are hostnames, account names and application names, which can
+/// legitimately contain `/`, spaces or `@`. A raw id in the path would resolve to
+/// the wrong entity — or to nothing — when the console follows the link.
+fn urlencoding_min(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    for b in v.bytes() {
+        match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod entity_search_tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_query_matches_nothing() {
+        assert!(!entity_search_hit("anything at all", ""));
+        assert!(!entity_search_hit("", ""));
+    }
+
+    #[test]
+    fn matching_is_case_insensitive_substring() {
+        assert!(entity_search_hit("PVE-Daemon", "pve"));
+        assert!(entity_search_hit("root@pam", "@pam"));
+        assert!(!entity_search_hit("abc", "xyz"));
+    }
+
+    #[test]
+    fn the_caller_cannot_raise_the_ceiling() {
+        assert_eq!(entity_search_cap(Some("9999")), MAX_ENTITY_HITS_PER_KIND);
+        assert_eq!(entity_search_cap(Some("11")), MAX_ENTITY_HITS_PER_KIND);
+        assert_eq!(entity_search_cap(None), MAX_ENTITY_HITS_PER_KIND);
+    }
+
+    #[test]
+    fn a_smaller_limit_is_honoured() {
+        assert_eq!(entity_search_cap(Some("3")), 3);
+        assert_eq!(entity_search_cap(Some("1")), 1);
+    }
+
+    #[test]
+    fn a_nonsense_limit_is_safe_not_an_error() {
+        // Zero would return nothing; a negative or unparseable value must not
+        // crash or 400 a search box.
+        assert_eq!(entity_search_cap(Some("0")), 1);
+        assert_eq!(entity_search_cap(Some("-5")), MAX_ENTITY_HITS_PER_KIND);
+        assert_eq!(entity_search_cap(Some("abc")), MAX_ENTITY_HITS_PER_KIND);
+        assert_eq!(entity_search_cap(Some("")), MAX_ENTITY_HITS_PER_KIND);
+    }
 }

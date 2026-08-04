@@ -1,20 +1,34 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! System — audit integrity, the versioned registry (models/prompts/toolsets),
-//! security posture / HA / air-gap, and operator access. The operational and
-//! governance surface in one place.
+//! System — the operational and governance surface in one place: the first-run
+//! setup checklist, audit-ledger verification, the versioned registry
+//! (models/prompts/toolsets/detector configs), the Configuration Center
+//! (effective values + staged edits → validate → apply, saved as versioned
+//! revisions with rollback), security posture / HA / air-gap, operator access
+//! (operator token, passkeys, scoped API credentials, write-only secrets), and
+//! the model provider with a real connection test.
 
 use std::collections::HashMap;
 
 use leptos::prelude::*;
 use serde_json::Value;
 
+use crate::confirm::{self as confirm_mod, ApplyGate, ConfirmSpec, Reversibility, Validation};
 use crate::route::Area;
+use crate::setup::{self, SetupAction};
 use crate::{api, ui, Store};
 
 pub fn view(store: Store) -> impl IntoView {
-    let tab = move || store.nav.param("tab").unwrap_or_else(|| "audit".into());
+    // While first-run setup is unfinished the checklist is the most useful thing
+    // in System, so it becomes the default landing tab; once complete, the normal
+    // default returns rather than nagging forever.
+    let tab = move || {
+        store
+            .nav
+            .param("tab")
+            .unwrap_or_else(|| setup::default_system_tab(store.setup_complete.get()).to_string())
+    };
     let set_tab = move |t: &'static str| store.nav.set_query(format!("tab={t}"));
     view! {
         <div class="page">
@@ -24,18 +38,23 @@ pub fn view(store: Store) -> impl IntoView {
                 ("audit", "Audit integrity"),
                 ("registry", "Models & registry"),
                 ("config", "Configuration"),
-                ("posture", "Posture & HA"),
+                ("posture", "Security posture"),
                 ("access", "Access"),
                 ("llm", "Model provider"),
             ], tab(), set_tab)}
-            {move || match tab().as_str() {
-                "setup" => setup_tab(store),
-                "registry" => registry_tab(),
-                "config" => config_tab(store),
-                "posture" => posture_tab(store),
-                "access" => access_tab(store),
-                "llm" => llm_tab(store),
-                _ => audit_tab(),
+            {move || {
+                let t = tab();
+                let body = match t.as_str() {
+                    "setup" => setup_tab(store),
+                    "registry" => registry_tab(),
+                    "config" => config_tab(store),
+                    "posture" => posture_tab(store),
+                    "access" => access_tab(store),
+                    "llm" => llm_tab(store),
+                    _ => audit_tab(),
+                };
+                let id = if super::TAB_IDS.contains(&t.as_str()) { t } else { "audit".to_string() };
+                super::tab_panel(&id, body)
             }}
         </div>
     }
@@ -86,27 +105,27 @@ fn setup_step_row(store: Store, s: &Value) -> AnyView {
         "optional" => ("dim", "optional"),
         _ => ("dim", "info"),
     };
-    // Where the operator fixes this step (a System tab), if applicable.
-    let goto: Option<(&'static str, &'static str)> = match id.as_str() {
-        "admin" | "passkeys" | "llm" | "llm_reachable" | "notifications" => {
-            Some(("access", "Go to Access"))
-        }
-        "storage" | "deployment_mode" | "detection" => Some(("config", "Go to Configuration")),
-        _ => None,
-    };
+    // Where this step is actually resolved. Previously `llm`, `llm_reachable` and
+    // `notifications` all pointed at Access — where none of them can be fixed —
+    // and `data_sources`, `recovery` and `selftest` offered nothing at all.
+    let action = setup::action_for(&id);
+    let done = status == "complete";
     view! {
         <div class="card">
             <div class="row">
                 {ui::pill(cls, label)}
                 <strong>{title}</strong>
                 {required.then(|| ui::pill("dim", "required"))}
+                // Visible at a glance: which steps the console cannot finish.
+                {(!done && action.is_host_only()).then(|| ui::pill("dim", "host only"))}
             </div>
             <div class="dimtext">{detail}</div>
-            {goto.map(|(t, lbl)| view! {
-                <button class="btn ghost" on:click=move |_| store.nav.set_query(format!("tab={t}"))>{lbl}</button>
-            })}
+            // A completed step needs no call to action; an unfinished one always
+            // gets the route that actually resolves it.
+            {(!done).then(|| setup_action_view(store, action))}
         </div>
-    }.into_any()
+    }
+    .into_any()
 }
 
 /// LLM & AI provider view: the configured provider's state + a REAL test-model
@@ -302,6 +321,18 @@ fn config_tab(store: Store) -> AnyView {
     let edits = RwSignal::new(HashMap::<String, String>::new());
     let report = RwSignal::new(Option::<Value>::None);
     let busy = RwSignal::new(false);
+    // The validate → apply contract. A passing validation is bound to a
+    // fingerprint of the exact staged values, so editing anything afterwards
+    // invalidates it and Apply closes again: what gets applied is always what was
+    // actually checked.
+    let validation = RwSignal::new(Validation::NotRun);
+    let confirm = RwSignal::new(Option::<ConfirmSpec>::None);
+    let staged_fp = move || {
+        let mut v: Vec<(String, String)> = edits.get().into_iter().collect();
+        v.sort();
+        confirm_mod::fingerprint(&v)
+    };
+    let gate = move || confirm_mod::apply_gate(&staged_fp(), edits.get().len(), &validation.get());
     let ts = |sec: i64| {
         if sec > 0 {
             api::ts_iso(sec * 1_000_000)
@@ -318,6 +349,10 @@ fn config_tab(store: Store) -> AnyView {
     let do_validate = move || {
         let Some(body) = build() else { return };
         busy.set(true);
+        validation.set(Validation::Running);
+        // Capture the fingerprint of what is being validated, not what is staged
+        // when the answer arrives — the operator may edit while it is in flight.
+        let fp = staged_fp();
         leptos::task::spawn_local(async move {
             let r = api::send_post(
                 "/admin/config/validate",
@@ -326,8 +361,39 @@ fn config_tab(store: Store) -> AnyView {
             .await;
             busy.set(false);
             match r {
-                Ok(v) => report.set(Some(v)),
-                Err(e) => report.set(Some(serde_json::json!({ "error": api::clean(&e.message) }))),
+                Ok(v) => {
+                    // `/admin/config/validate` answers with `valid` (plus `changes`,
+                    // `warnings`, `restart_required`), not `ok` — confirmed against
+                    // the running lab.
+                    let valid = v.get("valid").and_then(Value::as_bool).unwrap_or(false);
+                    let err = v
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty());
+                    validation.set(match (valid, err) {
+                        (_, Some(e)) => Validation::Failed {
+                            message: api::clean(e),
+                        },
+                        (true, None) => Validation::Passed {
+                            fingerprint: fp,
+                            restart_required: v
+                                .get("restart_required")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
+                        },
+                        (false, None) => Validation::Failed {
+                            message: "the server rejected these values without a reason".into(),
+                        },
+                    });
+                    report.set(Some(v));
+                }
+                Err(e) => {
+                    let msg = api::clean(&e.message);
+                    validation.set(Validation::Failed {
+                        message: msg.clone(),
+                    });
+                    report.set(Some(serde_json::json!({ "error": msg })));
+                }
             }
         });
     };
@@ -367,6 +433,9 @@ fn config_tab(store: Store) -> AnyView {
             }
         });
     };
+    // The revision a confirmed rollback will restore.
+    let pending_rollback = RwSignal::new(Option::<u64>::None);
+    let confirm_rollback = RwSignal::new(Option::<ConfirmSpec>::None);
     let do_rollback = move |seq: u64| {
         leptos::task::spawn_local(async move {
             match api::send_post("/admin/config/rollback", serde_json::json!({ "seq": seq })).await
@@ -419,12 +488,44 @@ fn config_tab(store: Store) -> AnyView {
                     <section class="sect"><div class="row">
                         {ui::pill("warn", format!("{n} pending change(s)"))}
                         <button class="btn" prop:disabled=move || busy.get() on:click=move |_| do_validate()>"Validate changes"</button>
-                        <button class="btn primary" prop:disabled=move || busy.get() on:click=move |_| do_apply()>"Apply changes"</button>
-                        <button class="btn ghost" on:click=move |_| { edits.set(HashMap::new()); report.set(None); }>"Discard changes"</button>
+                        <button class="btn primary" prop:disabled=move || busy.get() || !gate().can_apply()
+                            on:click=move |_| {
+                                let restart = matches!(gate(), ApplyGate::Ready { restart_required: true });
+                                let n = edits.get().len();
+                                let keys = { let mut k: Vec<String> = edits.get().keys().cloned().collect(); k.sort(); k.join(", ") };
+                                let mut spec = ConfirmSpec::new(
+                                    "Apply configuration changes",
+                                    format!("{n} setting(s): {keys}"),
+                                    "Writes the validated values as a new configuration revision. \
+                                     The previous revision is kept and can be rolled back to.",
+                                    Reversibility::ForwardOnly(
+                                        "rolling back re-applies an earlier revision as a NEW revision; \
+                                         history is never rewritten".into()),
+                                    "Apply changes",
+                                );
+                                if restart { spec = spec.needs_restart(); }
+                                confirm.set(Some(spec));
+                            }>"Apply changes"</button>
+                        <button class="btn ghost" on:click=move |_| {
+                            edits.set(HashMap::new()); report.set(None); validation.set(Validation::NotRun);
+                        }>"Discard changes"</button>
                         {move || busy.get().then(|| view! { <span class="dimtext">"working…"</span> })}
-                    </div></section>
+                    </div>
+                    // Why Apply is unavailable — never a silently dead control.
+                    {move || {
+                        let g = gate();
+                        (!g.can_apply()).then(|| view! {
+                            <div class="banner dim" role="status">{g.reason()}</div>
+                        })
+                    }}
+                    </section>
                 }.into_any()
             }}
+
+            <ui::ConfirmDialog spec=confirm on_confirm=move || do_apply()/>
+            <ui::ConfirmDialog spec=confirm_rollback on_confirm=move || {
+                if let Some(seq) = pending_rollback.get() { do_rollback(seq); }
+            }/>
 
             {move || report.get().map(|r| {
                 let err = r.get("error").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
@@ -480,6 +581,9 @@ fn config_tab(store: Store) -> AnyView {
             })}
             <div class="searchbar">
                 <input type="search" class="grow" placeholder="filter settings…"
+                    // A placeholder is not a label: it vanishes on the first
+                    // keystroke and is not reliably announced.
+                    aria-label="Filter settings by name or description"
                     prop:value=move || q.get() on:input=move |ev| q.set(event_target_value(&ev))/>
                 <label class="chk"><input type="checkbox" prop:checked=move || env_only.get()
                     on:change=move |ev| env_only.set(event_target_checked(&ev))/>" env-overridden only"</label>
@@ -549,7 +653,19 @@ fn config_tab(store: Store) -> AnyView {
                                 <td class="dimtext">{api::s(&r, "author")}</td>
                                 <td class="dimtext">{api::clean(&api::s(&r, "note"))}</td>
                                 <td>{is_cur.then(|| ui::pill("pass", "current"))}</td>
-                                <td>{(!is_cur).then(move || view! { <button class="btn ghost" on:click=move |_| do_rollback(seq)>"Roll back"</button> })}</td>
+                                <td>{(!is_cur).then(move || view! { <button class="btn ghost" on:click=move |_| {
+                                    pending_rollback.set(Some(seq));
+                                    confirm_rollback.set(Some(ConfirmSpec::new(
+                                        "Roll back configuration",
+                                        format!("revision {seq}"),
+                                        "Re-applies the values from that revision. History is not \
+                                         rewritten: this is recorded as a NEW revision on top, so \
+                                         the current one remains in the log.",
+                                        Reversibility::ForwardOnly(
+                                            "rolling forward again is another new revision".into()),
+                                        "Roll back",
+                                    ).needs_restart()));
+                                }>"Roll back"</button> })}</td>
                             </tr> }
                         }).collect_view().into_any())}
                     </section>
@@ -745,6 +861,10 @@ fn config_field_row(
             let (e1, e2) = (eff_raw.clone(), eff_raw.clone());
             view! {
                 <input type="checkbox"
+                    // The visible label sits in a separate table cell, so the
+                    // control needs its own accessible name — every one of these
+                    // was previously unlabelled.
+                    aria-label=format!("{label} ({key})")
                     prop:checked=move || edits.get().get(&k2).cloned().unwrap_or_else(|| e2.clone()) == "true"
                     on:change=move |ev| {
                         let v = if event_target_checked(&ev) { "true" } else { "false" }.to_string();
@@ -758,6 +878,8 @@ fn config_field_row(
             let (e1, e2) = (eff_raw.clone(), eff_raw.clone());
             view! {
                 <input type="text" class="mono grow"
+                    aria-label=format!("{label} ({key})")
+                    aria-describedby=format!("cfgdesc-{key}")
                     prop:value=move || edits.get().get(&k2).cloned().unwrap_or_else(|| e2.clone())
                     on:input=move |ev| {
                         let v = event_target_value(&ev);
@@ -804,13 +926,20 @@ fn config_field_row(
     };
     view! {
         <tr>
-            <td><div><strong>{label}</strong></div><div class="dimtext mono">{key}</div><div class="dimtext">{desc}</div></td>
+            <td>
+                <div><strong>{label.clone()}</strong></div>
+                <div class="dimtext mono">{key.clone()}</div>
+                // Referenced by the input's aria-describedby, so the setting's
+                // explanation is announced with the control rather than orphaned.
+                <div class="dimtext" id=format!("cfgdesc-{key}")>{desc}</div>
+            </td>
             <td>{value_cell}</td>
             <td>{source_badge}</td>
             <td>{reload_badge}</td>
             <td class="msg dimtext">{notes}</td>
         </tr>
-    }.into_any()
+    }
+    .into_any()
 }
 
 fn posture_tab(_store: Store) -> AnyView {
@@ -961,6 +1090,10 @@ fn api_credentials_section(store: Store) -> AnyView {
         });
         name.set(String::new());
     };
+    // The target of a pending confirmed revoke. Held separately from the spec so
+    // the dialog's callback (which must be Copy) can read which row was chosen.
+    let pending_revoke = RwSignal::new(Option::<(String, String)>::None);
+    let confirm = RwSignal::new(Option::<ConfirmSpec>::None);
     let revoke = move |id: String, label: String| {
         leptos::task::spawn_local(async move {
             match api::send_post("/admin/credentials/revoke", serde_json::json!({"id": id})).await {
@@ -1009,7 +1142,6 @@ fn api_credentials_section(store: Store) -> AnyView {
                     let label = api::s(&c, "name");
                     let status = api::s(&c, "status");
                     let active = status == "active";
-                    let rev = revoke;
                     let id2 = id.clone(); let l2 = label.clone();
                     view! {
                         <tr>
@@ -1018,7 +1150,17 @@ fn api_credentials_section(store: Store) -> AnyView {
                             <td>{ui::pill("dim", api::s(&c, "role"))}</td>
                             <td class="dimtext">{super::arr(&c, "scopes").into_iter().filter_map(|s| s.as_str().map(str::to_string)).collect::<Vec<_>>().join(", ")}</td>
                             <td>{if active { ui::pill("pass", "active") } else { ui::pill("warn", status) }}</td>
-                            <td>{active.then(move || view! { <button class="btn ghost" on:click=move |_| rev(id2.clone(), l2.clone())>"Revoke"</button> })}</td>
+                            <td>{active.then(move || view! { <button class="btn ghost" on:click=move |_| {
+                                pending_revoke.set(Some((id2.clone(), l2.clone())));
+                                confirm.set(Some(ConfirmSpec::new(
+                                    "Revoke API credential",
+                                    l2.clone(),
+                                    "The credential stops authorizing immediately. Any script, \
+                                     collector or integration still using it will start failing.",
+                                    Reversibility::Irreversible,
+                                    "Revoke credential",
+                                ).danger()));
+                            }>"Revoke"</button> })}</td>
                         </tr>
                     }
                 }).collect_view();
@@ -1030,6 +1172,9 @@ fn api_credentials_section(store: Store) -> AnyView {
                 super::table(&["name", "principal", "role", "scopes", "status", ""],
                     view! { {body}{legacy_body} }.into_any())
             }}
+            <ui::ConfirmDialog spec=confirm on_confirm=move || {
+                if let Some((id, label)) = pending_revoke.get() { revoke(id, label); }
+            }/>
         </section>
     }.into_any()
 }
@@ -1156,6 +1301,8 @@ fn passkeys_section(store: Store) -> AnyView {
             "—".into()
         }
     };
+    let pending_passkey = RwSignal::new(Option::<(String, String)>::None);
+    let confirm_passkey = RwSignal::new(Option::<ConfirmSpec>::None);
     let revoke = move |id: String, label: String| {
         leptos::task::spawn_local(async move {
             match api::send_post(
@@ -1177,6 +1324,7 @@ fn passkeys_section(store: Store) -> AnyView {
             }
         });
     };
+    let confirm_all = RwSignal::new(Option::<ConfirmSpec>::None);
     let revoke_all = move || {
         leptos::task::spawn_local(async move {
             match api::send_post("/auth/sessions/revoke-all", serde_json::json!({})).await {
@@ -1207,7 +1355,6 @@ fn passkeys_section(store: Store) -> AnyView {
                         let disabled = c.get("disabled").and_then(Value::as_bool).unwrap_or(false);
                         let created = api::num(&c, "created");
                         let last = c.get("last_used").and_then(Value::as_i64).unwrap_or(0);
-                        let rev = revoke;
                         let id2 = id.clone();
                         let label2 = label.clone();
                         view! {
@@ -1217,15 +1364,108 @@ fn passkeys_section(store: Store) -> AnyView {
                                 <td>{label}{disabled.then(|| ui::pill("warn", "disabled"))}</td>
                                 <td class="mono dimtext">{ts(created)}</td>
                                 <td class="mono dimtext">{ts(last)}</td>
-                                <td><button class="btn ghost" on:click=move |_| rev(id2.clone(), label2.clone())>"Revoke"</button></td>
+                                <td><button class="btn ghost" on:click=move |_| {
+                                    pending_passkey.set(Some((id2.clone(), label2.clone())));
+                                    confirm_passkey.set(Some(ConfirmSpec::new(
+                                        "Revoke this passkey",
+                                        label2.clone(),
+                                        "The authenticator can no longer sign in. If it is the only key \
+                                         an operator holds, they lose console access until another is \
+                                         registered.",
+                                        Reversibility::Irreversible,
+                                        "Revoke passkey",
+                                    ).danger()
+                                    .authz("Revoking the last enabled Admin key is refused by the \
+                                            server, and this requires a recent user-verified passkey \
+                                            session (step-up). It is written to the audit ledger.")));
+                                }>"Revoke"</button></td>
                             </tr>
                         }
                     }).collect_view().into_any())
             }}
             <div class="row">
-                <button class="btn ghost" on:click=move |_| revoke_all()>"Log out all sessions"</button>
+                <button class="btn ghost" on:click=move |_| confirm_all.set(Some(
+                    ConfirmSpec::new(
+                        "Log out every session",
+                        "all signed-in operators, including you",
+                        "Every passkey session is ended immediately. Anyone currently \
+                         investigating loses their session and must sign in again with \
+                         their authenticator.",
+                        Reversibility::Reversible(
+                            "each operator signs in again with their passkey".into()),
+                        "Log out everyone",
+                    ).danger().typed("LOG OUT ALL")
+                    .authz("Requires a recent user-verified passkey session (step-up). \
+                            The server authorizes it independently and writes it to the \
+                            audit ledger.")
+                ))>"Log out all sessions"</button>
+                <ui::ConfirmDialog spec=confirm_all on_confirm=move || revoke_all()/>
+                <ui::ConfirmDialog spec=confirm_passkey on_confirm=move || {
+                    if let Some((id, label)) = pending_passkey.get() { revoke(id, label); }
+                }/>
                 <span class="dimtext">"Invalidates every passkey session immediately (including yours)."</span>
             </div>
         </section>
     }.into_any()
+}
+
+/// Render the next action for an unfinished setup step.
+///
+/// Console work gets a button that routes to the exact tab or area; host-only
+/// work gets the exact command with a Copy button and the prerequisite that must
+/// hold first, because the console genuinely cannot do it and offering a button
+/// would be a dead end.
+fn setup_action_view(store: Store, action: SetupAction) -> AnyView {
+    match action {
+        SetupAction::SystemTab { tab, label } => view! {
+            <button class="btn ghost"
+                on:click=move |_| store.nav.set_query(format!("tab={tab}"))>{label}</button>
+        }
+        .into_any(),
+        SetupAction::ConsoleArea { area, label } => view! {
+            <button class="btn ghost" on:click=move |_| {
+                let target = match area {
+                    "data-sources" => Area::DataSources.home(),
+                    _ => Area::System.home(),
+                };
+                store.nav.go(target);
+            }>{label}</button>
+        }
+        .into_any(),
+        SetupAction::Page { href, label } => view! {
+            // A real link: middle-click and "open in new tab" work, and the
+            // passkey ceremony needs its own page rather than a tab that is empty
+            // precisely because no passkey exists yet.
+            <a class="btn ghost" href=href>{label}</a>
+        }
+        .into_any(),
+        SetupAction::Host {
+            command,
+            prerequisite,
+            label,
+        } => view! {
+            <div class="host-step">
+                <div class="row">
+                    {ui::pill("dim", label)}
+                    <span class="dimtext">"Not doable from the console — run it on the host."</span>
+                </div>
+                <div class="row host-cmd">
+                    <code class="mono grow">{command}</code>
+                    <button class="btn sm" aria-label=format!("Copy the command {command}")
+                        on:click=move |_| copy_to_clipboard(command)>"Copy"</button>
+                </div>
+                <div class="dimtext">"Prerequisite: "{prerequisite}</div>
+            </div>
+        }
+        .into_any(),
+        SetupAction::Informational => ().into_any(),
+    }
+}
+
+/// Copy `text` to the clipboard. Best-effort: the async clipboard API is
+/// permission-gated, and a failure is not worth interrupting setup over.
+fn copy_to_clipboard(text: &str) {
+    if let Some(w) = web_sys::window() {
+        let _ = w.navigator().clipboard().write_text(text);
+    }
 }

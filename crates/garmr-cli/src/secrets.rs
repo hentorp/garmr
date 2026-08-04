@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Secret management: a [`SecretProvider`] abstraction over the read-only
-//! environment and a writable, encrypted-at-rest sealed store.
+//! Secret management: the read-only environment baseline plus a writable,
+//! encrypted-at-rest sealed store ([`SealedSecretStore`]), with [`source_of`]
+//! reporting where each [`KNOWN_SECRETS`] entry currently resolves from.
 //!
 //! Design (the operator chose a writable encrypted store):
 //! - Secrets have historically been environment variables only. That stays the
-//!   read-only baseline (`EnvSecretProvider`): the UI can report configured /
-//!   missing but cannot write an env secret.
+//!   read-only baseline: the UI can report configured / missing but cannot
+//!   write an env secret.
 //! - The [`SealedSecretStore`] adds a WRITABLE tier: AEAD-encrypted values on
 //!   disk (`<state_dir>/secrets.sealed`, 0600), with the master key held
 //!   SEPARATELY (env `GARMR_SECRET_KEY` or a key file, default
@@ -17,7 +18,7 @@
 //! Invariants:
 //! - **Write-only**: there is no API that returns a stored secret. The UI shows
 //!   only configured/missing/fingerprint/updated. Plaintext is decrypted solely
-//!   inside the daemon (startup hydration + connection tests) and zeroized after.
+//!   inside the daemon (startup [`hydrate`] + connection tests) and zeroized after.
 //! - AAD binds each ciphertext to its secret name, so a sealed row cannot be
 //!   replayed under a different name.
 //! - `GARMR_AIRGAP` is never a secret and is never overridable here.

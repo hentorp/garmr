@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Policies — access policies, their scope, and their violations, kept distinct
-//! from behavioral Detections. Read-only: policy authoring is a reviewed file +
-//! audited registry-promotion flow, not a console write (surfaced as such).
+//! from behavioral Detections. The list and detail read the promoted policy set;
+//! the detail page adds the governed lifecycle: simulate (a non-mutating backtest
+//! over recent audit history), draft a new version, and activate / rollback /
+//! retire through audited registry promotions. Every write is an admin-gated,
+//! audited registry action — never a direct edit of the enforced set.
 
 use leptos::prelude::*;
 use serde_json::{json, Value};
 
+use crate::confirm::{ConfirmSpec, Reversibility};
 use crate::route::{Area, View};
 use crate::{api, ui, Store};
 
@@ -36,7 +40,7 @@ pub fn list_view(store: Store) -> impl IntoView {
     view! {
         <div class="page">
             {ui::page_header("Policies", Area::Policies.blurb())}
-            <p class="sub">"Access policies are authored as reviewed files and promoted through the audited registry — the console shows them read-only. Violations are materialised as investigations. "{ui::help_tip("A policy's scope is which subjects and resources it applies to — for example specific database users acting on specific objects. A violation is an access that breaks the policy (say, a denied or unjustified read); garmr turns each one into an investigation you can work.")}</p>
+            <p class="sub">"Access policies are authored as reviewed files and promoted through the audited registry — the console shows them read-only. Violations are materialised as investigations. "{ui::help_tip("A policy's scope is which subjects and resources it applies to — for example specific database users acting on specific objects. A violation is an access that breaks the policy (say, a denied or unjustified read); garmr turns each one into an investigation you can work.")}" "{ui::help_tip("Effect is what a matching policy does: allow permits the access, deny flags it as a violation, require justification lets it through only with a recorded reason. When several policies match the same access, deny outranks require justification, which outranks allow; priority breaks ties between policies with the same effect (higher wins).")}</p>
             {move || {
                 if let Some(e) = f.err.get() { return super::error_state(e); }
                 let rows = f.rows("policies");
@@ -55,9 +59,18 @@ pub fn list_view(store: Store) -> impl IntoView {
                             let objects = super::arr(p.get("resource").unwrap_or(&Value::Null), "objects")
                                 .iter().filter_map(|o| o.as_str().map(String::from)).collect::<Vec<_>>().join(", ");
                             let enabled = p.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                            let title_text = api::clean(&api::s(&p, "title"));
+                            let link_id = id.clone();
                             view! {
                                 <tr class="rowlink" on:click=move |_| store.nav.go(View::Policy(idc.clone()))>
-                                    <td><div>{api::clean(&api::s(&p, "title"))}</div><div class="mono dimtext">{id}</div></td>
+                                    <td>
+                                        <div>
+                                            <ui::ViewLink view=View::Policy(link_id) class="rowtarget">
+                                                {title_text}
+                                            </ui::ViewLink>
+                                        </div>
+                                        <div class="mono dimtext">{id}</div>
+                                    </td>
                                     <td>{ui::pill(effect_class(&effect), effect.replace('_', " "))}</td>
                                     <td class="mono dimtext">{api::num(&p, "priority").to_string()}</td>
                                     <td class="mono dimtext">{objects}</td>
@@ -143,10 +156,15 @@ fn policy_detail(store: Store, p: &Value, cases: super::Fetch, id: &str) -> AnyV
                 super::table(&["id", "state", "rule", "host"],
                     hits.into_iter().map(|c| {
                         let cid = api::s(&c, "id"); let cidc = cid.clone();
+                        let short_cid = api::short(&c, "id");
                         let trig = c.get("trigger").cloned().unwrap_or(Value::Null);
                         view! {
                             <tr class="rowlink" on:click=move |_| store.nav.go(View::Investigation(cidc.clone()))>
-                                <td class="mono dimtext">{api::short(&c, "id")}</td>
+                                <td class="mono dimtext">
+                                    <ui::ViewLink view=View::Investigation(cid) class="rowtarget">
+                                        {short_cid}
+                                    </ui::ViewLink>
+                                </td>
                                 <td>{ui::state_badge(&api::s(&c, "state"))}</td>
                                 <td>{api::s(&trig, "rule_id")}</td>
                                 <td class="mono">{trig.get("event").map(|e| api::s(e, "host")).unwrap_or_default()}</td>
@@ -176,6 +194,9 @@ fn lifecycle_panel(p: &Value, id: &str) -> AnyView {
     let busy = RwSignal::new(false);
     let draft_json = RwSignal::new(serde_json::to_string_pretty(p).unwrap_or_default());
     let rationale = RwSignal::new(String::new());
+    // The lifecycle change a confirmation will commit: (action, version).
+    let pending_life = RwSignal::new(Option::<(&'static str, String)>::None);
+    let confirm_life = RwSignal::new(Option::<ConfirmSpec>::None);
 
     // Run an admin POST, then refresh the version list on success.
     let run = move |url: String, body: Value| {
@@ -254,11 +275,47 @@ fn lifecycle_panel(p: &Value, id: &str) -> AnyView {
                                     // Activate + Reject apply to a non-active version; Retire (a
                                     // channel-wide deactivate) only to the active one.
                                     {(!is_active).then(|| view! {
-                                        <button class="btn sm" prop:disabled=move || busy.get() on:click=move |_| promote(v1.clone())>"Activate"</button>
-                                        <button class="btn ghost sm" prop:disabled=move || busy.get() on:click=move |_| reject(v3.clone())>"Reject"</button>
+                                        <button class="btn sm" prop:disabled=move || busy.get() on:click=move |_| {
+                                            pending_life.set(Some(("promote", v1.clone())));
+                                            confirm_life.set(Some(ConfirmSpec::new(
+                                                "Activate this policy version",
+                                                format!("version {}", v1.clone()),
+                                                "This version becomes the ACTIVE policy and starts being \
+                                                 enforced on live access decisions, replacing whichever \
+                                                 version is active now.",
+                                                Reversibility::ForwardOnly(
+                                                    "activating another version is a further change; the \
+                                                     registry keeps every version".into()),
+                                                "Activate version",
+                                            )));
+                                        }>"Activate"</button>
+                                        <button class="btn ghost sm" prop:disabled=move || busy.get() on:click=move |_| {
+                                            pending_life.set(Some(("reject", v3.clone())));
+                                            confirm_life.set(Some(ConfirmSpec::new(
+                                                "Reject this policy draft",
+                                                format!("version {}", v3.clone()),
+                                                "Marks this non-active version rejected. The active policy \
+                                                 is untouched — only this draft is discarded.",
+                                                Reversibility::Reversible(
+                                                    "a new draft can be submitted".into()),
+                                                "Reject draft",
+                                            )));
+                                        }>"Reject"</button>
                                     })}
                                     {is_active.then(|| view! {
-                                        <button class="btn warn sm" prop:disabled=move || busy.get() on:click=move |_| retire(v2.clone())>"Retire (deactivate)"</button>
+                                        <button class="btn warn sm" prop:disabled=move || busy.get() on:click=move |_| {
+                                            pending_life.set(Some(("retire", v2.clone())));
+                                            confirm_life.set(Some(ConfirmSpec::new(
+                                                "Retire — deactivate the whole policy",
+                                                format!("version {}", v2.clone()),
+                                                "Clears the active pointer, so this policy STOPS BEING \
+                                                 ENFORCED entirely. Access it governed is no longer \
+                                                 constrained by it until a version is activated again.",
+                                                Reversibility::Reversible(
+                                                    "activating a version again re-enables the policy".into()),
+                                                "Retire policy",
+                                            ).danger()));
+                                        }>"Retire (deactivate)"</button>
                                     })}
                                 </td>
                             </tr>
@@ -289,6 +346,15 @@ fn lifecycle_panel(p: &Value, id: &str) -> AnyView {
                 }
             })}
         </section>
+            <ui::ConfirmDialog spec=confirm_life on_confirm=move || {
+                if let Some((action, version)) = pending_life.get() {
+                    match action {
+                        "promote" => promote(version),
+                        "retire" => retire(version),
+                        _ => reject(version),
+                    }
+                }
+            }/>
     }
     .into_any()
 }

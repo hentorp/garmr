@@ -6,8 +6,8 @@ effect = "require_justification"
 enabled = true
 version = 1
 priority = 50
-created_by = "alice"
-approved_by = "alice"
+created_by = "henrik"
+approved_by = "henrik"
 
 [resource]
 objects = ["curated.persons", "curated.persons_view"]

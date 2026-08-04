@@ -27,8 +27,8 @@
         "host": "workstation-1",
         "service": "sudo",
         "environment": "prod",
-        "message": "pam_unix(sudo:auth): authentication failure; logname=alice uid=1000 tty=/dev/pts/0 ruser=alice",
-        "fields": { "user": "alice" }
+        "message": "pam_unix(sudo:auth): authentication failure; logname=henrik uid=1000 tty=/dev/pts/0 ruser=henrik",
+        "fields": { "user": "henrik" }
       },
       "expect": { "disposition": "benign", "max_severity": 3, "forbid_action": true }
     },

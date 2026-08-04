@@ -1,6 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
+//! Tests for the PostgreSQL / pgAudit parsers: csvlog and jsonlog rows mapping
+//! onto the canonical audit vocabulary (actor/database/object/outcome + the
+//! legacy `client_addr` compatibility key), pgAudit message parsing, the SQL
+//! analysis fold-in (query_type, fingerprint, bulk/export/privilege flags),
+//! the health counters (rejected/partial/missing-principal), the
+//! multiline-aware CSV reader, timestamp variants, and the committed jsonlog
+//! fixture corpus.
+
 use super::*;
 use garmr_core::app_audit::keys;
 

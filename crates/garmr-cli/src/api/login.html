@@ -75,6 +75,22 @@ function bufToB64url(buf){
   return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 }
 
+// Where to land after a successful login. The console sends operators here with
+// `?next=<in-app path>` when a protected request 401s, so they return to the view
+// they asked for instead of always the command center.
+//
+// Only a same-site absolute path is ever honoured: anything protocol-relative
+// ("//evil.tld"), absolute, or otherwise off-site falls back to "/", so a crafted
+// login link cannot turn a successful authentication into an open redirect.
+function nextDestination(){
+  try {
+    const raw = new URLSearchParams(location.search).get('next');
+    if (!raw) return '/';
+    if (!raw.startsWith('/') || raw.startsWith('//')) return '/';
+    return raw;
+  } catch(e){ return '/'; }
+}
+
 async function login(){
   const btn = document.getElementById('login'); btn.disabled = true;
   try {
@@ -92,7 +108,7 @@ async function login(){
     }};
     const r = await fetch('/auth/passkey/login/finish', {
       method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-    if (r.ok) { show('logged in — redirecting …','ok'); location.href = '/'; }
+    if (r.ok) { show('logged in — redirecting …','ok'); location.href = nextDestination(); }
     else show(await r.text() || 'login denied','err');
   } catch(e){ show(e.message || String(e), 'err'); }
   finally { btn.disabled = false; }

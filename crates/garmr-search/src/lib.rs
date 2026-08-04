@@ -440,7 +440,7 @@ mod tests {
                 Some("203.0.113.7"),
             ),
             ev(
-                "Accepted publickey for alice from 192.168.1.50 port 40222 ssh2",
+                "Accepted publickey for henrik from 192.168.1.50 port 40222 ssh2",
                 "pve",
                 Some("192.168.1.50"),
             ),

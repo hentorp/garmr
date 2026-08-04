@@ -82,7 +82,9 @@ transition moved to the client.
 ## Build & serve
 
 - Dev: `cargo build --target wasm32-unknown-unknown` (~2 s incremental).
-- Bundle: `trunk build` (dev) / `trunk build --release` (wasm-opt=z, ~1.3 MB).
+- Bundle: `trunk build` (dev) / `trunk build --release` (wasm-opt=z, ~2.3 MB;
+  CI fails the build above a 3 MiB budget so drift is caught rather than felt on
+  every cold load).
 - Served by `garmr serve` when `ingest.ui_dir` (or `GARMR_UI_DIR`) points at
   `crates/garmr-webui/dist`. The server hashes the SPA `index.html` inline
   bootstrap into a strict `script-src` CSP at startup, so **rebuilding the bundle

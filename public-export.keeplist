@@ -1,0 +1,80 @@
+# Garmr public-export KEEPLIST — paths the PUBLIC repository OWNS.
+#
+# The public repo is not a pure mirror. A curated presentation, legal, CI and
+# security-documentation layer was authored directly in the public tree and has
+# no counterpart here: the public README is a ~95-line public-facing summary
+# (this repo's is ~267 lines and carries internal architecture detail), the
+# public workflows pin every Action to a commit SHA, and the public
+# docs/security + docs/status pages are written for external reviewers.
+#
+# Without this list, `public-export.sh` (which finalizes with `rsync --delete`)
+# would DELETE every public-only file and overwrite the curated ones with this
+# repo's versions — silently undoing the v0.1.0-alpha.1 release hardening.
+#
+# Semantics: for each path below, the export carries the version ALREADY PRESENT
+# in the destination tree into the staging area before verification, so the
+# verified tree is exactly what the public repo will end up with. Nothing here
+# is ever generated from this repo.
+#
+# Rules:
+#   * one path per line: a file, a directory (recursive), or a `!` exception
+#   * `!path` un-keeps a path that an earlier directory rule captured — use it
+#     when this repo IS the source of truth for something inside a kept dir
+#   * lines starting with # and blank lines are ignored
+#
+# Keep this list SMALL and justified. Anything here is a place where the two
+# repositories are allowed to drift, and drift is what made the first resync
+# dangerous. When a file's real source of truth moves back into this repo,
+# delete its line here.
+
+# --- Legal and project identity (authored for the public release) -----------
+LICENSE
+LICENSES
+NOTICE
+COMMERCIAL-LICENSING.md
+TRADEMARKS.md
+CLA.md
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+THIRD_PARTY_LICENSES.md
+REUSE.toml
+CHANGELOG.md
+
+# --- Public-facing entry points ---------------------------------------------
+# The public README is a deliberately trimmed summary, and SECURITY.md is the
+# published disclosure policy. Both are maintained in the public repo.
+README.md
+SECURITY.md
+
+# --- GitHub configuration and CI --------------------------------------------
+# Every external Action in the public workflows is pinned to a full commit SHA
+# and gated by scripts/check-actions-pinned.sh. This repo's workflows are not.
+# EXCEPTION: workflows/webui.yml is authored HERE and flows outward.
+.github
+!.github/workflows/webui.yml
+
+# --- Published documentation -------------------------------------------------
+# docs/security, docs/status and docs/deployment are written for an external
+# reviewer and are checked by scripts/check-doc-consistency.sh. docs/webui is
+# NOT kept: the console documentation is authored here and flows outward.
+docs
+!docs/webui
+
+# --- Supply-chain configuration and the public gates -------------------------
+# deny.toml carries the audited advisory exceptions with their reachability
+# analysis; the two check-* scripts are the public repo's own CI gates.
+deny.toml
+.gitleaks.toml
+scripts/check-doc-consistency.sh
+scripts/check-actions-pinned.sh
+
+# --- The export tooling itself ------------------------------------------------
+# Present in both repos; the public copies are what a reader verifies against.
+scripts/public-export.sh
+scripts/public-verify.sh
+public-export.allowlist
+public-export.denylist
+public-export.keeplist
+
+# --- Tests that cover public-only documentation claims -----------------------
+crates/garmr-ingest/tests/native_auth_e2e.rs

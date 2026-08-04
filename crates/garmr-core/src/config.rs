@@ -3,8 +3,15 @@
 
 //! Configuration, loaded from a TOML file overlaid with `GARMR_*` env vars.
 //!
-//! Kept in `garmr-core` so every crate shares one config shape. Secrets
-//! (API keys, bot tokens) come from the environment, never the TOML file.
+//! Kept in `garmr-core` so every crate shares one config shape. Load precedence
+//! ([`Config::load`]) is `defaults < base TOML < generated override < env`: the
+//! override layer (`garmr.override.toml`, machine-written into the state dir by
+//! the console's config-write API) persists WebUI changes without touching the
+//! operator-owned base file, and is FAIL-SOFT — a corrupted override falls back
+//! to base + env instead of bricking offline/recovery commands. Two things are
+//! deliberately outside every TOML layer: secrets (API keys, bot tokens) come
+//! from the environment only, and `GARMR_AIRGAP` is read straight from the
+//! process env, so no config layer can ever disable air-gap.
 
 use std::path::PathBuf;
 

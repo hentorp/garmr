@@ -99,6 +99,6 @@ topology`, which is on screen (above).
 4. **Application vs host** — pick **Application** as the user label in the Applications area; rename
    "Open host"/"Peek host" → "Open application"/"Preview application"; change "filter by rule or host…"
    → "filter by rule or application…". (applications.rs:47; audit.rs:342–345; command.rs:89;
-   investigations.rs:75; detections.rs:43) — *flag for Alice if Application≠host is intentional.*
+   investigations.rs:75; detections.rs:43) — *flag for Henrik if Application≠host is intentional.*
 5. **Behavioral anomaly** — introduce the term in Detections + user Behavioral profile help.
 6. Map all **raw enum variants** through friendly labels (table above).

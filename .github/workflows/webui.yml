@@ -1,0 +1,163 @@
+# Web console CI.
+#
+# `crates/garmr-webui` declares its own `[workspace]`, so it is NOT a member of
+# the root workspace: `cargo fmt --all`, `cargo clippy --workspace` and
+# `cargo test --workspace` at the repo root all skip it entirely. Every step here
+# therefore passes `--manifest-path` explicitly. That is the whole reason this
+# workflow exists as a separate file — it is easy to believe the console is
+# covered by the main build when it is not.
+name: webui
+
+on:
+  push:
+    paths:
+      - 'crates/garmr-webui/**'
+      - '.github/workflows/webui.yml'
+  pull_request:
+    paths:
+      - 'crates/garmr-webui/**'
+      - '.github/workflows/webui.yml'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  MANIFEST: crates/garmr-webui/Cargo.toml
+  # Pin the node tooling too. `npm install axe-core puppeteer http-server` with
+  # no version resolves whatever is newest at build time — an unreviewed
+  # dependency executing in CI, the same risk a floating Action tag carries.
+  AXE_VERSION: "4.12.1"
+  PUPPETEER_VERSION: "25.4.0"
+  HTTP_SERVER_VERSION: "14.1.1"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install stable
+          rustup component add rustfmt clippy
+          rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: crates/garmr-webui
+
+      # The axe and layout steps run node. ubuntu-latest happens to ship one, but
+      # depending on the runner image for a tool version is how a green build
+      # turns red on an image bump nobody asked for.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Formatting
+        run: cargo fmt --manifest-path "$MANIFEST" -- --check
+
+      # Lint against the target the bundle is actually built for; a wasm-only
+      # borrow or API mistake will not show up on the host target.
+      - name: Clippy (wasm target, warnings are errors)
+        run: cargo clippy --manifest-path "$MANIFEST" --target wasm32-unknown-unknown -- -D warnings
+
+      # The console's decision logic (authorization, source state, the config
+      # apply gate, setup routing, time-range parsing, URL round-trips, palette
+      # rules) is deliberately kept free of web-sys so it runs here, with no
+      # browser and no wasm test runner.
+      - name: Unit tests (host target)
+        run: cargo test --manifest-path "$MANIFEST" --target x86_64-unknown-linux-gnu --lib
+
+      # DOM-dependent behaviour — focus movement, the modal tab trap, the ARIA
+      # attributes actually emitted — cannot run on the host target. These need a
+      # browser, so they are compiled here and executed by wasm-pack below.
+      - name: Browser tests compile
+        run: cargo build --manifest-path "$MANIFEST" --target wasm32-unknown-unknown --tests
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Browser tests (headless Chrome)
+        working-directory: crates/garmr-webui
+        run: wasm-pack test --headless --chrome
+
+      - name: Install trunk
+        run: cargo install trunk --locked --version ^0.21
+
+      - name: Release bundle
+        working-directory: crates/garmr-webui
+        run: trunk build --release
+
+      # A bundle that quietly doubles is a regression an analyst feels on every
+      # cold load, so fail loudly rather than let it drift.
+      - name: Bundle size budget
+        working-directory: crates/garmr-webui
+        run: |
+          set -euo pipefail
+          # Fail loudly on an unexpected number of bundles rather than letting
+          # `stat` emit several sizes and the comparison below misparse them.
+          shopt -s nullglob
+          bundles=(dist/*_bg.wasm)
+          if [ "${#bundles[@]}" -ne 1 ]; then
+            echo "::error::expected exactly 1 wasm bundle, found ${#bundles[@]}"
+            exit 1
+          fi
+          bytes=$(stat -c%s "${bundles[0]}")
+          budget=$((3 * 1024 * 1024))
+          echo "wasm bundle: $bytes bytes (budget $budget)"
+          if [ "$bytes" -gt "$budget" ]; then
+            echo "::error::wasm bundle $bytes exceeds the ${budget}-byte budget"
+            exit 1
+          fi
+
+      # Automated accessibility checking. It runs HERE rather than locally for two
+      # independent reasons found while trying: a headless browser is OOM-killed on
+      # the maintainer's laptop, and the console's own CSP (connect-src 'self')
+      # correctly refuses to load an analysis library into the page. CI has a
+      # browser, memory, and serves the bundle from disk — so this is its home.
+      - name: Accessibility check (axe-core)
+        working-directory: crates/garmr-webui
+        run: |
+          set -euo pipefail
+          npm install --no-save "axe-core@${AXE_VERSION}" "puppeteer@${PUPPETEER_VERSION}" "http-server@${HTTP_SERVER_VERSION}"
+          npx http-server dist -p 8088 --silent &
+          for i in $(seq 1 20); do
+            curl -sf -o /dev/null http://127.0.0.1:8088/ && break
+            sleep 1
+          done
+          node ../../scripts/axe-check.mjs http://127.0.0.1:8088/
+
+      # Layout regression across the four viewports the console must survive.
+      # Asserts structure (no horizontal overflow, the drawer toggle present
+      # exactly below the breakpoint) rather than diffing pixels — the failures
+      # that mattered here were structural, and a pixel baseline fails loudly for
+      # reasons nobody can act on. Screenshots are kept as artifacts to look at.
+      - name: Layout check (4 viewports)
+        working-directory: crates/garmr-webui
+        run: |
+          set -euo pipefail
+          # Installed explicitly rather than relying on the axe step having run:
+          # if that step fails, this one must still be able to report layout.
+          npm install --no-save "puppeteer@${PUPPETEER_VERSION}" "http-server@${HTTP_SERVER_VERSION}"
+          npx http-server dist -p 8089 --silent &
+          for i in $(seq 1 20); do
+            curl -sf -o /dev/null http://127.0.0.1:8089/ && break
+            sleep 1
+          done
+          node ../../scripts/viewport-check.mjs http://127.0.0.1:8089/
+
+      - name: Upload viewport screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: viewport-screenshots
+          path: crates/garmr-webui/screenshots/
+          retention-days: 7
+
+      - name: Upload the bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: garmr-webui-dist
+          path: crates/garmr-webui/dist/
+          retention-days: 7

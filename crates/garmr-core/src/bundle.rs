@@ -204,12 +204,6 @@ pub fn manifest_digest(m: &BundleManifest) -> String {
         .to_string()
 }
 
-/// A file's content digest (BLAKE3-hex). For streaming a large binary, the CLI
-/// uses `blake3::Hasher` directly; this is the small-input/test path.
-pub fn entry_digest(bytes: &[u8]) -> String {
-    blake3::hash(bytes).to_hex().to_string()
-}
-
 /// THE canonical release digest — length-framed over the [`ReleaseSpec`] fields
 /// in a fixed order (FIX#3: one function, used by build + verify + import, so the
 /// release binding is real and not an ad-hoc recompute).

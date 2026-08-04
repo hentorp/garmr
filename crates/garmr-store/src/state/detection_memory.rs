@@ -7,7 +7,7 @@
 //! a first-seen check per log template.
 
 use garmr_core::{Error, Result};
-use redb::{ReadableTable, ReadableTableMetadata};
+use redb::ReadableTable;
 
 use super::{StateStore, SUPPRESSION, TEMPLATES};
 
@@ -55,12 +55,5 @@ impl StateStore {
         let rtx = self.db.begin_read().map_err(Error::store)?;
         let t = rtx.open_table(TEMPLATES).map_err(Error::store)?;
         Ok(t.get(id).map_err(Error::store)?.is_some())
-    }
-
-    /// Count of known templates (for status/diagnostics).
-    pub fn template_count(&self) -> Result<u64> {
-        let rtx = self.db.begin_read().map_err(Error::store)?;
-        let t = rtx.open_table(TEMPLATES).map_err(Error::store)?;
-        t.len().map_err(Error::store)
     }
 }

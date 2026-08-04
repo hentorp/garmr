@@ -299,7 +299,7 @@ impl ProvSeg {
 ///
 /// The copy is left SERIAL on purpose: it is memory-bandwidth bound, and fanning
 /// it across cores (a `gatling_scanlines` variant) measured a net throughput LOSS
-/// on a 32-core reference host — the fork-join spawn plus per-row scatter cost more than the bulk
+/// on oden — the fork-join spawn plus per-row scatter cost more than the bulk
 /// memcpy, inflating `encode_cores_busy` while *lowering* rows/sec (the "busy
 /// cores producing little" trap — root-cause §5/§6). The win is dropping the
 /// per-row assembly tail, not adding threads.
@@ -358,7 +358,7 @@ fn fields_column(segs: &[ProvSeg], n: usize) -> StringArray {
 /// not `n`) plus a single simd UTF-8 validation — replacing the per-row
 /// `from_iter_values` / `collect` tail that used to run after the fold (the encode
 /// path's Amdahl serial fraction — root-cause §5). Measured ~1.2× encode
-/// throughput on a 32-core reference host, `amdahl_serial_frac` 0.36 → 0.33, with no rise in
+/// throughput on oden, `amdahl_serial_frac` 0.36 → 0.33, with no rise in
 /// `encode_cores_busy` (the copy is memory-bound; see `hex_column`).
 fn build_provenance(rows: &[(&Event, Option<&str>)]) -> (StringArray, StringArray, StringArray) {
     let n = rows.len();

@@ -27,7 +27,6 @@ use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 /// local `cold_dir` layout), so a `ColdArchive.file` maps 1:1 to an object key.
 pub struct S3Cold {
     store: Box<dyn ObjectStore>,
-    bucket: String,
 }
 
 impl S3Cold {
@@ -69,12 +68,7 @@ impl S3Cold {
         tracing::info!(%endpoint, %bucket, "cold tier: S3 backend configured");
         Ok(Some(Self {
             store: Box::new(s3),
-            bucket,
         }))
-    }
-
-    pub fn bucket(&self) -> &str {
-        &self.bucket
     }
 
     fn key(name: &str) -> object_store::path::Path {
@@ -108,10 +102,5 @@ impl S3Cold {
             .await
             .map_err(|e| Error::store(format!("write {} from S3: {e}", local.display())))?;
         Ok(())
-    }
-
-    /// Is `key` present in the bucket?
-    pub async fn exists(&self, key: &str) -> bool {
-        self.store.head(&Self::key(key)).await.is_ok()
     }
 }

@@ -1,6 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Vetra Automation AB
 // SPDX-License-Identifier: AGPL-3.0-only
 
+//! Unit tests for the monitoring core. The load-bearing set: every state's
+//! sensitivity multiplier is >= 1.0 (monitoring raises attention, never
+//! declares guilt) and the active states escalate strictly; time windows gate
+//! activeness (future-dated, expired and retired profiles are inactive);
+//! targets match users / roles / groups / applications / resources
+//! case-insensitively, with application/resource scopes narrowing a profile's
+//! reach; the strongest applicable profile wins deterministically; every
+//! mutation is attributed (an anonymous actor is rejected), version-bumping
+//! and audit-linked; and the active-set digest is order-independent and
+//! ignores retired profiles.
+
 use super::*;
 use chrono::{Duration, TimeZone, Utc};
 use garmr_core::{AuditAction, AuditActor, AuditContext, AuditRecord, QueryType};
@@ -33,7 +44,7 @@ fn watch_user(user: &str, state: MonitoringState) -> UserMonitoringProfile {
         MonitoringTarget::User(user.into()),
         state,
         now() - Duration::days(1),
-        "alice",
+        "henrik",
     )
     .with_reason("insider-risk review")
     .with_risk_level("medium")
@@ -102,7 +113,7 @@ fn future_dated_profile_is_not_yet_active() {
         MonitoringTarget::User("bruno".into()),
         MonitoringState::Watched,
         now() + Duration::days(1),
-        "alice",
+        "henrik",
     );
     let reg = MonitoringRegistry::with_profiles(vec![future]);
     assert!(reg.active_for_user("bruno", now()).is_none());
@@ -134,13 +145,13 @@ fn target_matching_role_and_group() {
         MonitoringTarget::Role("dba".into()),
         MonitoringState::ElevatedMonitoring,
         now() - Duration::days(1),
-        "alice",
+        "henrik",
     );
     let group = UserMonitoringProfile::new(
         MonitoringTarget::Group("finance".into()),
         MonitoringState::Watched,
         now() - Duration::days(1),
-        "alice",
+        "henrik",
     );
     let reg = MonitoringRegistry::with_profiles(vec![role, group]);
 
@@ -170,13 +181,13 @@ fn target_matching_application_and_resource() {
         MonitoringTarget::Application("registry".into()),
         MonitoringState::Watched,
         now() - Duration::days(1),
-        "alice",
+        "henrik",
     );
     let resource = UserMonitoringProfile::new(
         MonitoringTarget::Resource("raw.*".into()),
         MonitoringState::Investigation,
         now() - Duration::days(1),
-        "alice",
+        "henrik",
     );
     let reg = MonitoringRegistry::with_profiles(vec![app, resource]);
 
@@ -206,7 +217,7 @@ fn strongest_profile_is_selected() {
         MonitoringTarget::Group("finance".into()),
         MonitoringState::Investigation,
         now() - Duration::days(1),
-        "alice",
+        "henrik",
     );
     let reg = MonitoringRegistry::with_profiles(vec![watched, investigation]);
 
@@ -250,7 +261,7 @@ fn start_monitoring_emits_audited_change_and_rejects_anonymous() {
     let change = reg.start_monitoring(profile, now(), "ledger-1").unwrap();
     assert_eq!(change.from_state, MonitoringState::Normal);
     assert_eq!(change.to_state, MonitoringState::Watched);
-    assert_eq!(change.actor, "alice");
+    assert_eq!(change.actor, "henrik");
     assert_eq!(change.audit_ref, "ledger-1");
     assert!(change.change_id.starts_with("chg-"));
     assert_eq!(reg.profiles()[0].version, 1);
@@ -323,7 +334,7 @@ fn stop_monitoring_retires_and_deactivates() {
         .stop_monitoring(
             &target,
             "review closed",
-            ChangeMeta::new("alice", now(), "l2"),
+            ChangeMeta::new("henrik", now(), "l2"),
         )
         .unwrap();
     assert_eq!(change.to_state, MonitoringState::Retired);
@@ -345,7 +356,7 @@ fn restrict_scope_narrows_without_changing_state() {
             vec!["registry".into()],
             vec!["raw.*".into()],
             "limit to sensitive scope",
-            ChangeMeta::new("alice", now(), "l2"),
+            ChangeMeta::new("henrik", now(), "l2"),
         )
         .unwrap();
     // State unchanged: from == to.
@@ -363,7 +374,7 @@ fn restrict_scope_narrows_without_changing_state() {
         vec!["REGISTRY".into()],
         vec![],
         "again",
-        ChangeMeta::new("alice", now(), "l3"),
+        ChangeMeta::new("henrik", now(), "l3"),
     )
     .unwrap();
     assert_eq!(

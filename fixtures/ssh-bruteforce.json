@@ -11,7 +11,7 @@
         ["1751932805000000000", "Invalid user postgres from 203.0.113.7 port 51004"],
         ["1751932806000000000", "Failed password for root from 203.0.113.7 port 51005 ssh2"],
         ["1751932807000000000", "Failed password for root from 203.0.113.7 port 51006 ssh2"],
-        ["1751932808000000000", "Accepted publickey for alice from 192.168.1.50 port 40222 ssh2"]
+        ["1751932808000000000", "Accepted publickey for henrik from 192.168.1.50 port 40222 ssh2"]
       ]
     }
   ]

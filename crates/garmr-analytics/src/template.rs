@@ -3,15 +3,13 @@
 
 //! Log-line templating: turn a concrete line into a stable template + id.
 //!
-//! v1 (8a) uses a cheap, dependency-free **masking normalizer**: it replaces the
-//! variable parts of a line (numbers, IPs, UUIDs, hex, quoted strings) with typed
-//! placeholders so that all lines of the same *shape* collapse to one template.
-//! The `template_id` is a short SHA-256 of the masked text — content-addressed,
-//! so the templates table dedups exactly like nornir's embedding store.
-//!
-//! Phase 8b upgrades this to a Drain-style parse tree for better grouping, but the
-//! interface (`templatize(line) -> Template`) stays the same so nothing downstream
-//! changes.
+//! A cheap, dependency-free **masking normalizer**: it replaces the variable
+//! parts of a line (numbers, IPs, UUIDs, hex runs) with typed placeholders so
+//! all lines of the same *shape* collapse to one template. The `template_id`
+//! is a short SHA-256 of the masked text — content-addressed, so equal shapes
+//! dedup by construction. Word-position variability (e.g. a username) is NOT
+//! masked — that would take a Drain-style parse tree, a possible later upgrade
+//! behind the same `templatize(line) -> Template` interface.
 use sha2::{Digest, Sha256};
 
 pub struct Template {
@@ -242,7 +240,7 @@ mod tests {
 
     #[test]
     fn different_shape_different_id() {
-        let a = templatize("Accepted publickey for alice");
+        let a = templatize("Accepted publickey for henrik");
         let b = templatize("Failed password for root from 10.0.0.9");
         assert_ne!(a.id, b.id);
     }

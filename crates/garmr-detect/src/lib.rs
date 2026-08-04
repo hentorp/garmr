@@ -17,8 +17,6 @@ use garmr_core::{Detection, Error, Event, Result};
 use rsigma_eval::{Engine, JsonEvent};
 use rsigma_parser::parse_sigma_directory;
 
-pub use mapping::event_to_json;
-
 /// A loaded Sigma rule set ready to evaluate events.
 pub struct Detector {
     engine: Engine,
@@ -212,7 +210,7 @@ tags:
     fn no_fire_on_benign() {
         let d = Detector::from_yaml(SSH_RULE).unwrap();
         assert!(d
-            .evaluate(&ev("Accepted publickey for alice", "sshd"))
+            .evaluate(&ev("Accepted publickey for henrik", "sshd"))
             .is_empty());
     }
 
