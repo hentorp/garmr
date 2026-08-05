@@ -30,4 +30,4 @@ gatling = { path = "../../vendor/znippy-zoomies/gatling", package = "rotaryengin
 # `Buffer` / `NullBuffer` types). Needed to assemble the provenance StringArrays
 # directly from the fold's per-worker byte buffers (one bulk copy + one simd
 # UTF-8 validate) instead of a per-row `from_iter_values` tail.
-arrow-buffer = "58"
+arrow-buffer = "59"
