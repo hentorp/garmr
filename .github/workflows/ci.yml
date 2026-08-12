@@ -57,7 +57,7 @@ jobs:
         with:
           toolchain: "1.96.0"
           components: clippy
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
@@ -67,7 +67,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16
         with:
           toolchain: "1.96.0"
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo test --workspace --all-features --locked
 
   # The security behaviour the docs promise, run as its own named gate so a
@@ -79,7 +79,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16
         with:
           toolchain: "1.96.0"
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Security-critical test groups
         # `cargo test -- <filter>` exits 0 when the filter matches NOTHING, so a
         # renamed test would silently turn this gate green. run_group asserts the
@@ -132,7 +132,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16
         with:
           toolchain: "1.96.0"
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo test --manifest-path ${{ matrix.manifest }} --locked || cargo build --manifest-path ${{ matrix.manifest }} --locked
 
   webui:
@@ -153,7 +153,7 @@ jobs:
         with:
           toolchain: "1.96.0"
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install trunk (pinned + checksum-verified)
         run: |
           set -euo pipefail
