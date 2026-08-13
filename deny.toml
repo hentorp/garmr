@@ -110,6 +110,19 @@ ignore = [
     # fast in-memory hashmap hasher, never for anything security-relevant. Clears
     # when upstreams move to rustc-hash.
     "RUSTSEC-2025-0057",
+    # bitmaps 3.2.1 unmaintained — status advisory, NOT a vulnerability (no CVE,
+    # no fixed release; 3.2.1 is the latest published version). Transitive via
+    # imbl -> skade-katalog: a fixed-size bitmap used internally by imbl's
+    # persistent data structures to track chunk occupancy. It never sees ingested
+    # or operator input — it is an in-memory data-structure helper, not a parser.
+    # Clears when imbl moves off it or bitmaps regains a maintainer.
+    "RUSTSEC-2026-0247",
+    # smartstring 1.0.1 unmaintained (archived upstream) — status advisory, NOT a
+    # vulnerability (no CVE, no fixed release; 1.0.1 is the last published
+    # version). Transitive via cozo, the same seam as the priority-queue
+    # clarification above: a small-string-optimised String used inside cozo's
+    # query engine for symbol/identifier storage. Clears when cozo moves off it.
+    "RUSTSEC-2026-0249",
 ]
 
 # --- Reviewed, NOT suppressed ---------------------------------------------
