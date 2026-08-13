@@ -24,6 +24,22 @@ updates:
       - "area:core"
     commit-message:
       prefix: "deps"
+    groups:
+      # The arrow crates are one ABI: arrow-array's types are arrow-buffer's,
+      # and arrow-flight is built on both. Bumped in separate PRs each one is a
+      # half-migration that does not compile — 58.3.0 -> 59.1.0 arrived as three
+      # PRs and every one of them failed clippy and test. Group them so the
+      # version moves as a unit and reviews as one change.
+      arrow:
+        patterns:
+          - "arrow"
+          - "arrow-*"
+      # datafusion tracks a specific arrow major and breaks when arrow moves
+      # under it, so it belongs in the same wave rather than its own PR.
+      datafusion:
+        patterns:
+          - "datafusion"
+          - "datafusion-*"
 
   # GitHub Actions used by workflows under .github/workflows/.
   - package-ecosystem: "github-actions"
@@ -36,3 +52,11 @@ updates:
       - "ci"
     commit-message:
       prefix: "ci"
+    groups:
+      # codeql-action/init, /analyze and /autobuild MUST run the same version —
+      # mixing them makes `analyze` fail outright. Dependabot opened 4.37.4 ->
+      # 4.37.6 as three separate PRs and each one broke `analyze (rust)` on its
+      # own. Group them so the trio moves together.
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
