@@ -40,6 +40,26 @@ updates:
         patterns:
           - "datafusion"
           - "datafusion-*"
+      # candle-core, candle-nn and candle-transformers are one release train:
+      # nn and transformers are built directly on core's Tensor/Device types, so
+      # a lone core bump is a half-migration that cannot compile. Dependabot has
+      # 0.9.2 -> 0.11.0 open as a core-only PR right now for exactly this reason.
+      candle:
+        patterns:
+          - "candle-*"
+      # rsigma-parser, -ir and -eval are one project released in lockstep; the
+      # eval crate consumes the parser's IR types, so they have to move together.
+      rsigma:
+        patterns:
+          - "rsigma-*"
+      # tonic is generated on top of prost (and tonic-prost bridges them), so a
+      # prost major without the matching tonic is a broken build.
+      prost-tonic:
+        patterns:
+          - "prost"
+          - "prost-*"
+          - "tonic"
+          - "tonic-*"
 
   # GitHub Actions used by workflows under .github/workflows/.
   - package-ecosystem: "github-actions"
