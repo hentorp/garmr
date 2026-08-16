@@ -1,0 +1,122 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Prometheus alert rules for a garmr deployment. Load with:
+#   rule_files: ["garmr-alerts.rules.yml"]
+# Thresholds carry comments naming the assumption they encode — tune them to
+# your estate rather than trusting someone else's numbers. Validate after any
+# edit: `promtool check rules garmr-alerts.rules.yml`.
+
+groups:
+  # Ingest alerts are GATED ON THE WRITER ROLE: a follower serves reads only,
+  # so its scrape shows no ingest — which reads exactly like a writer that has
+  # died. Without the gate, one of the two nodes is always lying to on-call.
+  - name: garmr-ingest
+    rules:
+      # THE alert this stack exists for: a source that stopped delivering.
+      # garmr also opens a T1562.001 case for gone-dark collectors; this fires
+      # in YOUR alerting fabric so on-call sees it even if garmr itself is the
+      # thing that broke. 15m tolerates agent restarts and log rotation.
+      - alert: GarmrSourceGoneDark
+        expr: garmr_source_staleness_seconds > 900 and on() garmr_ha_role{role="writer"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "source {{ $labels.source }} silent for 15+ minutes"
+          description: >-
+            No events from {{ $labels.source }} for
+            {{ $value | humanizeDuration }}. Either the source is down, its
+            collector is down, or someone stopped the logging — the last one
+            is the case worth losing sleep over (T1562.001).
+
+      # Senders retry on NACK, so a short burst self-heals. A sustained rate
+      # means the store is refusing writes — disk, corruption, or lock trouble.
+      - alert: GarmrIngestNacks
+        expr: rate(garmr_ingest_nacked_total[5m]) > 0.1 and on() garmr_ha_role{role="writer"} == 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "garmr is NACKing ingest on {{ $labels.path }}"
+          description: >-
+            Sustained NACK rate on the {{ $labels.path }} path. Collectors are
+            retrying and buffering; data is at risk once their buffers fill.
+
+      # Confirmed-lost sequence numbers: the collector sent, garmr never got it.
+      - alert: GarmrSequenceGaps
+        expr: increase(garmr_ingest_seq_gaps[30m]) > 0 and on() garmr_ha_role{role="writer"} == 1
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "delivery gaps from collector {{ $labels.collector }}"
+          description: >-
+            Sequence tracking confirmed lost batches from
+            {{ $labels.collector }}. Check the network path and the
+            collector's own buffer/retry logs.
+
+      # The observer queue dropping marks means gap detection itself is losing
+      # visibility — the alert above can no longer be trusted while this fires.
+      - alert: GarmrSeqObserverSaturated
+        expr: increase(garmr_ingest_seq_marks_dropped_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "sequence observer dropping marks (gap detection degraded)"
+          description: >-
+            The sequence-mark queue overflowed; gap/replay detection is
+            sampling, not complete, under current load.
+
+      # Depth is sampled at ingest; sustained high depth = the pipeline can't
+      # drain — commit latency will follow.
+      - alert: GarmrPipelineBackpressure
+        expr: garmr_pipeline_channel_depth{channel="ingest"} > 48 and on() garmr_ha_role{role="writer"} == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ingest pipeline running deep (backpressure)"
+          description: >-
+            The ingest channel has been over 75% full for 10 minutes. Check
+            commit latency (garmr_ingest_commit_seconds) and disk throughput.
+
+  - name: garmr-store
+    rules:
+      - alert: GarmrCompactionFailing
+        expr: increase(garmr_compaction_runs_total{outcome="failed"}[6h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "events-table compaction failing"
+          description: >-
+            Compaction failed at least once in 6h. Metadata will bloat and
+            queries slow until a run succeeds; check disk space first.
+
+      - alert: GarmrFulltextIndexingFailures
+        expr: increase(garmr_fulltext_index_failures_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "full-text indexing is failing (search quietly thinning)"
+          description: >-
+            The best-effort indexer is erroring; new events are searchable by
+            SQL but not free text until it recovers.
+
+  - name: garmr-process
+    rules:
+      # /metrics is authenticated; absent() catches the scrape being broken
+      # (wrong token, wrong port) as loudly as the process being down.
+      - alert: GarmrScrapeAbsent
+        expr: absent(garmr_build_info)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "garmr metrics absent"
+          description: >-
+            No garmr_build_info series. The daemon is down, the scrape target
+            is wrong, or the scrape credential is broken.
