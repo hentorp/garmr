@@ -18,10 +18,27 @@
 //! The graph is built on demand (cheap at home-lab scale). The pure core takes
 //! cases + event triples; the `store` feature adds [`build`], which pulls both
 //! straight from the store. The data types live in [`model`] and the RBA-style
-//! attack-path ranking in [`risk`]; this file is the graph structure + its
-//! traversal (build / pivot / shortest_path / edges_among).
+//! attack-path ranking in [`risk`]; this file is garmr's DOMAIN layer over the
+//! graph — how cases and events become typed nodes and provenance-carrying edges.
+//!
+//! # The graph structure itself is not garmr's
+//!
+//! [`Graph`] holds a [`nornir_graph::MemGraph`]`<`[`Node`]`, `[`EdgeKind`]`>` and
+//! implements the shared [`GraphQuery`] seam over it. The adjacency, the
+//! "stronger link wins" edge merge, the BFS `pivot` and the BFS `shortest_path`
+//! all live in that seam now — one implementation, shared with the CozoDB backend
+//! and with every other consumer, instead of a hand-rolled copy here and a second
+//! one behind the `cozo` feature (LAW: reuse, never twin).
+//!
+//! Nothing about the behaviour changed: the seam's traversal is the one that used
+//! to live in this file, moved verbatim, so hop distances, `via` provenance, BFS
+//! visitation order and every tie-break are identical. What this file keeps is the
+//! part that IS garmr's — the entity model, the case/event edge construction, the
+//! device typing, the degraded flag.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
+
+use nornir_graph::{GraphQuery, GraphStore, MemGraph};
 
 use garmr_core::Case;
 
@@ -43,11 +60,15 @@ pub use model::{
 };
 
 /// An undirected entity graph with per-edge provenance.
+///
+/// The storage and traversal are the shared seam's; this type adds garmr's domain
+/// on top (entity construction from cases and events, device typing, the degraded
+/// flag) and re-exposes the seam's reads as inherent methods so every call site
+/// reads the same as it always did.
 #[derive(Default)]
 pub struct Graph {
-    nodes: BTreeMap<String, Node>,
-    /// node → (neighbour → strongest edge kind).
-    adj: BTreeMap<String, BTreeMap<String, EdgeKind>>,
+    /// Node payloads + the labelled adjacency, owned by the shared seam.
+    inner: MemGraph<Node, EdgeKind>,
     /// True if event-edge enrichment was skipped (scan slow/failed) — the graph
     /// is case-only and may miss raw-activity links.
     degraded: bool,
@@ -157,7 +178,7 @@ impl Graph {
     pub fn ensure_node_typed(&mut self, kind: &str, name: &str, device_type: &str) {
         if let Some(n) = non_empty(name) {
             let id = self.entity(kind, n);
-            if let Some(node) = self.nodes.get_mut(&id) {
+            if let Some(node) = self.inner.payload_mut(&id) {
                 node.meta
                     .insert("device_type".into(), device_type.to_string());
             }
@@ -165,13 +186,15 @@ impl Graph {
     }
 
     fn upsert(&mut self, node: Node) {
-        self.adj.entry(node.id.clone()).or_default();
-        self.nodes.insert(node.id.clone(), node);
+        let id = node.id.clone();
+        // MemGraph writes are infallible (`Infallible`), so there is nothing to
+        // handle here.
+        let _ = self.inner.put_node(&id, node);
     }
 
     fn entity(&mut self, kind: &str, name: &str) -> String {
         let id = node_id(kind, name);
-        if !self.nodes.contains_key(&id) {
+        if !self.inner.contains(&id) {
             self.upsert(Node {
                 id: id.clone(),
                 kind: kind.into(),
@@ -184,25 +207,19 @@ impl Graph {
     }
 
     /// Add/strengthen an undirected edge. A stronger kind (case) wins.
+    ///
+    /// The merge rule is the seam's: it stores both directions and keeps the `max`
+    /// of the recorded labels, which is `EdgeKind`'s own ordering — so a `Case`
+    /// edge is never downgraded by a later `Event` edge. A self-link is a no-op.
     fn link(&mut self, a: &str, b: &str, kind: EdgeKind) {
-        if a == b {
-            return;
-        }
-        for (x, y) in [(a, b), (b, a)] {
-            self.adj
-                .entry(x.to_string())
-                .or_default()
-                .entry(y.to_string())
-                .and_modify(|k| *k = (*k).max(kind))
-                .or_insert(kind);
-        }
+        let _ = self.inner.link(a, b, kind);
     }
 
     pub fn node(&self, id: &str) -> Option<&Node> {
-        self.nodes.get(id)
+        GraphQuery::node(&self.inner, id)
     }
     pub fn contains(&self, id: &str) -> bool {
-        self.nodes.contains_key(id)
+        GraphQuery::contains(&self.inner, id)
     }
 
     /// Whether event-edge enrichment was skipped (case-only graph).
@@ -216,32 +233,23 @@ impl Graph {
 
     /// (node count, undirected edge count).
     pub fn size(&self) -> (usize, usize) {
-        let half: usize = self.adj.values().map(BTreeMap::len).sum();
-        (self.nodes.len(), half / 2)
+        self.inner.size()
     }
 
     /// Every node in the graph (for a whole-topology export, not a pivot).
     pub fn all_nodes(&self) -> impl Iterator<Item = &Node> {
-        self.nodes.values()
+        self.inner.payloads()
     }
 
     /// A node's degree (neighbour count) — the caller sizes topology nodes by it.
     pub fn degree(&self, id: &str) -> usize {
-        self.adj.get(id).map(BTreeMap::len).unwrap_or(0)
+        GraphQuery::degree(&self.inner, id)
     }
 
     /// Every undirected edge once (`a < b`) with its strongest provenance — the
     /// whole graph's edge list, for the topology map.
     pub fn all_edges(&self) -> Vec<(String, String, EdgeKind)> {
-        let mut out = Vec::new();
-        for (a, adj) in &self.adj {
-            for (b, kind) in adj {
-                if a < b {
-                    out.push((a.clone(), b.clone(), *kind));
-                }
-            }
-        }
-        out
+        self.inner.undirected_edges()
     }
 
     /// The induced-subgraph edges among a set of node ids: every undirected edge
@@ -250,94 +258,54 @@ impl Graph {
     /// Lets a caller draw a node-link view of a pivot result — which reached
     /// nodes are actually linked, and how (case vs event).
     pub fn edges_among(&self, ids: &BTreeSet<String>) -> Vec<(String, String, EdgeKind)> {
-        let mut out = Vec::new();
-        for a in ids {
-            let Some(adj) = self.adj.get(a) else { continue };
-            for (b, kind) in adj {
-                // Each undirected edge once (a < b), both endpoints in the set.
-                if a < b && ids.contains(b) {
-                    out.push((a.clone(), b.clone(), *kind));
-                }
-            }
-        }
-        out
+        self.inner.edges_among(ids)
     }
 
     /// BFS pivot: everything reachable from `start` within `depth` hops, as
     /// [`Hit`]s in BFS order (excluding `start`). `via` is the provenance of the
     /// edge that first reached each node.
     pub fn pivot(&self, start: &str, depth: usize) -> Vec<Hit<'_>> {
-        let mut out = Vec::new();
-        if !self.nodes.contains_key(start) || depth == 0 {
-            return out;
-        }
-        let mut seen: BTreeSet<&str> = BTreeSet::new();
-        seen.insert(start);
-        let mut q: VecDeque<(usize, &str)> = VecDeque::new();
-        q.push_back((0, start));
-        while let Some((d, id)) = q.pop_front() {
-            if d == depth {
-                continue;
-            }
-            if let Some(adj) = self.adj.get(id) {
-                for (nb, kind) in adj {
-                    if seen.insert(nb.as_str()) {
-                        if let Some(node) = self.nodes.get(nb) {
-                            out.push(Hit {
-                                hop: d + 1,
-                                via: *kind,
-                                node,
-                            });
-                            q.push_back((d + 1, nb.as_str()));
-                        }
-                    }
-                }
-            }
-        }
-        out
+        GraphQuery::pivot(&self.inner, start, depth)
     }
 
     /// Shortest undirected path between two nodes (inclusive), or `None` if
     /// either is unknown or they are disconnected.
     pub fn shortest_path(&self, a: &str, b: &str) -> Option<Vec<&Node>> {
-        if !self.nodes.contains_key(a) || !self.nodes.contains_key(b) {
-            return None;
-        }
-        if a == b {
-            return self.nodes.get(a).map(|n| vec![n]);
-        }
-        let mut prev: BTreeMap<&str, &str> = BTreeMap::new();
-        let mut seen: BTreeSet<&str> = BTreeSet::new();
-        seen.insert(a);
-        let mut q: VecDeque<&str> = VecDeque::new();
-        q.push_back(a);
-        while let Some(id) = q.pop_front() {
-            if id == b {
-                break;
-            }
-            if let Some(adj) = self.adj.get(id) {
-                for nb in adj.keys() {
-                    if seen.insert(nb.as_str()) {
-                        prev.insert(nb.as_str(), id);
-                        q.push_back(nb.as_str());
-                    }
-                }
-            }
-        }
-        if !seen.contains(b) {
-            return None;
-        }
-        let mut path = Vec::new();
-        let mut cur = b;
-        loop {
-            path.push(self.nodes.get(cur)?);
-            if cur == a {
-                break;
-            }
-            cur = prev.get(cur)?;
-        }
-        path.reverse();
-        Some(path)
+        GraphQuery::shortest_path(&self.inner, a, b)
+    }
+}
+
+/// garmr's entity graph IS a [`GraphQuery`] — the same seam the CozoDB backend
+/// implements, so the two are substitutable and a caller can be written against the
+/// trait rather than against either concrete type. Every method forwards to the
+/// shared in-memory store; there is no second implementation of any of them here.
+///
+/// The inherent methods above forward to exactly these, so existing call sites need
+/// no `use nornir_graph::GraphQuery;` and read unchanged.
+impl GraphQuery for Graph {
+    type Node = Node;
+    type Label = EdgeKind;
+
+    fn contains(&self, id: &str) -> bool {
+        GraphQuery::contains(&self.inner, id)
+    }
+    fn node(&self, id: &str) -> Option<&Node> {
+        GraphQuery::node(&self.inner, id)
+    }
+    fn node_count(&self) -> usize {
+        self.inner.node_count()
+    }
+    fn neighbours(&self, id: &str) -> Vec<(String, EdgeKind)> {
+        self.inner.neighbours(id)
+    }
+    fn degree(&self, id: &str) -> usize {
+        GraphQuery::degree(&self.inner, id)
+    }
+    fn pivot(&self, start: &str, depth: usize) -> Vec<Hit<'_>> {
+        GraphQuery::pivot(&self.inner, start, depth)
+    }
+    fn shortest_path(&self, a: &str, b: &str) -> Option<Vec<&Node>> {
+        GraphQuery::shortest_path(&self.inner, a, b)
     }
 }
 

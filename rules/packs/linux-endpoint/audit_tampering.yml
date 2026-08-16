@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Audit or security service tampering
+id: garmr-ep-audit-tamper
+status: stable
+description: >
+    Stopping or disabling auditd/journald/kunai - blinding the very telemetry
+    this rule rides on. Fires alongside garmr's collector gone-dark detection.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    selection:
+        message|contains:
+            - 'auditctl -e 0'
+            - 'systemctl stop auditd'
+            - 'systemctl stop systemd-journald'
+            - 'systemctl stop kunai'
+            - 'systemctl disable auditd'
+    condition: selection
+falsepositives:
+    - Maintenance windows (should be change-managed and rare).
+level: critical
+tags:
+    - attack.defense_evasion
+    - attack.t1562.001

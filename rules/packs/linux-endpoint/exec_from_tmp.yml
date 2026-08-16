@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Execution from a world-writable directory
+id: garmr-ep-exec-tmp
+status: stable
+description: >
+    A binary executed out of /tmp, /var/tmp or /dev/shm. Payloads land in
+    world-writable paths first; almost nothing legitimate runs from them.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    selection:
+        exe|startswith:
+            - '/tmp/'
+            - '/var/tmp/'
+            - '/dev/shm/'
+    condition: selection
+falsepositives:
+    - Installers unpacking to /tmp; some package post-install scripts.
+level: high
+tags:
+    - attack.execution
+    - attack.t1204.002

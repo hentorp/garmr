@@ -1,0 +1,22 @@
+{
+  "class_uid": 3002,
+  "class_name": "Authentication",
+  "category_name": "Identity & Access Management",
+  "activity_name": "Logon",
+  "time": "2026-08-14T06:12:44Z",
+  "severity": "Medium",
+  "status": "Failure",
+  "message": "ConsoleLogin failed for arn:aws:iam::123456789012:user/deploy-bot (MFA required)",
+  "metadata": {
+    "product": { "name": "AWS CloudTrail", "vendor_name": "AWS" },
+    "version": "1.3.0"
+  },
+  "actor": { "user": { "name": "deploy-bot", "uid": "AIDACKCEVSQ6C2EXAMPLE" } },
+  "src_endpoint": { "ip": "203.0.113.42" },
+  "device": { "hostname": "signin.amazonaws.com" },
+  "unmapped": {
+    "eventSource": "signin.amazonaws.com",
+    "awsRegion": "eu-north-1",
+    "recipientAccountId": "123456789012"
+  }
+}

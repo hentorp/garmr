@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: SSH publickey login for previously failing address
+id: garmr-auth-ssh-accept-generic
+status: stable
+description: >
+    A successful SSH authentication. Low signal alone - correlation folds it
+    with preceding failures from the same address into one case.
+author: garmr
+logsource:
+    product: linux
+    service: sshd
+detection:
+    selection:
+        service: sshd
+        message|startswith: 'Accepted'
+    condition: selection
+falsepositives:
+    - All normal logins; tune via correlation, not this rule's level.
+level: informational
+tags:
+    - attack.initial_access
+    - attack.t1078

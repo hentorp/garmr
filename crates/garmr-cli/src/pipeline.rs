@@ -19,7 +19,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::Utc;
 use garmr_core::{Case, CaseState, Detection};
-use garmr_detect::Detector;
 use garmr_store::Store;
 use tokio::sync::mpsc;
 
@@ -52,7 +51,7 @@ const COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
 /// coalesced push so the shipper retries (at-least-once, no silent loss).
 pub async fn run(
     store: Store,
-    detector: Arc<Detector>,
+    detector: Arc<crate::rules::LiveRules>,
     agent: Arc<Agent>,
     realert_secs: u64,
     inflight: Inflight,
@@ -119,6 +118,9 @@ pub async fn run(
         let outcome = match &append {
             Ok(_) => {
                 if let Err(e) = store.search.index(events.clone()).await {
+                    garmr_core::metrics::registry()
+                        .fulltext_index_failures_total
+                        .inc(&[("stage", "live")]);
                     // Search is a secondary index — the events are durable, so
                     // the pushes still ACK ok; log and move on.
                     tracing::warn!(error = %e, "full-text index failed");
@@ -141,9 +143,14 @@ pub async fn run(
         // then detection handling stays serial and index-ordered so the
         // suppression/dedup window behaves identically to the old serial loop.
         if append.is_ok() {
+            // One snapshot per BATCH: a hot reload lands between batches, never
+            // inside one, so a batch is evaluated by exactly one rule
+            // generation — half-old, half-new detections from one batch would
+            // make the dedup window's behaviour depend on reload timing.
+            let live_detector = detector.detector();
             let per_event: Vec<Vec<Detection>> =
                 gatling::gatling_forkjoin::gatling_for_each(events.len(), 0, |i| {
-                    detector.evaluate(&events[i])
+                    live_detector.evaluate(&events[i])
                 });
             for dets in per_event {
                 for det in dets {
@@ -1061,20 +1068,185 @@ pub async fn risk_loop(
 /// then every `interval_secs`. Off the ingest hot path and on the concurrent
 /// read lane, so it never blocks ingest; a failed pass is logged and retried
 /// next tick.
-pub async fn retention_loop(mgr: garmr_retention::RetentionManager, interval_secs: u64) {
+/// SLA tick: apply breach markers and send ONE batched digest per tick to the
+/// alerts room. Runs only when an SLA is configured (defaults are all-zero =
+/// off — a 100%-NeedsHuman queue must never mass-breach because a default
+/// shipped).
+///
+/// One digest, not one message per case: the first tick after enabling SLAs on
+/// an aged queue can breach hundreds of cases at once, and a message per case
+/// is a notification storm that teaches operators to mute the room — the exact
+/// opposite of what an SLA exists for.
+/// Refresh the per-source gauges (staleness / ingest lag / event volume) on a
+/// timer. This is the ONLY place the metrics surface touches the warehouse:
+/// the scrape path reads atomics, this task pays the query — through the same
+/// bounded read lane as every other consumer, at most once per minute. The
+/// families are CLEARED each pass so a decommissioned source stops being
+/// reported instead of exporting its last value forever (a gone-dark alert on
+/// it could otherwise never clear).
+pub async fn source_gauges_loop(store: Store) {
+    const REFRESH_SECS: u64 = 60;
+    const WINDOW_HOURS: u32 = 24;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(REFRESH_SECS)).await;
+        let sql = format!(
+            "SELECT source, count(*) AS events, max(event_ts) AS last_event, \
+             max(ingest_time) AS last_ingest FROM events \
+             WHERE event_ts >= now() - INTERVAL '{WINDOW_HOURS} hours' GROUP BY source"
+        );
+        let batches = match store.events.sql(sql).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::debug!(error = %e, "source-gauge refresh skipped");
+                continue;
+            }
+        };
+        let m = garmr_core::metrics::registry();
+        m.source_staleness_seconds.clear();
+        m.source_ingest_lag_seconds.clear();
+        m.source_events_window.clear();
+        let now_us = Utc::now().timestamp_micros();
+        for b in &batches {
+            use skade::arrow_array::{Array, Int64Array, StringArray, TimestampMicrosecondArray};
+            let (Some(src), Some(events), Some(last_event), Some(last_ingest)) = (
+                b.column(0).as_any().downcast_ref::<StringArray>(),
+                b.column(1).as_any().downcast_ref::<Int64Array>(),
+                b.column(2)
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>(),
+                b.column(3)
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>(),
+            ) else {
+                continue;
+            };
+            for i in 0..b.num_rows() {
+                if src.is_null(i) {
+                    continue;
+                }
+                let source = src.value(i);
+                let labels = [("source", source)];
+                if !last_ingest.is_null(i) {
+                    let staleness =
+                        (now_us.saturating_sub(last_ingest.value(i))) as f64 / 1_000_000.0;
+                    m.source_staleness_seconds.set(&labels, staleness.max(0.0));
+                    if !last_event.is_null(i) {
+                        let lag = (last_ingest.value(i).saturating_sub(last_event.value(i))) as f64
+                            / 1_000_000.0;
+                        m.source_ingest_lag_seconds.set(&labels, lag.max(0.0));
+                    }
+                }
+                if !events.is_null(i) {
+                    m.source_events_window.set(&labels, events.value(i) as f64);
+                }
+            }
+        }
+    }
+}
+
+pub async fn sla_loop(
+    store: Store,
+    cfg: garmr_core::SlaConfig,
+    matrix: Option<std::sync::Arc<garmr_agent::Matrix>>,
+    alerts_room: Option<String>,
+) {
+    const TICK_SECS: u64 = 60;
+    tracing::info!(
+        ack_minutes = cfg.ack_minutes,
+        resolve_minutes = cfg.resolve_minutes,
+        "SLA clocks running"
+    );
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(TICK_SECS)).await;
+        let newly = match store.state.apply_sla_breaches(&cfg, Utc::now()) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!(error = %e, "SLA tick failed; retrying next tick");
+                continue;
+            }
+        };
+        if newly.is_empty() {
+            continue;
+        }
+        let mut lines: Vec<String> = newly
+            .iter()
+            .map(|(id, st)| {
+                let which = match (st.ack_breached, st.resolve_breached) {
+                    (true, true) => "ack+resolve",
+                    (true, false) => "ack",
+                    _ => "resolve",
+                };
+                format!("  {id} ({which})")
+            })
+            .collect();
+        lines.sort();
+        let digest = format!(
+            "SLA breached on {} case(s):\n{}",
+            newly.len(),
+            lines.join("\n")
+        );
+        tracing::warn!(breached = newly.len(), "SLA breaches this tick");
+        if let (Some(m), Some(room)) = (&matrix, &alerts_room) {
+            if let Err(e) = m.notice(room, &digest).await {
+                tracing::warn!(error = %e, "SLA digest not delivered to Matrix");
+            }
+        }
+    }
+}
+
+pub async fn retention_loop(
+    mgr: garmr_retention::RetentionManager,
+    store: Store,
+    interval_secs: u64,
+) {
     tracing::info!(interval_secs, "retention loop started");
     loop {
         match mgr.run_once(Utc::now()).await {
-            Ok(run) if run.windows > 0 => tracing::info!(
-                windows = run.windows,
-                rows = run.rows,
-                bytes_out = run.bytes_out,
-                "retention sealed cold windows"
-            ),
+            Ok(run) if run.windows > 0 => {
+                tracing::info!(
+                    windows = run.windows,
+                    rows = run.rows,
+                    bytes_out = run.bytes_out,
+                    "retention sealed cold windows"
+                );
+                prune_fulltext_to_watermark(&store).await;
+            }
             Ok(_) => {}
             Err(e) => tracing::warn!(error = %e, "retention pass failed"),
         }
         tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+    }
+}
+
+/// Bound the full-text index to the hot window: delete indexed documents older
+/// than the retention watermark (the sealed boundary).
+///
+/// Runs only after a pass that actually sealed windows, and prunes to the
+/// WATERMARK rather than to wall-clock age — a document leaves the index only
+/// once its rows are durably in a cold archive, so full-text coverage and the
+/// hot store describe the same data. Without this the Tantivy index grows
+/// without bound under serve: rows leave hot via compaction pruning, but their
+/// index entries stayed forever.
+///
+/// Best-effort by design: a prune failure costs disk, not data — the next
+/// sealing pass retries. The one loud case is the pre-upgrade schema, where
+/// pruning CANNOT work until `garmr reindex`; that logs as an error naming the
+/// fix rather than quietly never shrinking.
+async fn prune_fulltext_to_watermark(store: &Store) {
+    let watermark = match store.state.cold_watermark_us() {
+        Ok(Some(w)) => w,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(error = %e, "full-text prune skipped: watermark unreadable");
+            return;
+        }
+    };
+    match store.search.prune_before(watermark).await {
+        Ok(()) => tracing::info!(
+            watermark_us = watermark,
+            "full-text index pruned to the hot window"
+        ),
+        Err(e) => tracing::error!(error = %e, "full-text prune failed"),
     }
 }
 

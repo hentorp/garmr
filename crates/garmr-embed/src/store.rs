@@ -32,19 +32,80 @@ use znippy_zoomies::vann::{HnswIndex, HnswParams};
 
 use crate::{cosine, EMBED_DIM};
 
+/// The durability barrier, in one place so both the data file and the parent
+/// directory cross it the same way — and so it can be made to FAIL on demand.
+///
+/// This used to be `sync_all().ok()` at both call sites, which is the crash
+/// safety being discarded on the very line that implements it: on ENOSPC or EIO
+/// the flush carried on, the rename installed a possibly torn file over the good
+/// store, and `flush()` returned `Ok(())`.
+///
+/// The injection hook is test-only and thread-local, so an armed fault cannot
+/// leak into a sibling test running in parallel.
+fn sync_barrier(f: &std::fs::File) -> std::io::Result<()> {
+    #[cfg(test)]
+    if fault::armed() {
+        return Err(std::io::Error::other("injected fsync failure (ENOSPC)"));
+    }
+    f.sync_all()
+}
+
+/// Test-only fsync fault injection. A real ENOSPC needs a full filesystem, so
+/// the durability contract would otherwise be unprovable — and an unprovable
+/// guard is how `.ok()` survived here in the first place.
+#[cfg(test)]
+mod fault {
+    use std::cell::Cell;
+    thread_local! {
+        static ARMED: Cell<bool> = const { Cell::new(false) };
+    }
+    pub(super) fn armed() -> bool {
+        ARMED.with(|a| a.get())
+    }
+    pub(super) fn arm(on: bool) {
+        ARMED.with(|a| a.set(on));
+    }
+}
+
 /// One embedded event.
 #[derive(Debug, Clone)]
 pub struct Record {
     pub ts_micros: i64,
     pub host: String,
     pub service: String,
+    /// Ingest origin, carried so a semantic hit can be filtered by a
+    /// credential's data scope. A record whose source is EMPTY is unattributable
+    /// and is therefore treated as readable by no scope at all — see
+    /// [`Record::allowed_by`].
+    pub source: String,
     pub message: String,
     pub vec: Vec<f32>,
 }
 
+impl Record {
+    /// May a credential allowed to read `allowed` see this record?
+    ///
+    /// `None` means unrestricted. An EMPTY source fails closed: a record that
+    /// cannot say where it came from must not be handed to a confined
+    /// credential, because there is no way to show it belongs to that
+    /// credential's sources. Old records rebuilt from a pre-v2 file always carry
+    /// a source, so this only ever affects genuinely unattributable rows.
+    pub fn allowed_by(&self, allowed: Option<&[String]>) -> bool {
+        match allowed {
+            None => true,
+            Some(list) => !self.source.is_empty() && list.contains(&self.source),
+        }
+    }
+}
+
 /// Magic + format version for the stamped file header (see [`encode_header`]).
 const MAGIC: &[u8; 4] = b"GVS2";
-const FORMAT_VERSION: u16 = 1;
+/// Bumped to 2 when `Record.source` was added. A v1 file fails the version gate
+/// in the header reader, which returns `None` — so an upgraded node starts with
+/// an EMPTY semantic index rather than a panic or, worse, records silently
+/// missing the field the scope filter depends on. The periodic rebuild
+/// repopulates it within one cycle.
+const FORMAT_VERSION: u16 = 2;
 
 /// A bounded, flat-file vector store. The newest `cap` records are kept in
 /// memory (and are what a `flush` persists), so both RAM and disk stay bounded.
@@ -175,16 +236,35 @@ impl VectorStore {
                 .map_err(|e| Error::store(format!("vector store write: {e}")))?;
             f.write_all(&buf)
                 .map_err(|e| Error::store(format!("vector store write: {e}")))?;
-            f.sync_all().ok();
+            // The barrier the rename depends on. If this fsync fails (ENOSPC,
+            // EIO) the bytes may not be on disk at all, and renaming anyway
+            // ATOMICALLY INSTALLS a possibly torn file over a good store — the
+            // one outcome the temp-then-rename dance exists to prevent. So the
+            // failure aborts the flush and takes the temp with it, leaving the
+            // previous store the reader is still using intact.
+            sync_barrier(&f).map_err(|e| {
+                std::fs::remove_file(&tmp).ok();
+                Error::store(format!("vector store fsync: {e}"))
+            })?;
         }
         std::fs::rename(&tmp, &self.path)
             .map_err(|e| Error::store(format!("vector store rename: {e}")))?;
         // fsync the parent dir so the rename (the directory entry) survives a
-        // crash — the index is cheap to rebuild, but this makes it durable.
+        // crash. Reported, not swallowed: a flush that returns Ok() has
+        // promised durability, and it cannot keep that promise if this step
+        // silently failed.
         if let Some(parent) = self.path.parent() {
-            if let Ok(d) = std::fs::File::open(parent) {
-                d.sync_all().ok();
-            }
+            // A bare relative filename yields an EMPTY parent, which cannot be
+            // opened. Swallowing hid that; naming it keeps the barrier honest
+            // for `VectorStore::open("vectors.bin", …)`.
+            let dir = if parent.as_os_str().is_empty() {
+                std::path::Path::new(".")
+            } else {
+                parent
+            };
+            let d = std::fs::File::open(dir)
+                .map_err(|e| Error::store(format!("vector store dir open {dir:?}: {e}")))?;
+            sync_barrier(&d).map_err(|e| Error::store(format!("vector store dir fsync: {e}")))?;
         }
         Ok(())
     }
@@ -313,6 +393,7 @@ fn encode_into(buf: &mut Vec<u8>, r: &Record) {
     buf.extend_from_slice(&r.ts_micros.to_le_bytes());
     put_str(buf, &r.host, 2);
     put_str(buf, &r.service, 2);
+    put_str(buf, &r.source, 2);
     put_str(buf, &r.message, 4);
     buf.extend_from_slice(&(r.vec.len() as u16).to_le_bytes());
     for f in &r.vec {
@@ -376,6 +457,7 @@ fn decode_one(c: &mut std::io::Cursor<&[u8]>) -> std::io::Result<Option<Record>>
     let ts = i64::from_le_bytes(tsb);
     let host = get_str(c, 2)?;
     let service = get_str(c, 2)?;
+    let source = get_str(c, 2)?;
     let message = get_str(c, 4)?;
     let mut d2 = [0u8; 2];
     c.read_exact(&mut d2)?;
@@ -397,6 +479,7 @@ fn decode_one(c: &mut std::io::Cursor<&[u8]>) -> std::io::Result<Option<Record>>
         ts_micros: ts,
         host,
         service,
+        source,
         message,
         vec,
     }))
@@ -436,6 +519,7 @@ mod tests {
             ts_micros: ts,
             host: "pve".into(),
             service: "sshd".into(),
+            source: "journald".into(),
             message: msg.into(),
             vec: vec![v; EMBED_DIM],
         }
@@ -473,6 +557,63 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The crash-safety contract, asserted on the BYTES ON DISK rather than on
+    /// a return value: when the durability barrier fails, the previous store
+    /// must still be exactly what a reader would read.
+    ///
+    /// RED before green: with `f.sync_all().ok()` restored, `flush()` returns
+    /// `Ok(())` under an injected ENOSPC and the assertion that the good store
+    /// survived fails, because the rename already replaced it.
+    #[test]
+    fn a_failed_fsync_never_clobbers_the_good_store() {
+        let dir = std::env::temp_dir().join(format!("garmr-vec-fsync-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("vectors.bin");
+
+        // A good store on disk.
+        let mut s = VectorStore::open(&path, 8, "m1").unwrap();
+        s.push(rec(1, "the good record", 0.25));
+        s.flush().unwrap();
+        let good = std::fs::read(&path).unwrap();
+        assert!(!good.is_empty(), "precondition: a real store exists");
+
+        // Now the disk fills up mid-flush of a DIFFERENT window.
+        s.push(rec(2, "the record that must not land", 0.75));
+        fault::arm(true);
+        let r = s.flush();
+        fault::arm(false);
+
+        assert!(
+            r.is_err(),
+            "a flush whose fsync failed must NOT report success — it cannot \
+             promise durability it did not get"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            good,
+            "the good store must be byte-identical: a torn write was atomically \
+             installed over it"
+        );
+        assert!(
+            !path.with_extension("tmp").exists(),
+            "the aborted temp file must not be left behind to confuse the next flush"
+        );
+
+        // Not always-red: the same flush succeeds and DOES change the file once
+        // the barrier is back.
+        s.flush().unwrap();
+        let after = std::fs::read(&path).unwrap();
+        assert_ne!(
+            after, good,
+            "a successful flush must actually rewrite the store (else this test \
+             could not tell a working barrier from a dead one)"
+        );
+        let reloaded = VectorStore::open(&path, 8, "m1").unwrap();
+        assert_eq!(reloaded.len(), 2, "both records are now durable");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn warm_builds_the_graph_off_the_query_path() {
         let mut s = VectorStore::new(std::env::temp_dir().join("garmr-vec-warm.bin"), 10, "m1");
@@ -494,9 +635,87 @@ mod tests {
             ts_micros: 1,
             host: "h".into(),
             service: "s".into(),
+            source: "j".into(),
             message: "m".into(),
             vec: vec![0.0; 3],
         });
         assert!(s.is_empty());
+    }
+
+    #[test]
+    fn an_unattributable_record_is_readable_by_no_confined_scope() {
+        // Fail-closed: a record that cannot say where it came from must not be
+        // handed to a confined credential, because there is no way to show it
+        // belongs to that credential's sources.
+        let mut r = rec(1, "m", 0.1);
+        r.source = String::new();
+        assert!(r.allowed_by(None), "unrestricted still sees everything");
+        assert!(!r.allowed_by(Some(&["journald".to_string()])));
+        assert!(!r.allowed_by(Some(&[])));
+    }
+
+    #[test]
+    fn a_scope_admits_only_its_own_sources() {
+        let mut hr = rec(1, "m", 0.1);
+        hr.source = "hr".into();
+        assert!(hr.allowed_by(Some(&["hr".to_string()])));
+        assert!(hr.allowed_by(Some(&["infra".to_string(), "hr".to_string()])));
+        assert!(!hr.allowed_by(Some(&["infra".to_string()])));
+        // An empty allow-list reads nothing, matching DataScope's contract.
+        assert!(!hr.allowed_by(Some(&[])));
+    }
+
+    #[test]
+    fn a_v1_file_loads_empty_rather_than_misreading_records() {
+        // The format bump's whole point. A v1 file has no `source` between
+        // `service` and `message`; decoding it as v2 would shift every
+        // subsequent field and produce garbage that LOOKS like data. The version
+        // gate makes it load empty instead, and the periodic rebuild refills it.
+        let dir = std::env::temp_dir().join(format!(
+            "garmr-vec-v1-{}.bin",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let mut buf = Vec::new();
+        buf.extend_from_slice(MAGIC);
+        buf.extend_from_slice(&1u16.to_le_bytes()); // the OLD version
+        let digest = "m1";
+        buf.extend_from_slice(&(digest.len() as u32).to_le_bytes());
+        buf.extend_from_slice(digest.as_bytes());
+        buf.extend_from_slice(&(EMBED_DIM as u16).to_le_bytes());
+        std::fs::write(&dir, &buf).unwrap();
+
+        let store = VectorStore::open(dir.clone(), 10, digest).unwrap();
+        assert_eq!(
+            store.len(),
+            0,
+            "a v1 file must load as empty, not as garbage"
+        );
+        std::fs::remove_file(&dir).ok();
+    }
+
+    #[test]
+    fn a_v2_record_round_trips_its_source() {
+        let path = std::env::temp_dir().join(format!(
+            "garmr-vec-v2-{}.bin",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let mut s = VectorStore::open(path.clone(), 10, "m1").unwrap();
+        let mut r = rec(7, "hello", 0.3);
+        r.source = "hr".into();
+        s.push(r);
+        s.flush().unwrap();
+
+        let reopened = VectorStore::open(path.clone(), 10, "m1").unwrap();
+        let got: Vec<&Record> = reopened.records().collect();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].source, "hr");
+        assert_eq!(got[0].message, "hello");
+        std::fs::remove_file(&path).ok();
     }
 }

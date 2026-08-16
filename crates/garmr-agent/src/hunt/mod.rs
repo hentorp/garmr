@@ -127,7 +127,9 @@ pub async fn run_hunt(
     ));
     let tools = ToolBox::new(
         store.clone(),
-        std::sync::Arc::new(std::collections::HashMap::new()),
+        std::sync::Arc::new(std::sync::RwLock::new(std::sync::Arc::new(
+            std::collections::HashMap::new(),
+        ))),
         enricher,
     );
     if let Some(sem) = sem {
@@ -277,6 +279,7 @@ fn record(report: &mut HuntReport, actor: &str, detail: &str) {
         at: Utc::now(),
         actor: actor.into(),
         detail: detail.into(),
+        entry_id: String::new(),
     });
 }
 

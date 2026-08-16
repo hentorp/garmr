@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: authorized_keys written from the command line
+id: garmr-ep-authorized-keys
+status: stable
+description: >
+    Appending to authorized_keys via echo/cat - SSH-key persistence. Humans
+    use ssh-copy-id; attackers use echo >>.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    selection:
+        message|contains|all:
+            - '>>'
+            - 'authorized_keys'
+    condition: selection
+falsepositives:
+    - Provisioning scripts that append keys (better done via config mgmt).
+level: high
+tags:
+    - attack.persistence
+    - attack.t1098.004

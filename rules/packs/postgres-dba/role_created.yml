@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Database role created
+id: garmr-pg-role-created
+status: stable
+description: >
+    CREATE ROLE / CREATE USER via pgaudit - new database principals are rare
+    and reviewable on production databases.
+author: garmr
+logsource:
+    product: linux
+    service: postgres
+detection:
+    audit:
+        service: postgres
+        message|contains: 'AUDIT:'
+    stmt:
+        message|contains:
+            - 'CREATE ROLE'
+            - 'CREATE USER'
+    condition: audit and stmt
+falsepositives:
+    - Application migrations that manage their own roles.
+level: medium
+tags:
+    - attack.persistence
+    - attack.t1136

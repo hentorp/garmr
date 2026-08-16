@@ -51,7 +51,34 @@ impl Template {
 /// Order matters: match the most specific patterns (UUID, IP, hex) before the
 /// generic number rule, or an IP would be eaten digit-by-digit.
 pub fn templatize(line: &str) -> Template {
-    let mut out = String::with_capacity(line.len());
+    // Build the whitespace-collapsed masked `text` in a SINGLE pass — the old
+    // code masked into a scratch `out` String and then ran `collapse_ws`, which
+    // allocated an intermediate `Vec<&str>` plus a second `String`. Streaming the
+    // masked characters through a whitespace collapser writes `text` directly, so
+    // this path allocates only the strings it actually returns (a hot-path win:
+    // `templatize` runs per-row against the allocator ceiling). Output is
+    // byte-identical to `split_whitespace().collect::<Vec<_>>().join(" ")`:
+    // leading whitespace is dropped, internal runs collapse to one space, and
+    // trailing whitespace is never emitted. Placeholders and masked token values
+    // never contain whitespace, so feeding them through the collapser is safe.
+    let mut text = String::with_capacity(line.len());
+    let mut pending_space = false;
+    let mut push = |s: &str| {
+        for ch in s.chars() {
+            if ch.is_whitespace() {
+                if !text.is_empty() {
+                    pending_space = true;
+                }
+            } else {
+                if pending_space {
+                    text.push(' ');
+                    pending_space = false;
+                }
+                text.push(ch);
+            }
+        }
+    };
+
     let mut params: Vec<(&'static str, String)> = Vec::new();
     let mut i = 0;
     // Invariant: `i` is always on a char boundary. The maskers only consume ASCII
@@ -60,16 +87,16 @@ pub fn templatize(line: &str) -> Template {
     while i < line.len() {
         let rest = &line[i..];
         if let Some((placeholder, len)) = match_token(rest) {
-            out.push_str(placeholder);
+            push(placeholder);
             params.push((kind_of(placeholder), rest[..len].to_string()));
             i += len;
         } else {
             let ch = rest.chars().next().unwrap();
-            out.push(ch);
+            let mut buf = [0u8; 4];
+            push(ch.encode_utf8(&mut buf));
             i += ch.len_utf8();
         }
     }
-    let text = collapse_ws(&out);
     let id = short_hash(&text);
     Template { id, text, params }
 }
@@ -177,10 +204,6 @@ fn number_len(s: &str) -> usize {
         i += 1;
     }
     i
-}
-
-fn collapse_ws(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn short_hash(s: &str) -> String {

@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Server-side file read via SQL
+id: garmr-pg-file-read
+status: stable
+description: >
+    pg_read_file / pg_ls_dir / lo_import - reading the server filesystem
+    through SQL, the reconnaissance half of a database breakout.
+author: garmr
+logsource:
+    product: linux
+    service: postgres
+detection:
+    audit:
+        service: postgres
+        message|contains: 'AUDIT:'
+    stmt:
+        message|contains:
+            - 'pg_read_file'
+            - 'pg_ls_dir'
+            - 'lo_import'
+    condition: audit and stmt
+falsepositives:
+    - Monitoring tooling inspecting server logs via SQL (rare).
+level: critical
+tags:
+    - attack.discovery
+    - attack.t1083

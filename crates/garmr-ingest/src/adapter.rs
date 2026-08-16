@@ -416,4 +416,102 @@ mod tests {
             .parse("bogus", b"{}", "prod")
             .is_err());
     }
+
+    /// The OCSF-first source strategy, tested against the shapes real pipelines
+    /// emit rather than against hand-written ideal input.
+    ///
+    /// The claim these guard is "anything Cribl/Vector can shape to OCSF gets
+    /// in" — which is worth nothing unless the resulting event carries the
+    /// fields detection and triage actually key on. A fixture that parses but
+    /// yields an event with no user and no source IP would satisfy a naive test
+    /// and be useless in production.
+    mod ocsf_source_pipelines {
+        use super::*;
+
+        fn parse_fixture(name: &str) -> Event {
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/ocsf/").to_string();
+            let raw = std::fs::read(format!("{path}{name}"))
+                .unwrap_or_else(|e| panic!("fixture {name}: {e}"));
+            let mut evs = OcsfAdapter
+                .parse(&raw, "prod")
+                .unwrap_or_else(|e| panic!("fixture {name} failed to parse: {e}"));
+            assert_eq!(evs.len(), 1, "one record should yield one event");
+            evs.pop().unwrap()
+        }
+
+        #[test]
+        fn cloudtrail_console_login_carries_the_fields_detection_needs() {
+            let e = parse_fixture("cloudtrail-console-login-failure.json");
+            // The three that matter: who, from where, and on what. A rule keyed
+            // on any of these is a large share of the community corpus.
+            assert_eq!(e.fields.get("user").map(String::as_str), Some("deploy-bot"));
+            assert_eq!(
+                e.fields.get("src_ip").map(String::as_str),
+                Some("203.0.113.42")
+            );
+            assert_eq!(e.host.as_str(), "signin.amazonaws.com");
+            // Product name becomes the service, so per-source rules and the
+            // ingest-health view can distinguish CloudTrail from Okta.
+            assert_eq!(e.service.as_str(), "AWS CloudTrail");
+            assert_eq!(e.severity.as_str(), "medium");
+            assert_eq!(
+                e.fields.get("ocsf_class").map(String::as_str),
+                Some("Authentication")
+            );
+        }
+
+        #[test]
+        fn okta_mfa_denial_carries_the_identity_and_address() {
+            let e = parse_fixture("okta-mfa-denied.json");
+            assert_eq!(
+                e.fields.get("user").map(String::as_str),
+                Some("henrik@vetra.se")
+            );
+            assert_eq!(
+                e.fields.get("src_ip").map(String::as_str),
+                Some("198.51.100.7")
+            );
+            assert_eq!(e.service.as_str(), "Okta");
+            assert_eq!(e.severity.as_str(), "high");
+        }
+
+        #[test]
+        fn m365_inbox_rule_carries_actor_ip_and_high_severity() {
+            // New-InboxRule is the classic BEC persistence move (forward+delete)
+            // — the fixture is the pipeline's output for exactly that, and it
+            // must arrive triage-ready: who, from where, on which workload, HIGH.
+            let e = parse_fixture("m365-mailbox-rule.json");
+            assert_eq!(
+                e.fields.get("user").map(String::as_str),
+                Some("eve@vetra.se")
+            );
+            assert_eq!(
+                e.fields.get("src_ip").map(String::as_str),
+                Some("198.51.100.23")
+            );
+            assert_eq!(e.host.as_str(), "Exchange");
+            assert_eq!(e.service.as_str(), "Microsoft 365");
+            assert_eq!(e.severity.as_str(), "high");
+        }
+
+        #[test]
+        fn both_fixtures_land_in_the_same_normalised_shape() {
+            // The point of the OCSF-first strategy: two structurally different
+            // producers (an AWS API audit and an identity provider) become the
+            // same event shape, so one rule can span both without a per-source
+            // mapping pipeline.
+            for f in [
+                "cloudtrail-console-login-failure.json",
+                "okta-mfa-denied.json",
+                "m365-mailbox-rule.json",
+            ] {
+                let e = parse_fixture(f);
+                assert_eq!(e.source.as_str(), "ocsf", "{f}");
+                assert_eq!(e.log_type.as_str(), "security_alert", "{f}");
+                assert_eq!(e.environment.as_str(), "prod", "{f}");
+                assert!(!e.message.is_empty(), "{f} lost its message");
+                assert!(e.fields.contains_key("user"), "{f} has no actor");
+            }
+        }
+    }
 }

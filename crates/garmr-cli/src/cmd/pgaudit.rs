@@ -379,6 +379,14 @@ pub(crate) async fn pgaudit_ship(_cli: &Cli, once: bool) -> Result<()> {
             let (text, new_off) = read_from(path, offset)?;
             offset = new_off;
             if !text.is_empty() {
+                // `+ text.as_str()`, not `+ &text`. `String + &String` normally works by
+                // coercing `&String` to `&str`, but `smartstring` — pulled in under some
+                // feature combinations of this workspace — contributes competing `Add`
+                // impls, and the coercion then stops applying: `no implementation for
+                // String + &String`. Naming `&str` explicitly is unambiguous under every
+                // feature set. Found by the 2026-08-01 fleet compile sweep, which could
+                // not reach this repo at all until its missing Git-LFS objects were
+                // restored.
                 let combined = std::mem::take(&mut partial) + text.as_str();
                 let (records, rest) = reassemble(&combined);
                 partial = rest;

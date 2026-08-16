@@ -51,13 +51,25 @@ compact_gc_grace_secs = 300          # wait before deleting a retired data dir (
                                      # in-flight queries finish reading the old files;
                                      # must exceed the longest reader — API caps at 30s)
 
+# --- Case-queue SLAs -------------------------------------------------------
+# Service-level clocks on the human queue. ALL DEFAULTS ARE 0 = OFF, on
+# purpose: a deployment whose whole queue is NeedsHuman by design (the LLM-off
+# posture) would mass-breach the moment a non-zero default shipped. An SLA is a
+# promise an operator makes explicitly. Breaches tag the case (sla:ack /
+# sla:resolve), add one transcript entry each, and send ONE batched digest per
+# tick to the Matrix alerts room.
+# [cases.sla]
+# ack_minutes = 60          # unassigned in the human queue longer than this breaches
+# resolve_minutes = 1440    # open longer than this breaches (24h)
+
 [retention]
 # Cold storage: events older than store.retention_days are sealed into
-# immutable, content-addressed archives (never silently deleted) that stay
-# queryable via `garmr cold-query`. Off by default — turn on once cold_dir is
-# set. NOTE: archived rows currently remain in the hot lakehouse too (the
-# embedded store has no row-delete yet), so this is durable cold archival, not
-# hot-space reclamation.
+# immutable, content-addressed archives that stay queryable via
+# `garmr cold-query`. Off by default — turn on once cold_dir is set. With
+# retention enabled, compaction also prunes hot rows whose window is sealed
+# (the archive keeps them queryable), so hot space is reclaimed over time;
+# each archive's `hot_pruned` flag records when that has actually happened.
+# Aged archives are removed only by an explicit `garmr retention expire`.
 enabled = false
 cold_dir = "./data/cold"             # archives + thaw scratch
 archiver = "znippy"                  # "znippy" (default) | "plain" (pure-Rust zstd-parquet)
@@ -65,7 +77,24 @@ window_days = 1                      # one archive per this many days of aged da
 interval_secs = 21600                # how often `serve` seals aged windows (6h)
 compression_level = 6                # znippy/zstd level
 
+# Per-class retention: a listed source is EXCLUDED from cold archives and its
+# rows are pruned from the hot store once older than hot_days (at the next
+# compaction; requires retention.enabled). For high-volume telemetry whose
+# value decays in days while auth/audit sources stay on the full lifecycle.
+# A listed class either keeps rows hot for hot_days or not at all — "archive,
+# but with a shorter hot window" is deliberately not expressible, because
+# pruning a row before its window seals would destroy the only copy.
+# Rows inside a legally-held window are never class-pruned.
+# [[retention.class]]
+# source = "kunai"                   # exact event.source match
+# hot_days = 10                      # prune hot rows older than this
+
 [ingest]
+# Collector-credential registry file, managed by `garmr collector
+# add|rotate|revoke|list`. Tokens are shown once at mint and stored only as
+# keyed digests (the key lives in a sibling .key file, 0600). Unset = file-based
+# credentials off; the GARMR_COLLECTORS env registry works either way.
+# collectors_file = "./data/collectors.json"
 ingest_bind = "0.0.0.0:3100"         # native canonical ingest: POST /ingest/v1/events
                                      # (JSON array or x-ndjson). The vendor-neutral
                                      # primary path — any collector that POSTs JSON.
@@ -137,6 +166,15 @@ model = "claude-opus-4-8"            # triage model (or an Ollama tag for open_a
 max_iterations = 12
 max_tokens = 4096
 daily_budget_usd = 5.0
+# [agent.pricing]                    # USD per million tokens: model = [input, output].
+#                                    # REQUIRED for a paid non-Anthropic endpoint —
+#                                    # without a price the ledger records $0 per call and
+#                                    # daily_budget_usd bounds nothing, so garmr refuses to
+#                                    # start rather than run unmetered. Local models
+#                                    # (loopback/LAN) are free and need no entry. Keys may
+#                                    # be prefixes; the longest match wins.
+# "gpt-4o" = [2.5, 10.0]
+# "gpt-4o-mini" = [0.15, 0.6]
 allow_online_lookups = false
 # geoip_dir = "./data/geoip"          # country.mmdb + asn.mmdb (MaxMind GeoLite2 / DB-IP Lite)
 ioc_feeds = ["./fixtures/ioc-demo.txt"]  # local IOC lists (one IP/line) for ip_reputation
@@ -219,6 +257,20 @@ enabled = false                      # run the executor poll loop inside `serve`
 # refused by default; add anything else specific to your network.
 # never_block = ["100.64.0.0/10", "192.168.1.1", "1.1.1.1"]
 
+# --- Scheduled online backups --------------------------------------------
+# OFF by default. This is the 24/7 path: the daemon captures while it serves,
+# unlike `garmr backup create`, which stops the writer. It must run inside the
+# daemon because redb holds an exclusive lock on the state DB — a separate
+# process cannot open it while serve is up.
+# [backup]
+# interval_secs = 0         # 0 = disabled. Floored at 300 when enabled: a faster
+#                           # schedule spends the node's IO on backups instead of
+#                           # ingest, and a backup that starves what it protects
+#                           # is not a backup.
+# dir = "./data/backups"    # one timestamped subdirectory per run
+# keep = 0                  # 0 = NO PRUNING. It never means "delete them all";
+#                           # an unset or mistyped value must not destroy images.
+
 [audit]
 # Tamper-evident audit ledger (garmr-audit): an append-only, BLAKE3-hash-chained,
 # ed25519-signed record of security-relevant actions (auth, admin decisions,
@@ -264,3 +316,21 @@ learn = false                        # run the background learner + auto-promote
 # [environment.source_trust]         # per-source trust weights (bounded source id)
 # "alloy-nixos" = 0.8
 # "cmdb" = 1.0
+
+# --- High availability (read replicas) ------------------------------------
+# Off by default: a plain single-node writer ships nothing and no follower
+# exists. Snapshot transport is the SAME object store the cold tier uses
+# (GARMR_S3_* env), under GARMR_HA_S3_PREFIX (default "ha/") so HA snapshots
+# and cold archives never collide in the bucket. Without GARMR_S3_*, setting
+# ship_interval_secs only logs a warning — there is nowhere to ship.
+#
+# What a follower does NOT get today: `state.redb` is not shipped, so a promoted
+# node starts with empty cases, risk and full-text state. Read docs/ha-design.md
+# before relying on this — the multi-node path is designed and unit-tested, but
+# has not been drilled cross-host, so no RPO/RTO numbers are published yet.
+# [ha]
+# role = "writer"             # "writer" (default) | "follower"
+# ship_interval_secs = 0      # writer: seconds between snapshot ships; 0 = off.
+#                             # This is also the effective RPO ceiling — a crash
+#                             # loses at most one interval of sealed data.
+# pull_interval_secs = 60     # follower: seconds between pulls (floored at 30)

@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Non-SSH client on the SSH port
+id: garmr-auth-ssh-bad-protocol
+status: stable
+description: >
+    sshd rejected a peer that did not speak SSH - scanners, probes and
+    protocol-confused tooling banging on port 22.
+author: garmr
+logsource:
+    product: linux
+    service: sshd
+detection:
+    selection:
+        service: sshd
+        message|contains:
+            - 'Bad protocol version identification'
+            - 'invalid format'
+    condition: selection
+falsepositives:
+    - Load balancer health checks speaking raw TCP to the port.
+level: low
+tags:
+    - attack.reconnaissance
+    - attack.t1595.002

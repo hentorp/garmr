@@ -30,7 +30,7 @@ use arrow_flight::{
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
-use garmr_core::CollectorRegistry;
+use garmr_core::SharedCollectors;
 use garmr_store::EventsHandle;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -209,11 +209,11 @@ fn warn_experimental_once() {
 #[derive(Clone)]
 pub struct FlightIngest {
     events: EventsHandle,
-    collectors: Arc<CollectorRegistry>,
+    collectors: Arc<SharedCollectors>,
 }
 
 impl FlightIngest {
-    pub fn new(events: EventsHandle, collectors: Arc<CollectorRegistry>) -> Self {
+    pub fn new(events: EventsHandle, collectors: Arc<SharedCollectors>) -> Self {
         Self { events, collectors }
     }
 
@@ -230,7 +230,7 @@ type BoxStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'stati
 /// Run the Flight ingest receiver on `addr` until the server stops.
 pub async fn serve(
     events: EventsHandle,
-    collectors: Arc<CollectorRegistry>,
+    collectors: Arc<SharedCollectors>,
     addr: SocketAddr,
 ) -> Result<(), tonic::transport::Error> {
     warn_experimental_once();
@@ -262,18 +262,24 @@ impl FlightService for FlightIngest {
         // header is never an authentication credential: with a configured
         // registry require a bearer token, and with an empty registry store the
         // batch as unverified.
-        let collector = if self.collectors.is_empty() {
-            None
-        } else {
+        let presented = if self.collectors.enabled() {
             let token = request
                 .metadata()
                 .get("authorization")
                 .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "));
-            match token.and_then(|token| self.collectors.resolve(token)) {
-                Some(collector) => Some(collector.clone()),
-                None => return Err(Status::unauthenticated("collector authentication required")),
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .map(str::to_string);
+            let registry = self.collectors.get();
+            match token
+                .as_deref()
+                .and_then(|token| registry.resolve(token))
+                .is_some()
+            {
+                true => token,
+                false => return Err(Status::unauthenticated("collector authentication required")),
             }
+        } else {
+            None
         };
 
         // Loud, one-time reminder that this transport is experimental — fires even
@@ -319,6 +325,29 @@ impl FlightService for FlightIngest {
                 max_batches,
                 max_rows_stream,
             )?;
+
+            // RE-AUTHORIZE PER BATCH. A do_put stream is a single request that may
+            // carry millions of rows over a long life, so resolving once at the
+            // head would let a revoked, rotated, or newly-expired credential keep
+            // writing until the client chose to hang up — "hot revoke" that is not
+            // hot on the one transport built for volume. Re-resolving against the
+            // current registry handle bounds that exposure to a single batch. The
+            // cost is a handle clone plus a constant-time token scan per BATCH
+            // (not per row), which is noise next to enrich + append.
+            let collector =
+                match &presented {
+                    None => None,
+                    Some(token) => {
+                        let registry = self.collectors.get();
+                        match registry.resolve(token) {
+                            Some(c) => Some(c.clone()),
+                            None => return Err(Status::unauthenticated(
+                                "collector credential is no longer valid (revoked, rotated, or \
+                                 expired) — reconnect with the current token",
+                            )),
+                        }
+                    }
+                };
 
             // Derive fields from the raw message for rows shipped without them, so
             // detection fires on raw Flight lines exactly as on native ingest.

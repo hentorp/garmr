@@ -1,0 +1,24 @@
+# Test fixture: a LEAF repo whose own unit test self-reports a functional
+# status. The parent proof test (`tests/functional_subprocess.rs`) drives this
+# through the matrix runner and asserts the emitted row lands back in the parent.
+#
+# Standalone `[workspace]` so the parent nornir workspace never builds it as a
+# member and it gets its own target dir / build lock (no nested-cargo deadlock
+# with the outer `cargo test`).
+[package]
+name = "leaf_emitter"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+nornir-testmatrix = { path = "../../..", default-features = false }
+
+[features]
+# `testmatrix` ON by default so a plain `cargo test` in this fixture builds the
+# real `functional_status` recorder (not the release no-op stub) — the matrix
+# runner drives it with a plain `cargo test`, so the default must carry it.
+default = ["testmatrix"]
+testmatrix = ["nornir-testmatrix/testmatrix"]
+
+[workspace]

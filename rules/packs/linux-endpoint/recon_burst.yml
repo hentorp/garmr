@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Host reconnaissance command
+id: garmr-ep-recon
+status: stable
+description: >
+    id/whoami/uname -a immediately after access is the first thing every
+    intruder types. One command is noise; the burst-fold groups a session.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    selection:
+        message|contains:
+            - 'uname -a'
+            - 'cat /etc/passwd'
+            - 'cat /etc/shadow'
+    condition: selection
+falsepositives:
+    - Admins and provisioning doing inventory.
+level: low
+tags:
+    - attack.discovery
+    - attack.t1082

@@ -95,7 +95,9 @@ pub async fn propose_rule(
     ));
     let tools = ToolBox::new(
         store.clone(),
-        std::sync::Arc::new(std::collections::HashMap::new()),
+        std::sync::Arc::new(std::sync::RwLock::new(std::sync::Arc::new(
+            std::collections::HashMap::new(),
+        ))),
         enricher,
     );
     let schemas = author_tool_schemas();

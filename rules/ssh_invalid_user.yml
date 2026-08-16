@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
 title: SSH login attempt for invalid user
 id: garmr-ssh-invalid-user
 status: experimental

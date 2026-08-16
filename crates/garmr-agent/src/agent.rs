@@ -70,7 +70,7 @@ impl Agent {
     pub fn new(
         model_router: Arc<garmr_llm::ModelRouter>,
         store: Store,
-        rules: Arc<HashMap<String, String>>,
+        rules: Arc<std::sync::RwLock<Arc<HashMap<String, String>>>>,
         cfg: AgentConfig,
         notifier: Arc<crate::sink::Notifier>,
         router: Arc<garmr_route::AlertRouter>,
@@ -225,6 +225,20 @@ impl Agent {
             ),
             Utc::now(),
         );
+
+        // Prefilter tier: one cheap, no-tools call deciding whether this case
+        // deserves the full tool-use loop. Only when configured, only for cases
+        // that are NOT high/critical and carry NO injection signals — the
+        // expensive loop with its defenses is exactly what those need. Every
+        // failure direction (call error, refusal, unparseable answer, low
+        // confidence) falls through to the full loop: the prefilter can save
+        // money, never skip scrutiny.
+        if self
+            .prefilter_closed(case, &resolved, &day, !signals.is_empty())
+            .await?
+        {
+            return Ok(());
+        }
 
         let mut messages = vec![Message::user_text(self.initial_context(case))];
         // Built-in read-only tools + any external MCP tools the operator wired
@@ -381,6 +395,113 @@ impl Agent {
             e.field("user").unwrap_or("-"),
             e.message,
         )
+    }
+
+    /// Run the prefilter, closing the case when it confidently reads as
+    /// routine. Returns whether the case was CLOSED here (true = triage done).
+    ///
+    /// The verdict it can produce is exactly one: Benign, at the confidence the
+    /// model itself reported. It can never escalate, never propose an action,
+    /// and never mark anything malicious — those judgements stay with the full
+    /// loop. The prediction is recorded with the PREFILTER model's identity, so
+    /// the analyst feedback plane can measure the cheap model's error rate
+    /// separately from the full model's.
+    async fn prefilter_closed(
+        &self,
+        case: &mut Case,
+        resolved: &garmr_llm::Resolved,
+        day: &str,
+        injection: bool,
+    ) -> Result<bool> {
+        let Some(pf_model) = self.cfg.prefilter_model.clone() else {
+            return Ok(false);
+        };
+        if injection {
+            return Ok(false);
+        }
+        // High/critical detections skip straight to the full loop: the cost of a
+        // full triage is exactly what such a case has earned.
+        if matches!(case.trigger.level.as_str(), "high" | "critical") {
+            return Ok(false);
+        }
+
+        let req = LlmRequest {
+            model: pf_model.clone(),
+            system: "You are a SOC pre-filter. Decide whether this detection needs a full \
+                     investigation. Answer with EXACTLY one line: either \
+                     `INVESTIGATE - <one short reason>` or `ROUTINE <confidence 0-100> - \
+                     <one short reason>`. Say ROUTINE only for events that are clearly \
+                     benign operational noise. When in doubt, INVESTIGATE."
+                .to_string(),
+            messages: vec![Message::user_text(self.initial_context(case))],
+            tools: Vec::new(),
+            max_tokens: 200,
+        };
+        let started = std::time::Instant::now();
+        let resp = match resolved.provider.complete(&req).await {
+            Ok(r) => r,
+            Err(e) => {
+                // Fail OPEN to the full loop: a dead cheap model must not block
+                // triage, and must be visible in the transcript.
+                case.record(
+                    "prefilter",
+                    format!("prefilter unavailable ({e}) — full triage"),
+                    Utc::now(),
+                );
+                return Ok(false);
+            }
+        };
+        self.charge_budget(day, &pf_model, resp.usage)?;
+
+        let text = resp.text.trim().to_string();
+        let Some((conf, reason)) = parse_prefilter_routine(&text) else {
+            case.record(
+                "prefilter",
+                format!("prefilter says full triage ({text})"),
+                Utc::now(),
+            );
+            return Ok(false);
+        };
+        if conf < 0.7 {
+            case.record(
+                "prefilter",
+                format!("prefilter unsure (confidence {conf:.2}) — full triage"),
+                Utc::now(),
+            );
+            return Ok(false);
+        }
+
+        case.record(
+            "prefilter",
+            format!("closed as routine by {pf_model} (confidence {conf:.2}): {reason}"),
+            Utc::now(),
+        );
+        let mut metrics = TriageMetrics::default();
+        metrics.add_call(resp.usage, &pf_model);
+        metrics.stop_reason = format!("{:?}", resp.stop_reason);
+        metrics.latency_ms = started.elapsed().as_millis() as u64;
+        let verdict = Verdict {
+            disposition: Disposition::Benign,
+            severity: 1,
+            confidence: conf,
+            rationale: format!("[prefilter] {reason}"),
+            proposed_action: None,
+        };
+        // The prediction names the PREFILTER model — measuring the cheap
+        // model's error rate requires never attributing its calls to the full
+        // model.
+        let mut pf_resolved = resolved.clone();
+        pf_resolved.model = pf_model;
+        pf_resolved.from_catalog = false;
+        self.finish(
+            case,
+            verdict,
+            SchemaValidation::Valid,
+            metrics,
+            &pf_resolved,
+        )
+        .await?;
+        Ok(true)
     }
 
     async fn finish(
@@ -600,6 +721,25 @@ impl Agent {
 /// exact lenient behavior it always had (so case state is unchanged), but the
 /// returned [`SchemaValidation`] is recorded on the immutable prediction instead
 /// of being swallowed, so a malformed model output is on the record.
+/// Parse a `ROUTINE <0-100> - reason` prefilter answer. `None` means "run the
+/// full loop" — the only safe reading of anything unexpected.
+fn parse_prefilter_routine(text: &str) -> Option<(f32, String)> {
+    let rest = text.strip_prefix("ROUTINE")?.trim_start();
+    let (num, reason) = match rest.split_once('-') {
+        Some((n, r)) => (n.trim(), r.trim()),
+        None => (rest.trim(), ""),
+    };
+    let conf: f32 = num.parse::<u8>().ok().filter(|c| *c <= 100)? as f32 / 100.0;
+    Some((
+        conf,
+        if reason.is_empty() {
+            "routine operational noise".to_string()
+        } else {
+            reason.to_string()
+        },
+    ))
+}
+
 fn parse_verdict(input: &Value) -> (Verdict, SchemaValidation) {
     let mut defaulted: Vec<String> = Vec::new();
     let disposition = match input.get("disposition").and_then(Value::as_str) {
@@ -772,5 +912,24 @@ mod tests {
             }
             other => panic!("expected Defaulted, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn prefilter_parsing_fails_open_on_everything_unexpected() {
+        // The only safe reading of anything but a well-formed ROUTINE answer is
+        // "run the full loop" — the prefilter may save money, never scrutiny.
+        assert!(parse_prefilter_routine("INVESTIGATE - new admin login").is_none());
+        assert!(parse_prefilter_routine("").is_none());
+        assert!(parse_prefilter_routine("routine 90 - lowercase is not the contract").is_none());
+        assert!(parse_prefilter_routine("ROUTINE maybe - no number").is_none());
+        assert!(parse_prefilter_routine("ROUTINE 250 - out of range").is_none());
+
+        let (conf, reason) =
+            parse_prefilter_routine("ROUTINE 85 - scheduled backup chatter").unwrap();
+        assert!((conf - 0.85).abs() < 1e-6);
+        assert_eq!(reason, "scheduled backup chatter");
+        // A bare confidence still parses; the reason gets a stated default.
+        let (conf, _) = parse_prefilter_routine("ROUTINE 70").unwrap();
+        assert!((conf - 0.70).abs() < 1e-6);
     }
 }

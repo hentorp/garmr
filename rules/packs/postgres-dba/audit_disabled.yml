@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: pgaudit configuration weakened
+id: garmr-pg-audit-off
+status: stable
+description: >
+    Setting pgaudit.log to none (or resetting it) - turning off the audit
+    stream this pack rides on.
+author: garmr
+logsource:
+    product: linux
+    service: postgres
+detection:
+    audit:
+        service: postgres
+        message|contains: 'AUDIT:'
+    stmt:
+        message|contains: 'pgaudit.log'
+    condition: audit and stmt
+falsepositives:
+    - Legitimate audit-scope tuning (change-managed).
+level: critical
+tags:
+    - attack.defense_evasion
+    - attack.t1562.002

@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Table trigger disabled
+id: garmr-pg-trigger-off
+status: stable
+description: >
+    ALTER TABLE ... DISABLE TRIGGER - integrity and audit triggers are exactly
+    what gets disabled before quiet data manipulation.
+author: garmr
+logsource:
+    product: linux
+    service: postgres
+detection:
+    audit:
+        service: postgres
+        message|contains: 'AUDIT:'
+    stmt:
+        message|contains: 'DISABLE TRIGGER'
+    condition: audit and stmt
+falsepositives:
+    - Bulk loads that disable triggers for speed (change-managed).
+level: high
+tags:
+    - attack.defense_evasion
+    - attack.t1562

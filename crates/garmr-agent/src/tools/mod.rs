@@ -75,7 +75,9 @@ fn render_hybrid(res: &garmr_query::HybridResult) -> String {
 
 pub struct ToolBox {
     store: Store,
-    rules: Arc<HashMap<String, String>>,
+    /// Swappable: serve hot-reloads rules, and this handle follows the same
+    /// generation as the live detector.
+    rules: Arc<std::sync::RwLock<Arc<HashMap<String, String>>>>,
     enricher: Arc<garmr_enrich::Enricher>,
     /// The shared semantic backend for `hybrid_search` (Phase 11). Bound once by
     /// the daemon with the SAME embedder + index the ask HTTP path uses, so the
@@ -89,7 +91,7 @@ pub struct ToolBox {
 impl ToolBox {
     pub fn new(
         store: Store,
-        rules: Arc<HashMap<String, String>>,
+        rules: Arc<std::sync::RwLock<Arc<HashMap<String, String>>>>,
         enricher: Arc<garmr_enrich::Enricher>,
     ) -> Self {
         Self {
@@ -361,6 +363,8 @@ impl ToolBox {
     fn get_rule(&self, input: &Value) -> String {
         let id = input.get("rule_id").and_then(Value::as_str).unwrap_or("");
         self.rules
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
             .get(id)
             .cloned()
             .unwrap_or_else(|| format!("no rule with id {id} loaded"))

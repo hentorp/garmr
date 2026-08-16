@@ -1,0 +1,85 @@
+# CloudTrail → OCSF → garmr.
+#
+# The OCSF-first strategy: garmr does not ship a CloudTrail parser. Anything a
+# pipeline can shape into OCSF is ingestible, so the mapping lives here — where
+# you can change it without rebuilding garmr — and the SHAPE is what garmr
+# guarantees to consume. `fixtures/ocsf/cloudtrail-console-login-failure.json`
+# is the output of this transform, and a test in garmr-ingest asserts the event
+# it becomes still carries user, src_ip, host and service.
+#
+# Reads CloudTrail JSON from an S3 bucket via SQS notifications (the standard
+# delivery path). Swap the source for `file` to replay an export.
+
+[sources.cloudtrail]
+type = "aws_s3"
+region = "eu-north-1"
+sqs.queue_url = "${CLOUDTRAIL_SQS_URL}"
+
+[transforms.records]
+type = "remap"
+inputs = ["cloudtrail"]
+# One S3 object holds {"Records": [...]}; emit one event per record.
+source = '''
+. = array!(parse_json!(string!(.message)).Records)
+'''
+
+[transforms.ocsf]
+type = "remap"
+inputs = ["records"]
+source = '''
+# Authentication (3002) for sign-in events, API Activity (6003) otherwise.
+# Getting the class wrong is worse than a coarse mapping: a rule scoped to
+# authentication silently stops matching.
+is_signin = .eventSource == "signin.amazonaws.com"
+
+.class_uid = if is_signin { 3002 } else { 6003 }
+.class_name = if is_signin { "Authentication" } else { "API Activity" }
+.category_name = "Identity & Access Management"
+.activity_name = string!(.eventName)
+.time = string!(.eventTime)
+.status = if exists(.errorCode) { "Failure" } else { "Success" }
+# Severity is garmr's triage input, so a failed sign-in must not look routine.
+.severity = if .status == "Failure" && is_signin { "Medium" } else { "Informational" }
+
+.metadata.product.name = "AWS CloudTrail"
+.metadata.product.vendor_name = "AWS"
+.metadata.version = "1.3.0"
+
+# userIdentity varies by principal type; prefer the readable name and fall back
+# rather than dropping the actor, which would make the event untriageable.
+.actor.user.name = to_string(.userIdentity.userName) ??
+                   to_string(.userIdentity.sessionContext.sessionIssuer.userName) ??
+                   to_string(.userIdentity.arn) ?? "unknown"
+.actor.user.uid = to_string(.userIdentity.principalId) ?? ""
+
+.src_endpoint.ip = to_string(.sourceIPAddress) ?? ""
+.device.hostname = to_string(.eventSource) ?? ""
+
+.message = join!([string!(.eventName), "by", .actor.user.name,
+                  to_string(.errorMessage) ?? ""], " ")
+
+# Keep the provider-specific remainder rather than discarding it: an
+# investigation needs the account and region, and OCSF has no home for them.
+.unmapped.eventSource = to_string(.eventSource) ?? ""
+.unmapped.awsRegion = to_string(.awsRegion) ?? ""
+.unmapped.recipientAccountId = to_string(.recipientAccountId) ?? ""
+
+# Drop the raw fields now that they are mapped; garmr stores what arrives.
+del(.userIdentity); del(.requestParameters); del(.responseElements)
+del(.eventTime); del(.eventName); del(.sourceIPAddress); del(.awsRegion)
+del(.recipientAccountId); del(.errorCode); del(.errorMessage)
+'''
+
+[sinks.garmr]
+type = "loki"
+inputs = ["ocsf"]
+endpoint = "${GARMR_LOKI_URL}"
+encoding.codec = "json"
+# `source = "ocsf"` is what routes this stream through the OCSF adapter on the
+# LIVE path (garmr-ingest/src/loki.rs). Without it the documents are stored as
+# raw lines and the actor/address fields never reach detection.
+labels.source = "ocsf"
+# The collector token — garmr stamps it on every event, and a non-loopback
+# ingest bind refuses unauthenticated collectors.
+auth.strategy = "bearer"
+auth.token = "${GARMR_COLLECTOR_TOKEN}"

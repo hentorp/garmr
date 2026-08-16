@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Account locked after repeated failures
+id: garmr-auth-account-locked
+status: stable
+description: >
+    pam_faillock (or equivalent) locked an account after consecutive failures -
+    the tail end of a brute-force attempt, or a user under attack.
+author: garmr
+logsource:
+    product: linux
+detection:
+    selection:
+        message|contains:
+            - 'account locked due to'
+            - 'Consecutive login failures'
+    condition: selection
+falsepositives:
+    - A forgotten password hitting the lockout threshold.
+level: medium
+tags:
+    - attack.credential_access
+    - attack.t1110

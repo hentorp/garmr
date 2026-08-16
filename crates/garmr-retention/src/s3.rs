@@ -63,6 +63,8 @@ impl S3Cold {
             .with_allow_http(allow_http)
             // MinIO (and most self-hosted S3) speak path-style, not virtual-host.
             .with_virtual_hosted_style_request(false)
+            // Shared with HA replication — see `crate::object_retry`.
+            .with_retry(crate::object_retry())
             .build()
             .map_err(|e| Error::store(format!("S3 cold-tier init ({endpoint}): {e}")))?;
         tracing::info!(%endpoint, %bucket, "cold tier: S3 backend configured");
@@ -85,6 +87,31 @@ impl S3Cold {
             .await
             .map_err(|e| Error::store(format!("S3 upload {key}: {e}")))?;
         Ok(())
+    }
+
+    /// Delete the object at `key`.
+    ///
+    /// Retention expiry MUST call this. When S3 is configured, sealing uploads
+    /// the archive and then drops the local copy to reclaim disk — so an expiry
+    /// that only unlinks the local path deletes a file that is already gone and
+    /// leaves the real data in the bucket, while removing the manifest row that
+    /// was the last pointer to it. The operator sees a successful expiry, the
+    /// data survives, and nothing in garmr can find it again.
+    ///
+    /// A missing object is SUCCESS, not an error: expiry is idempotent by
+    /// design (a retried run must converge), and "the object is not there" is
+    /// exactly the post-condition being asked for.
+    ///
+    /// What this cannot promise: bucket versioning, replication or backups may
+    /// retain copies outside garmr's reach. That is an object-store
+    /// configuration question, and the deletion certificate says what garmr
+    /// verifiably did rather than making a claim about physical media.
+    pub async fn delete(&self, key: &str) -> Result<()> {
+        match self.store.delete(&Self::key(key)).await {
+            Ok(()) => Ok(()),
+            Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(e) => Err(Error::store(format!("S3 delete {key}: {e}"))),
+        }
     }
 
     /// Fetch an archive from `key` to `local` (for the verify + thaw path).

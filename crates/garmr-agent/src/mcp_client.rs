@@ -57,6 +57,27 @@ const MAX_TOOL_OUTPUT_CHARS: usize = 16 * 1024;
 /// external name can never equal a built-in tool name.
 const NS_PREFIX: &str = "mcp";
 
+/// Audit sink for external-MCP lifecycle events. garmr-agent cannot depend on
+/// garmr-audit (the dependency points the other way), so the ledger is
+/// injected: the CLI installs an impl that appends best-effort, and the
+/// default records nowhere. Both hooks are fire-and-forget by design — an
+/// audit sink that could stall or fail a triage tool call would let the
+/// ledger break the very investigations it exists to reconstruct.
+pub trait McpAudit: Send + Sync {
+    /// A server connected and its tools were offered to the agent.
+    fn register(&self, server: &str, tools: usize) {
+        let _ = (server, tools);
+    }
+    /// One external tool call finished. `tool` is the namespaced name.
+    fn call(&self, tool: &str, is_error: bool) {
+        let _ = (tool, is_error);
+    }
+}
+
+/// The default sink: records nowhere.
+struct NoopMcpAudit;
+impl McpAudit for NoopMcpAudit {}
+
 struct Server {
     /// The live MCP session (child process + protocol). Held for the agent's
     /// lifetime; dropping it tears the child down.
@@ -71,6 +92,9 @@ pub struct McpClients {
     servers: Vec<Server>,
     /// `mcp__<server>__<tool>` -> (server index, remote tool name).
     routes: HashMap<String, (usize, String)>,
+    /// Where register/call events go. Injected by the binary that owns the
+    /// audit ledger; a no-op everywhere else.
+    audit: std::sync::Arc<dyn McpAudit>,
 }
 
 impl McpClients {
@@ -80,6 +104,7 @@ impl McpClients {
         Arc::new(Self {
             servers: Vec::new(),
             routes: HashMap::new(),
+            audit: std::sync::Arc::new(NoopMcpAudit),
         })
     }
 
@@ -89,7 +114,10 @@ impl McpClients {
     /// server delays startup by at most `CONNECT_TIMEOUT`, not the sum. Returns
     /// an `Arc` so the agent and any number of triage tasks can share one live
     /// session per server.
-    pub async fn connect(configs: &[McpServerConfig]) -> Arc<Self> {
+    pub async fn connect(
+        configs: &[McpServerConfig],
+        audit: std::sync::Arc<dyn McpAudit>,
+    ) -> Arc<Self> {
         // Spawn each connect concurrently; keep config order for deterministic
         // tool-numbering by awaiting the handles in the order they were pushed.
         let mut handles = Vec::new();
@@ -133,6 +161,7 @@ impl McpClients {
                         schemas.push(schema);
                     }
                     tracing::info!(server = %name, tools = schemas.len(), "external MCP server connected");
+                    audit.register(&name, schemas.len());
                     servers.push(Server { service, schemas });
                 }
                 Err(e) => {
@@ -147,7 +176,11 @@ impl McpClients {
                 "MCP-client tools available to the agent"
             );
         }
-        Arc::new(Self { servers, routes })
+        Arc::new(Self {
+            servers,
+            routes,
+            audit,
+        })
     }
 
     async fn connect_one(
@@ -222,24 +255,32 @@ impl McpClients {
         match input {
             Value::Object(m) => params.arguments = Some(m.clone()),
             Value::Null => {}
-            _ => return Some(("ERROR: tool arguments must be a JSON object".into(), true)),
+            _ => {
+                self.audit.call(name, true);
+                return Some(("ERROR: tool arguments must be a JSON object".into(), true));
+            }
         }
 
         let result = match tokio::time::timeout(TOOL_CALL_TIMEOUT, service.call_tool(params)).await
         {
             Ok(Ok(r)) => r,
-            Ok(Err(e)) => return Some((format!("ERROR: external MCP tool failed: {e}"), true)),
+            Ok(Err(e)) => {
+                self.audit.call(name, true);
+                return Some((format!("ERROR: external MCP tool failed: {e}"), true));
+            }
             Err(_) => {
+                self.audit.call(name, true);
                 return Some((
                     format!(
                         "ERROR: external MCP tool did not respond within {}s",
                         TOOL_CALL_TIMEOUT.as_secs()
                     ),
                     true,
-                ))
+                ));
             }
         };
         let is_error = result.is_error.unwrap_or(false);
+        self.audit.call(name, is_error);
         Some((render_result(&result), is_error))
     }
 }
@@ -482,7 +523,11 @@ for line in sys.stdin:
             env: Default::default(),
             enabled: true,
         };
-        let clients = McpClients::connect(std::slice::from_ref(&cfg)).await;
+        let clients = McpClients::connect(
+            std::slice::from_ref(&cfg),
+            std::sync::Arc::new(NoopMcpAudit),
+        )
+        .await;
 
         // Discovery: the echo tool is namespaced and offered.
         let schemas = clients.tool_schemas();

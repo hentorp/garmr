@@ -19,6 +19,8 @@ use std::process::Command;
 
 use anyhow::{bail, Result};
 
+mod vendor_drift;
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("✗ {e:#}");
@@ -30,6 +32,7 @@ fn run() -> Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("bench") => bench(args.collect()),
+        Some("vendor-drift") => vendor_drift::vendor_drift(args.collect()),
         Some("help") | Some("--help") | Some("-h") | None => {
             usage();
             Ok(())
@@ -47,13 +50,18 @@ fn usage() {
         "usage: cargo xtask <verb>\n\n\
          verbs:\n  \
          bench [--preview|--heavy]   run the garmr nornir bench arms (BenchRun JSON on stdout)\n  \
+         vendor-drift [--bless]      compare vendor/<sibling>/** to the sibling's origin/<default>\n                               \
+         [--require-coverage]  (fail instead of NOT COVERED when a sibling is absent)\n  \
          help                        show this message\n"
     );
 }
 
 /// The garmr workspace root (this crate's parent directory).
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask has a parent").to_path_buf()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask has a parent")
+        .to_path_buf()
 }
 
 fn bench(rest: Vec<String>) -> Result<()> {

@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Marking a file executable in a temp path
+id: garmr-ep-chmod-tmp
+status: stable
+description: >
+    chmod +x on a file under /tmp, /var/tmp or /dev/shm - staging a dropped
+    payload for execution.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    selection:
+        message|contains|all:
+            - 'chmod'
+            - '+x'
+    paths:
+        message|contains:
+            - '/tmp/'
+            - '/var/tmp/'
+            - '/dev/shm/'
+    condition: selection and paths
+falsepositives:
+    - Build scripts on developer machines.
+level: high
+tags:
+    - attack.execution
+    - attack.t1222.002

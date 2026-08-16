@@ -126,8 +126,11 @@ impl Fetch {
         me.err.set(None);
         leptos::task::spawn_local(async move {
             let res = api::send_get(&url).await;
-            if me.gen.get_untracked() != g {
-                return; // superseded
+            // `try_`: navigating away disposes the view that owns this Fetch
+            // while the request is still in flight, and reading a disposed
+            // signal outright panics — taking the whole wasm module with it.
+            if me.gen.try_get_untracked() != Some(g) {
+                return; // superseded, or the view is gone
             }
             match res {
                 Ok(v) => {
@@ -257,6 +260,18 @@ fn authz_or_error(e: ApiError, retry: Option<impl Fn() + Copy + Send + Sync + 's
     .into_any()
 }
 
+/// The query string a view publishes for its own filters, with the global time
+/// range carried through untouched.
+///
+/// Filters kept only in view-local signals do not survive: every query write
+/// re-renders the view and rebuilds those signals from the URL, so a time-range
+/// chip or a lifecycle chip silently erased whatever had been typed. Publishing
+/// through here puts them where they last — and makes the filtered screen a link
+/// worth sharing. Empty values are omitted, so "no filter" reads as no parameter.
+pub fn publish_query(pairs: &[(&str, String)], current: &str) -> String {
+    crate::timerange::carry(current, &crate::route::build_query(pairs))
+}
+
 // ---- small render helpers -------------------------------------------------
 
 /// The array under `key` of a JSON value.
@@ -362,4 +377,74 @@ pub fn tab_panel(id: &str, body: AnyView) -> AnyView {
         </div>
     }
     .into_any()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::route::param_of;
+    use crate::TimeRange;
+
+    /// The bug this builder exists to prevent: two filters on one screen wiping
+    /// each other. The Investigations queue publishes its lifecycle chip and its
+    /// text box together, so clicking a chip keeps what was typed and committing
+    /// the text keeps the chip.
+    #[test]
+    fn filters_on_one_screen_do_not_wipe_each_other() {
+        let q = publish_query(
+            &[("state", "closed".into()), ("q", "sshd".into())],
+            "state=needs_human&q=old&t=24h",
+        );
+        assert_eq!(param_of(&q, "state"), Some("closed".into()));
+        assert_eq!(param_of(&q, "q"), Some("sshd".into()));
+        // …and neither displaces the window the analyst chose.
+        assert_eq!(crate::timerange::read_param(&q), Some(TimeRange::Last(24)));
+        assert_eq!(q.matches("t=").count(), 1, "duplicate range params in {q}");
+    }
+
+    /// The queue publishes four filters as one pair set — lifecycle, ownership
+    /// lane, tag and text — so switching lanes keeps the rest. This is the
+    /// two-analyst contract: "my escalation-tagged needs-human cases" is one
+    /// shareable URL.
+    #[test]
+    fn ownership_and_tag_filters_share_the_url() {
+        let q = publish_query(
+            &[
+                ("state", "needs_human".into()),
+                ("assignee", "(unassigned)".into()),
+                ("tag", "escalation".into()),
+                ("q", "sshd".into()),
+            ],
+            "state=closed&t=24h",
+        );
+        assert_eq!(param_of(&q, "state"), Some("needs_human".into()));
+        assert_eq!(param_of(&q, "assignee"), Some("(unassigned)".into()));
+        assert_eq!(param_of(&q, "tag"), Some("escalation".into()));
+        assert_eq!(param_of(&q, "q"), Some("sshd".into()));
+        assert_eq!(crate::timerange::read_param(&q), Some(TimeRange::Last(24)));
+    }
+
+    /// "No filter" must read as no parameter, or a shared link would filter on
+    /// the empty string and show nothing.
+    #[test]
+    fn an_empty_filter_leaves_no_parameter() {
+        let q = publish_query(&[("state", String::new()), ("q", String::new())], "t=24h");
+        assert_eq!(param_of(&q, "state"), None);
+        assert_eq!(param_of(&q, "q"), None);
+        assert_eq!(crate::timerange::read_param(&q), Some(TimeRange::Last(24)));
+    }
+
+    /// Filter text is arbitrary operator input and must round-trip exactly.
+    #[test]
+    fn awkward_filter_text_survives_the_url() {
+        for raw in ["rule=ssh & host=pve", "a/b?c", "unicode-ÅÄÖ", "50%"] {
+            let q = publish_query(&[("q", raw.to_string())], "t=72h");
+            assert_eq!(
+                param_of(&q, "q").as_deref(),
+                Some(raw),
+                "{raw} did not round-trip"
+            );
+            assert_eq!(crate::timerange::read_param(&q), Some(TimeRange::Last(72)));
+        }
+    }
 }

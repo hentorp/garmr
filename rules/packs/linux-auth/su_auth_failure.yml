@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: su authentication failure
+id: garmr-auth-su-failure
+status: stable
+description: >
+    A failed su attempt - trying to become another user (usually root) with a
+    wrong password.
+author: garmr
+logsource:
+    product: linux
+detection:
+    selection:
+        service: su
+        message|contains: 'FAILED SU'
+    condition: selection
+falsepositives:
+    - Habitual su users mistyping.
+level: medium
+tags:
+    - attack.privilege_escalation
+    - attack.t1548

@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Scripted reverse-shell one-liner
+id: garmr-ep-script-revshell
+status: stable
+description: >
+    python/perl one-liners wiring a socket to a shell - the standard reverse
+    shell cheatsheet patterns.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    py:
+        message|contains|all:
+            - 'python'
+            - 'socket'
+            - 'subprocess'
+    pl:
+        message|contains|all:
+            - 'perl'
+            - 'Socket'
+            - 'exec'
+    condition: py or pl
+falsepositives:
+    - Legitimate scripts using sockets AND subprocess in one line are rare.
+level: critical
+tags:
+    - attack.command_and_control
+    - attack.t1059.006

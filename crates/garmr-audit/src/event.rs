@@ -192,6 +192,27 @@ pub mod action {
     pub const QUERY: &str = "data.query";
     pub const SEARCH_SENSITIVE: &str = "data.search_sensitive";
     pub const EXPORT: &str = "data.export";
+    /// A cold archive was deleted by a retention run. Deliberately its own
+    /// action rather than a generic delete: this is the one operation that
+    /// destroys evidence, so it must be greppable in the ledger on its own, and
+    /// an auditor asking "what was erased, when, and under which policy" needs
+    /// to find it without knowing what else shares a name.
+    pub const RETENTION_EXPIRE: &str = "retention.expire";
+    /// A legal hold was placed on or cleared from a cold archive.
+    pub const RETENTION_LEGAL_HOLD: &str = "retention.legal_hold";
+    /// A targeted erasure was executed: a persistent tombstone placed and the
+    /// matching rows removed. Its own action for the same reason as
+    /// RETENTION_EXPIRE — destroying data must be findable on its own, and
+    /// "prove what you erased" starts from this record.
+    pub const DATA_ERASE: &str = "data.erase";
+    /// Case ownership changed (assign/unassign).
+    pub const CASE_ASSIGN: &str = "case.assign";
+    /// An analyst note was added to a case transcript.
+    pub const CASE_COMMENT: &str = "case.comment";
+    /// Case tags changed.
+    pub const CASE_TAG: &str = "case.tag";
+    /// Two cases were linked.
+    pub const CASE_LINK: &str = "case.link";
     pub const RULE_PROPOSE: &str = "rule.propose";
     pub const RULE_DECIDE: &str = "rule.decide";
     pub const THRESHOLD_PROPOSE: &str = "threshold.propose";

@@ -153,6 +153,7 @@ pub fn env_edge_findings(
                     ev,
                     "env-new-edge",
                     "host communicates with a new peer (not in the Trusted baseline)",
+                    tags_for("env-new-edge"),
                     ip,
                     view,
                     policy,
@@ -175,6 +176,7 @@ pub fn env_edge_findings(
                         ev,
                         "env-new-identity",
                         "a new identity acts on a host with an established baseline",
+                        tags_for("env-new-identity"),
                         ident,
                         view,
                         policy,
@@ -189,11 +191,57 @@ pub fn env_edge_findings(
     out
 }
 
+/// Build one environment-model finding.
+///
+/// `attack` carries the ATT&CK technique ids this detector can **defensibly**
+/// claim. Empty is a deliberate answer, not an omission: an unbaselined
+/// observation that maps to several techniques equally well is reported
+/// untagged, because a wrong tag silently mis-scores the coverage matrix a
+/// buyer reads as evidence of what garmr detects.
+/// The environment-drift detectors, as `(id, title, level, technique ids)`.
+///
+/// The SINGLE source of these tags: the detection sites below index into it
+/// rather than repeating literals, so the ATT&CK coverage report and the
+/// findings that actually fire can never disagree.
+///
+/// `env-new-edge` carries no technique deliberately. An unbaselined peer fits
+/// lateral movement (T1021), C2 (T1071), exfiltration (T1041) and a newly
+/// deployed legitimate service equally well; naming one would put a guess into
+/// a matrix that is read as evidence.
+pub const ENV_DETECTORS: &[(&str, &str, &str, &[&str])] = &[
+    (
+        "env-new-edge",
+        "host communicates with a new peer (not in the Trusted baseline)",
+        "medium",
+        &[],
+    ),
+    (
+        "env-new-identity",
+        "a new identity acts on a host with an established baseline",
+        "medium",
+        // T1078 Valid Accounts: an account the trust model has never seen acting
+        // on a host whose identity baseline IS established is an account
+        // operating where it has no history — the same judgement the app-audit
+        // plane makes for a new client or source host.
+        &["T1078"],
+    ),
+];
+
+/// A detector's techniques by id; empty for an unknown id, which a test catches.
+fn tags_for(id: &str) -> &'static [&'static str] {
+    ENV_DETECTORS
+        .iter()
+        .find(|(d, ..)| *d == id)
+        .map(|(.., a)| *a)
+        .unwrap_or(&[])
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_finding(
     ev: &Event,
     detector: &str,
     title: &str,
+    attack: &[&str],
     principal: &str,
     view: &TrustedView,
     policy: &EnsemblePolicy,
@@ -211,7 +259,7 @@ fn build_finding(
         detector: detector.to_string(),
         title: title.to_string(),
         base_level: "medium".to_string(),
-        attack: Vec::new(),
+        attack: attack.iter().map(|s| s.to_string()).collect(),
         event: ev.clone(),
         observed_at: now,
         signals: vec![FindingSignal {
@@ -369,6 +417,13 @@ mod tests {
         );
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].detector, "env-new-edge");
+        // Deliberately untagged: an unbaselined peer fits lateral movement, C2,
+        // exfiltration and a new legitimate service equally well. This assertion
+        // exists so adding a tag here is a conscious decision, not a drive-by.
+        assert!(
+            f[0].attack.is_empty(),
+            "a new peer alone does not establish a technique"
+        );
     }
 
     #[test]
@@ -475,6 +530,13 @@ mod tests {
         );
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].detector, "env-new-identity");
+        // The technique must reach the finding, or the coverage matrix keeps
+        // reporting zero for a plane that is actually detecting.
+        assert_eq!(
+            f[0].attack,
+            vec!["T1078".to_string()],
+            "a new identity acting on a baselined host is Valid Accounts"
+        );
     }
 
     #[test]

@@ -13,7 +13,7 @@ use super::*;
 /// The caller chooses the store's search mode: writable for serve/replay
 /// (they index), read-only for on-demand commands.
 pub(crate) type AgentParts = (
-    Arc<garmr_detect::Detector>,
+    Arc<crate::rules::LiveRules>,
     Arc<Agent>,
     Arc<dyn garmr_llm::LlmProvider>,
 );
@@ -23,11 +23,31 @@ pub(crate) async fn build_agent_from(
     cfg: &Config,
     connect_mcp: bool,
 ) -> Result<AgentParts> {
-    let (detector, rule_map) = rules::load(&cfg.detect.rules_dir).context("loading rules")?;
-    let detector = Arc::new(detector);
-    let rules = Arc::new(rule_map);
+    let live = rules::LiveRules::load_live(&cfg.detect.rules_dir).context("loading rules")?;
+    let detector = live.clone();
+    let rules = live.texts_handle();
 
-    let provider = build_provider(&cfg.agent).context("building LLM provider")?;
+    // Install the operator's price overlay before any provider is built — the
+    // pricing check inside build_provider reads it.
+    garmr_llm::set_pricing(cfg.agent.pricing.clone());
+    // Budget 0 is a designed operating mode (LLM plane paused): the agent's
+    // budget gate (`spent >= budget`) blocks the very first call, so every case
+    // queues as NeedsHuman without ever reaching the provider. In that mode a
+    // missing backend credential must not stop the whole daemon — ingest,
+    // detection and the console are exactly what a paused deployment still
+    // wants. With a nonzero budget the old fail-loud behavior stands: a live
+    // triage plane with an unbuildable provider is a misconfiguration.
+    let provider = match build_provider(&cfg.agent) {
+        Ok(p) => p,
+        Err(e) if cfg.agent.daily_budget_usd <= 0.0 => {
+            tracing::warn!(
+                error = %e,
+                "LLM provider unavailable with daily_budget_usd = 0 — starting with the LLM plane disabled (triage queues as NeedsHuman)"
+            );
+            Arc::new(garmr_llm::DisabledProvider::new(e.to_string()))
+        }
+        Err(e) => return Err(e).context("building LLM provider"),
+    };
     let matrix = cfg.matrix.as_ref().and_then(Matrix::from_env).map(Arc::new);
     let escalate = cfg
         .matrix
@@ -49,7 +69,11 @@ pub(crate) async fn build_agent_from(
     // Only commands that actually run triage connect them — a one-shot
     // correlate/anomaly shouldn't spawn intel children or pass their env.
     let mcp = if connect_mcp {
-        garmr_agent::McpClients::connect(&cfg.agent.mcp_servers).await
+        garmr_agent::McpClients::connect(
+            &cfg.agent.mcp_servers,
+            std::sync::Arc::new(crate::audit::McpLedgerAudit),
+        )
+        .await
     } else {
         garmr_agent::McpClients::disabled()
     };
@@ -118,7 +142,7 @@ async fn serve_follower(cfg: Config) -> Result<()> {
                 let (b, c) = (bind.clone(), cfg.clone());
                 api_task = Some(tokio::spawn(async move {
                     // A follower is read-only and runs no detection plane or agent.
-                    if let Err(e) = api::serve(&b, store, c, true, None, None).await {
+                    if let Err(e) = api::serve(&b, store, c, true, None, None, None).await {
                         tracing::error!(error = %e, "follower read API stopped");
                     }
                 }));
@@ -136,6 +160,42 @@ async fn serve_follower(cfg: Config) -> Result<()> {
         }
         tokio::time::sleep(std::time::Duration::from_secs(pull_secs)).await;
     }
+}
+
+/// Build the collector registry from BOTH sources: the GARMR_COLLECTORS env
+/// blob (static, legacy) and the registry file (`ingest.collectors_file`,
+/// CLI-managed). One function because startup and hot reload must agree on the
+/// merge — two implementations would drift, and the drift would be invisible
+/// until a rotate behaved differently from a restart.
+fn build_collector_registry(cfg: &Config) -> anyhow::Result<garmr_core::CollectorRegistry> {
+    let mut r = garmr_core::CollectorRegistry::new();
+    if let Ok(json) = std::env::var("GARMR_COLLECTORS") {
+        let n = r
+            .add_json(&json)
+            .map_err(|e| anyhow::anyhow!("GARMR_COLLECTORS parse error: {e}"))?;
+        if n > 0 {
+            tracing::info!(
+                collectors = n,
+                "collector authentication ENABLED — native ingest requires a bearer token"
+            );
+        }
+    }
+    if let Some(path) = cfg.ingest.collectors_file.as_deref() {
+        let file = crate::cmd::load_file(path)
+            .map_err(|e| anyhow::anyhow!("collector registry {}: {e}", path.display()))?;
+        let key = crate::cmd::load_or_init_key(path)
+            .map_err(|e| anyhow::anyhow!("collector key for {}: {e}", path.display()))?;
+        let n = file.collectors.len();
+        r.load_records(key, file.collectors);
+        if n > 0 {
+            tracing::info!(
+                collectors = n,
+                file = %path.display(),
+                "file-based collector credentials loaded"
+            );
+        }
+    }
+    Ok(r)
 }
 
 pub(crate) async fn serve(cli: &Cli) -> Result<()> {
@@ -171,6 +231,41 @@ pub(crate) async fn serve(cli: &Cli) -> Result<()> {
         None => tracing::warn!(
             "audit ledger DISABLED (audit.enabled = false) — actions are not tamper-evidently recorded"
         ),
+    }
+    // Out-of-band config drift: the audited apply path (POST /api/config) always
+    // leaves the on-disk override byte-identical to the latest recorded revision,
+    // so a mismatch at startup means someone edited the file directly — a config
+    // change the ledger would otherwise never see. Record it (best-effort — this
+    // is an observation, not a gate) with both digests so a reviewer can line the
+    // drift up against the revision chain.
+    if let Some(p) = crate::config_store::override_path() {
+        let revs = crate::config_store::RevisionStore::new(p.clone());
+        if let Some(latest) = revs.latest() {
+            let on_disk = std::fs::read_to_string(&p).unwrap_or_default();
+            let on_disk_hash = crate::config_store::override_hash(&on_disk);
+            if on_disk_hash != latest.hash {
+                tracing::warn!(
+                    on_disk = %&on_disk_hash[..12],
+                    last_audited = %latest.short_hash(),
+                    seq = latest.seq,
+                    "config override was edited OUTSIDE the audited apply path"
+                );
+                crate::audit::record_best_effort(
+                    garmr_audit::AuditRecord::new(garmr_audit::action::CONFIG_CHANGE, "config")
+                        .actor(garmr_audit::ActorType::System, "serve", Some("startup"))
+                        .auth_method("system")
+                        .outcome(garmr_audit::Outcome::Success)
+                        .object_id(p.display().to_string())
+                        .reason(format!(
+                            "out-of-band override edit: on-disk blake3 {} != last audited \
+                             revision seq {} blake3 {}",
+                            &on_disk_hash[..12],
+                            latest.seq,
+                            latest.short_hash()
+                        )),
+                );
+            }
+        }
     }
     let (detector, agent, provider) = build_agent_from(&store, &cfg, true).await?;
 
@@ -252,21 +347,56 @@ pub(crate) async fn serve(cli: &Cli) -> Result<()> {
     // bearer auth on the native endpoint; empty/unset = today's unauthenticated
     // path, byte-identical. Mirrors GARMR_USERS.
     let collectors = {
-        let mut r = garmr_core::CollectorRegistry::new();
-        if let Ok(json) = std::env::var("GARMR_COLLECTORS") {
-            match r.add_json(&json) {
-                Ok(n) if n > 0 => tracing::info!(
-                    collectors = n,
-                    "collector authentication ENABLED — native ingest requires a bearer token"
-                ),
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::error!("GARMR_COLLECTORS parse error: {e}");
-                    std::process::exit(78);
-                }
+        let r = match build_collector_registry(&cfg) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = %e, "collector registry unusable");
+                std::process::exit(78);
             }
+        };
+        let shared = garmr_core::SharedCollectors::new(r);
+        // Hot reload: poll the registry file's mtime and swap on change, so a
+        // rotate/revoke from the CLI takes effect on the NEXT REQUEST with no
+        // restart — the whole point of file-based credentials. On Flight, where
+        // one "request" is a whole do_put stream, the receiver re-resolves per
+        // BATCH, so revocation is bounded there too rather than deferred to
+        // whenever the client happens to hang up. A reload failure
+        // keeps the OLD registry (availability-preserving: a corrupt file must
+        // not 401 every collector), logged loudly for the operator who just
+        // edited the file. The startup `enabled` bit never changes on a swap,
+        // so a truncated file can only cause 401s, never open ingest.
+        if let Some(path) = cfg.ingest.collectors_file.clone() {
+            let shared_w = shared.clone();
+            let cfg_w = cfg.clone();
+            tokio::spawn(async move {
+                let mut last = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    let now = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+                    if now == last {
+                        continue;
+                    }
+                    last = now;
+                    match build_collector_registry(&cfg_w) {
+                        Ok(r) => {
+                            let n = r.len();
+                            shared_w.swap(r);
+                            tracing::info!(
+                                collectors = n,
+                                file = %path.display(),
+                                "collector registry hot-reloaded"
+                            );
+                        }
+                        Err(e) => tracing::error!(
+                            error = %e,
+                            file = %path.display(),
+                            "collector registry reload FAILED — keeping the previous registry"
+                        ),
+                    }
+                }
+            });
         }
-        std::sync::Arc::new(r)
+        shared
     };
 
     // Migration diagnostic (Phase 12): in bind mode the environment learner keys
@@ -275,12 +405,13 @@ pub(crate) async fn serve(cli: &Cli) -> Result<()> {
     // those collectors fall back to `default_source_trust` — with
     // `default_source_trust = 0.0` that silently halts all promotion. Warn rather
     // than fail: re-keying is an operator decision.
-    if !collectors.is_empty() && !cfg.environment.source_trust.is_empty() {
+    let collectors_snapshot = collectors.get();
+    if !collectors_snapshot.is_empty() && !cfg.environment.source_trust.is_empty() {
         let unmatched: Vec<&str> = cfg
             .environment
             .source_trust
             .keys()
-            .filter(|k| !collectors.contains_id(k))
+            .filter(|k| !collectors_snapshot.contains_id(k))
             .map(|k| k.as_str())
             .collect();
         if !unmatched.is_empty() {
@@ -304,7 +435,7 @@ pub(crate) async fn serve(cli: &Cli) -> Result<()> {
     // in-order writer of the sequence state — no redb/audit I/O on the hot path
     // and no concurrent-observation race.
     let seq_obs: Option<std::sync::Arc<dyn garmr_ingest::IngestSeqObserver>> =
-        if collectors.is_empty() {
+        if !collectors.enabled() {
             None
         } else {
             let (seq_tx, seq_rx) = tokio::sync::mpsc::channel(16_384);
@@ -324,7 +455,7 @@ pub(crate) async fn serve(cli: &Cli) -> Result<()> {
         // port lets anyone who can reach it inject events into the SOC. Fatal so
         // the daemon refuses to start rather than the ingest task looking healthy
         // while it accepts forged events.
-        check_ingest_bind_auth(&ingest_bind, !collectors.is_empty())
+        check_ingest_bind_auth(&ingest_bind, collectors.enabled())
             .context("native ingest auth configuration")?;
         let env = cfg.ingest.default_environment.clone();
         let ingest_tx = tx.clone();
@@ -383,7 +514,7 @@ pub(crate) async fn serve(cli: &Cli) -> Result<()> {
         // Fail-closed, like the native ingest bind: refuse an unauthenticated
         // Flight receiver on a non-loopback address (it would accept forged,
         // `unverified`-stamped batches from anyone who can reach the port).
-        check_flight_bind_auth(&flight_bind, !collectors.is_empty())
+        check_flight_bind_auth(&flight_bind, collectors.enabled())
             .context("Arrow Flight ingest auth configuration")?;
         let flight_events = store.events.clone();
         let flight_collectors = collectors.clone();
@@ -434,6 +565,7 @@ pub(crate) async fn serve(cli: &Cli) -> Result<()> {
         // Phase 11: hand the API the live agent so it can inject the shared
         // embedder into the agent's hybrid_search tool once the model loads.
         let api_agent = agent.clone();
+        let api_live_rules = detector.clone();
         tokio::spawn(async move {
             if let Err(e) = api::serve(
                 &api_bind,
@@ -442,6 +574,7 @@ pub(crate) async fn serve(cli: &Cli) -> Result<()> {
                 false,
                 api_app_audit,
                 Some(api_agent),
+                Some(api_live_rules),
             )
             .await
             {
@@ -449,6 +582,11 @@ pub(crate) async fn serve(cli: &Cli) -> Result<()> {
             }
         });
     }
+
+    // Scheduled ONLINE backups. This must run here, in the daemon: redb holds an
+    // exclusive flock on the state DB, so no separate CLI process can capture it
+    // while serve is up. Off unless backup.interval_secs > 0.
+    crate::backup_loop::spawn(cfg.clone(), store.clone());
 
     // HA writer: ship a warehouse snapshot to object storage on a timer so
     // followers can pull it. Off unless ha.ship_interval_secs > 0 AND the object
@@ -458,11 +596,65 @@ pub(crate) async fn serve(cli: &Cli) -> Result<()> {
             Ok(Some(ha)) => {
                 let wh = cfg.store.warehouse_dir.clone();
                 let every = cfg.ha.ship_interval_secs.max(30);
+                let writer_id = cfg.audit.node_id.clone();
                 tokio::spawn(async move {
-                    let mut id = 0u64;
+                    // Resume the snapshot counter from what is actually in the
+                    // bucket. Starting at 0 across a restart re-ships ids the
+                    // follower has already seen, and `pull` drops every manifest
+                    // whose id is <= the one it holds — so the follower would
+                    // silently stop replicating (while still reporting healthy)
+                    // until the counter climbed back past its old high-water
+                    // mark. On a read failure, keep shipping from 0 rather than
+                    // not shipping at all: a stalled follower recovers on the
+                    // next successful read, a writer that never ships does not.
+                    // The lease this writer ships under. A node that never
+                    // promoted has none: epoch 0 is below every real epoch, so a
+                    // single-node deployment is unaffected while a promoted peer
+                    // still fences it out.
+                    let epoch = match ha.lease().await {
+                        Ok(Some(l)) => l.epoch,
+                        Ok(None) => 0,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "HA: lease unreadable — shipping under epoch 0");
+                            0
+                        }
+                    };
+                    let mut id = match ha.last_shipped_id().await {
+                        Ok(last) => {
+                            if last > 0 {
+                                tracing::info!(resume_from = last, "HA: resuming snapshot counter");
+                            }
+                            last
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "HA: could not read the last shipped snapshot id — starting at 0; \
+                                 a follower ahead of this counter will ignore snapshots until it catches up"
+                            );
+                            0
+                        }
+                    };
                     loop {
+                        // Self-fence check before every ship: if another node has
+                        // been promoted, this writer must STOP rather than keep
+                        // producing history that diverges from the new writer's.
+                        // Losing one node's shipping is recoverable; two writers
+                        // are not.
+                        if let Ok(observed) = ha.lease().await {
+                            if let garmr_retention::FenceVerdict::SelfFence { observed } =
+                                garmr_retention::fence_verdict(epoch, observed.as_ref())
+                            {
+                                tracing::error!(
+                                    mine = epoch,
+                                    observed,
+                                    "HA: fenced out — another node holds a higher writer epoch.                                      Stopping the ship loop; this node must not remain a writer."
+                                );
+                                return;
+                            }
+                        }
                         id += 1;
-                        if let Err(e) = ha.ship(&wh, id).await {
+                        if let Err(e) = ha.ship(&wh, id, epoch, &writer_id).await {
                             tracing::error!(error = %e, "HA ship failed; will retry");
                         }
                         tokio::time::sleep(std::time::Duration::from_secs(every)).await;
@@ -649,7 +841,7 @@ pub(crate) async fn serve(cli: &Cli) -> Result<()> {
         // trusted collector id and drops unauthenticated events. UNBOUND learning
         // still trusts the shipper-set `event.source`, so a credential holder can
         // forge distinct sources to promote a Trusted (suppressive) fact.
-        if collectors.is_empty() {
+        if !collectors.enabled() {
             tracing::warn!(
                 "environment.learn is ON but NO collectors are configured (GARMR_COLLECTORS): \
                  the learner trusts shipper-set event.source and can be poisoned. Configure \
@@ -664,7 +856,7 @@ pub(crate) async fn serve(cli: &Cli) -> Result<()> {
             store.clone(),
             cfg.clone(),
             cfg.environment.learn_interval_secs,
-            !collectors.is_empty(),
+            collectors.enabled(),
         ));
         tokio::spawn(pipeline::env_promote_loop(
             store.clone(),
@@ -695,12 +887,28 @@ pub(crate) async fn serve(cli: &Cli) -> Result<()> {
         tracing::info!("environment detection loop started");
     }
 
+    // Per-source metrics gauges: the one warehouse query the metrics surface
+    // pays, once a minute, off the scrape path.
+    tokio::spawn(pipeline::source_gauges_loop(store.clone()));
+
+    // SLA clocks (2.9): opt-in via [cases.sla]; all-zero defaults = off.
+    if cfg.cases.sla.ack_minutes > 0 || cfg.cases.sla.resolve_minutes > 0 {
+        let sla_matrix = cfg.matrix.as_ref().and_then(Matrix::from_env).map(Arc::new);
+        let alerts_room = cfg.matrix.as_ref().map(|m| m.alerts_room.clone());
+        tokio::spawn(pipeline::sla_loop(
+            store.clone(),
+            cfg.cases.sla.clone(),
+            sla_matrix,
+            alerts_room,
+        ));
+    }
+
     // Retention: seal aged event windows into the cold tier on a tick. Opt-in.
     if cfg.retention.enabled {
         match garmr_retention::RetentionManager::new(store.clone(), &cfg) {
             Ok(mgr) => {
                 let interval = cfg.retention.interval_secs.max(60);
-                tokio::spawn(pipeline::retention_loop(mgr, interval));
+                tokio::spawn(pipeline::retention_loop(mgr, store.clone(), interval));
             }
             Err(e) => tracing::error!(error = %e, "retention not started"),
         }

@@ -24,6 +24,11 @@ pub const MAX_KEY_LEN: usize = 64;
 pub const MAX_QUERY_LEN: usize = 2_048;
 /// The widest time window a query may request (in hours) — one leap year.
 pub const MAX_LAST_HOURS: f64 = 24.0 * 366.0;
+/// How much wider the semantic leg fetches when a time window is set — its
+/// backend ranks by meaning alone, so the in-window hits can sit anywhere in the
+/// ranking and a bare top-`per_signal_k` could be entirely out of window. See
+/// [`HybridQuery::semantic_fetch_k`].
+pub const SEMANTIC_WINDOW_OVERFETCH: usize = 4;
 
 /// A hybrid query: a structured filter plus optional full-text and semantic
 /// clauses, fused into one ranked result.
@@ -60,14 +65,25 @@ impl StructuredFilter {
     /// True when no predicate at all is set (an unbounded scan if it were the
     /// only clause).
     pub fn is_empty(&self) -> bool {
-        self.time.is_empty()
-            && self.host.is_empty()
-            && self.service.is_empty()
-            && self.source.is_empty()
-            && self.environment.is_empty()
-            && self.severity.is_empty()
-            && self.log_type.is_empty()
-            && self.fields.is_empty()
+        self.time.is_empty() && !self.selects()
+    }
+
+    /// True when the filter SELECTS events by something other than time.
+    ///
+    /// Time is a universal BOUND — every leg applies the same window — not a
+    /// retrieval signal, so a time-only filter must never become the fusion
+    /// gate: gating on it would reduce "text search over the last 24h" to "the
+    /// newest `candidate_cap` events of the last 24h that also match the text",
+    /// silently dropping every older hit in the very window the analyst asked
+    /// for. See [`crate::Executor::run`].
+    pub fn selects(&self) -> bool {
+        !self.host.is_empty()
+            || !self.service.is_empty()
+            || !self.source.is_empty()
+            || !self.environment.is_empty()
+            || !self.severity.is_empty()
+            || !self.log_type.is_empty()
+            || !self.fields.is_empty()
     }
 }
 
@@ -96,6 +112,61 @@ pub struct TimeRange {
 impl TimeRange {
     pub fn is_empty(&self) -> bool {
         self.last_hours.is_none() && self.from_micros.is_none() && self.to_micros.is_none()
+    }
+
+    /// Resolve to one absolute [`Window`], anchoring `last_hours` to
+    /// `now_micros`. When both a relative and an absolute lower bound are given
+    /// the LATER one wins — the two bounds AND, exactly as the compiled SQL
+    /// conjunction does.
+    ///
+    /// Resolving once, here, is what lets every leg bound itself with the SAME
+    /// window: the SQL compiler, the full-text range query and the semantic
+    /// filter all read it instead of each re-deriving "now minus N hours".
+    pub fn resolve(&self, now_micros: i64) -> Window {
+        let relative = self
+            .last_hours
+            .map(|h| now_micros.saturating_sub((h * 3_600_000_000.0) as i64));
+        let from_us = match (relative, self.from_micros) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+        Window {
+            from_us,
+            to_us: self.to_micros,
+        }
+    }
+}
+
+/// An absolute event-time window, half-open `[from_us, to_us)` in epoch micros —
+/// the same convention Tantivy's range query and the console's absolute picker
+/// use, so an event exactly at `to` belongs to the NEXT window, on every leg.
+/// Either end may be open.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Window {
+    pub from_us: Option<i64>,
+    pub to_us: Option<i64>,
+}
+
+impl Window {
+    /// True when the window bounds anything at all (either end is set).
+    pub fn is_bounded(&self) -> bool {
+        self.from_us.is_some() || self.to_us.is_some()
+    }
+
+    /// Is this event timestamp inside the window? An open end admits everything
+    /// on that side.
+    pub fn contains(&self, ts_micros: i64) -> bool {
+        self.from_us.is_none_or(|f| ts_micros >= f) && self.to_us.is_none_or(|t| ts_micros < t)
+    }
+
+    /// Could a semantic hit still concern this window? A semantic hit's
+    /// timestamp is its message GROUP's max (see [`crate::fuse`]), so a max
+    /// below `from` proves every event in the group predates the window and the
+    /// hit can be dropped — while a max at or after `to` proves nothing, since
+    /// older events with the same message may well sit inside. Only the lower
+    /// bound can rule a group out.
+    pub fn may_contain_group(&self, group_max_us: i64) -> bool {
+        self.from_us.is_none_or(|f| group_max_us >= f)
     }
 }
 
@@ -246,6 +317,23 @@ impl HybridQuery {
         }
         Ok(())
     }
+
+    /// How many hits the semantic leg must FETCH to fill `per_signal_k` in-window
+    /// ones. Unbounded, that is just `per_signal_k`; with a window it over-fetches
+    /// ([`SEMANTIC_WINDOW_OVERFETCH`]×) because the semantic backend ranks by
+    /// meaning alone and knows nothing of the window — its best matches may all
+    /// lie outside it, and the executor then filters down to `per_signal_k`.
+    ///
+    /// The executor and the API's precompute path (`/api/hsearch` embeds off the
+    /// async lane) both read this, so they always agree on the fetch width.
+    pub fn semantic_fetch_k(&self) -> usize {
+        let k = self.fusion.per_signal_k.clamp(1, MAX_PER_SIGNAL_K);
+        if self.filter.time.is_empty() {
+            k
+        } else {
+            k.saturating_mul(SEMANTIC_WINDOW_OVERFETCH)
+        }
+    }
 }
 
 /// A NUL byte can terminate a C string in a downstream layer — reject it
@@ -332,6 +420,100 @@ mod tests {
         let mut q2 = HybridQuery::default();
         q2.filter.host = vec!["a".repeat(MAX_VALUE_LEN + 1)];
         assert!(q2.validate().is_err());
+    }
+
+    // ---- time is a BOUND, not a selector ------------------------------------
+
+    #[test]
+    fn a_time_only_filter_bounds_but_does_not_select() {
+        let mut f = StructuredFilter::default();
+        f.time.last_hours = Some(24.0);
+        assert!(!f.selects(), "time alone must never gate the fusion");
+        assert!(
+            !f.is_empty(),
+            "…but it is still a bound, not an empty filter"
+        );
+        f.host = vec!["web01".into()];
+        assert!(f.selects());
+    }
+
+    #[test]
+    fn resolve_anchors_relative_and_ands_the_lower_bounds() {
+        const NOW: i64 = 10_000_000_000;
+        let w = TimeRange {
+            last_hours: Some(2.0),
+            from_micros: None,
+            to_micros: Some(1_000_000),
+        }
+        .resolve(NOW);
+        assert_eq!(w.from_us, Some(NOW - 7_200_000_000));
+        assert_eq!(w.to_us, Some(1_000_000));
+
+        // Both lower bounds given → the LATER one, matching the SQL conjunction.
+        let w2 = TimeRange {
+            last_hours: Some(2.0),
+            from_micros: Some(NOW),
+            to_micros: None,
+        }
+        .resolve(NOW);
+        assert_eq!(w2.from_us, Some(NOW));
+
+        // An empty range resolves to an open window that bounds nothing.
+        let open = TimeRange::default().resolve(NOW);
+        assert!(!open.is_bounded());
+        assert!(open.contains(i64::MIN) && open.contains(i64::MAX));
+    }
+
+    #[test]
+    fn a_window_is_half_open() {
+        let w = Window {
+            from_us: Some(100),
+            to_us: Some(200),
+        };
+        assert!(!w.contains(99));
+        assert!(w.contains(100), "the lower bound is included");
+        assert!(w.contains(199));
+        assert!(
+            !w.contains(200),
+            "the upper bound belongs to the next window"
+        );
+    }
+
+    #[test]
+    fn only_the_lower_bound_can_rule_out_a_semantic_group() {
+        let w = Window {
+            from_us: Some(100),
+            to_us: Some(200),
+        };
+        // A group whose NEWEST event predates the window has nothing inside it.
+        assert!(!w.may_contain_group(99));
+        // A group whose newest event is past `to` may still have older members
+        // inside — the executor must keep it (the fuser decides per event).
+        assert!(w.may_contain_group(1_000));
+    }
+
+    #[test]
+    fn the_semantic_leg_over_fetches_only_when_windowed() {
+        let mut q = HybridQuery {
+            semantic: Some(SemanticClause {
+                query: "brute force".into(),
+            }),
+            ..Default::default()
+        };
+        q.fusion.per_signal_k = 100;
+        assert_eq!(
+            q.semantic_fetch_k(),
+            100,
+            "unbounded: no need to over-fetch"
+        );
+        q.filter.time.last_hours = Some(24.0);
+        assert_eq!(q.semantic_fetch_k(), 100 * SEMANTIC_WINDOW_OVERFETCH);
+        // Never derived from an unclamped k (validate() may not have run yet).
+        q.fusion.per_signal_k = usize::MAX;
+        assert_eq!(
+            q.semantic_fetch_k(),
+            MAX_PER_SIGNAL_K * SEMANTIC_WINDOW_OVERFETCH
+        );
     }
 
     #[test]

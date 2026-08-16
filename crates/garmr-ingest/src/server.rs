@@ -200,7 +200,7 @@ impl IngestAuditor {
 struct IngestState {
     sink: EventSink,
     default_environment: Arc<String>,
-    registry: Arc<garmr_core::CollectorRegistry>,
+    registry: Arc<garmr_core::SharedCollectors>,
     auditor: IngestAuditor,
     seq: Option<Arc<dyn IngestSeqObserver>>,
 }
@@ -249,7 +249,7 @@ pub async fn run_ingest(
     bind: &str,
     sink: EventSink,
     default_environment: String,
-    registry: Arc<garmr_core::CollectorRegistry>,
+    registry: Arc<garmr_core::SharedCollectors>,
     auditor: IngestAuditor,
     seq: Option<Arc<dyn IngestSeqObserver>>,
 ) -> Result<()> {
@@ -284,10 +284,14 @@ pub async fn run_ingest(
 async fn ingest_events(State(st): State<IngestState>, headers: HeaderMap, body: Bytes) -> Response {
     // FIX#5: authenticate BEFORE decoding — an unauthenticated request is rejected
     // without parsing (no parser-error leak) and its audit is rate-limited.
-    let collector = if st.registry.is_empty() {
+    // Keyed off the startup `enabled` bit, NEVER off the current registry's
+    // emptiness: a hot reload that produced an empty registry must read as
+    // "reject everyone" (an outage, loudly), not as "auth off" (an open door).
+    let collector = if !st.registry.enabled() {
         None // default-off: today's unauthenticated path, byte-identical.
     } else {
-        match bearer(&headers).and_then(|t| st.registry.resolve(t).cloned()) {
+        let registry = st.registry.get();
+        match bearer(&headers).and_then(|t| registry.resolve(t).cloned()) {
             Some(c) => Some(c),
             None => {
                 st.auditor.record_denied(None);
@@ -347,6 +351,18 @@ async fn ingest_events(State(st): State<IngestState>, headers: HeaderMap, body: 
     // appended before returning 200. Any failure (pipeline gone, append error)
     // returns 5xx so the sender retries — at-least-once delivery.
     let accepted = events.len();
+    let path = if ndjson { "ndjson" } else { "native" };
+    let m = garmr_core::metrics::registry();
+    m.ingest_received_total
+        .add(&[("path", path)], accepted as u64);
+    // The channel's own depth at this instant is the honest congestion signal —
+    // sampled here on the hot path for the cost of a load, never tracked
+    // per-message.
+    m.pipeline_channel_depth.set(
+        &[("channel", "ingest")],
+        st.sink.max_capacity().saturating_sub(st.sink.capacity()) as f64,
+    );
+    let commit_started = std::time::Instant::now();
     let (ack, done) = oneshot::channel();
     if st
         .sink
@@ -358,9 +374,18 @@ async fn ingest_events(State(st): State<IngestState>, headers: HeaderMap, body: 
         .await
         .is_err()
     {
+        m.ingest_nacked_total.inc(&[("path", path)]);
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     let persisted = done.await;
+    m.ingest_commit_seconds
+        .observe(commit_started.elapsed().as_secs_f64());
+    match &persisted {
+        Ok(Ok(())) => m
+            .ingest_committed_total
+            .add(&[("path", path)], accepted as u64),
+        _ => m.ingest_nacked_total.inc(&[("path", path)]),
+    }
     if let Ok(Ok(())) = &persisted {
         // Durable: record the sequence observation (gap/replay detection).
         if let (Some(obs), Some((cid, epoch, seq))) = (&st.seq, &seq_mark) {

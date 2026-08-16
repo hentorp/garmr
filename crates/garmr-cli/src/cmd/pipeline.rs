@@ -5,8 +5,8 @@
 //! anomaly/risk/baseline runs, full-text `search` + hybrid `hsearch` (the safe
 //! Query IR), the entity graph, semantic index/search/verify (`semantic`
 //! feature), `reindex` (full-text rebuild — including moving a genuinely
-//! corrupt index aside, fenced behind the single-writer exclusion), and the
-//! retention + cold-tier query commands.
+//! corrupt or schema-outdated index aside, fenced behind the single-writer
+//! exclusion), and the retention + cold-tier query commands.
 
 use super::*;
 
@@ -42,9 +42,10 @@ pub(crate) async fn replay(
     // moved; each worker borrows `&events[i]`), then case-open + triage stays
     // serial and index-ordered so suppression/dedup behaves identically to the
     // old serial loop.
+    let live_detector = detector.detector();
     let per_event: Vec<Vec<Detection>> =
         gatling::gatling_forkjoin::gatling_for_each(events.len(), 0, |i| {
-            detector.evaluate(&events[i])
+            live_detector.evaluate(&events[i])
         });
     let mut opened = 0;
     for dets in per_event {
@@ -623,17 +624,24 @@ fn index_error_is_corruption(msg: &str) -> bool {
         || m.contains("was created using") // Tantivy version skew — rebuild is the fix
 }
 
-/// Ensure the full-text index directory can be opened before a rebuild. If it is
-/// genuinely CORRUPT — partially-written or scribbled segments (a torn write, a
-/// bad block), an unparseable meta.json, a version-incompatible index — move it
-/// aside so the writable open recreates an empty index and the rebuild
-/// repopulates it from the durable warehouse. This is what makes `reindex` an
-/// actual recovery path for a corrupt index (its documented job): otherwise
-/// `Store::open_writable` fails on the very corruption reindex exists to heal.
+/// Ensure the full-text index directory can be opened before a rebuild, and
+/// that it carries the CURRENT schema. Two conditions move it aside so the
+/// writable open recreates an empty index and the rebuild repopulates it from
+/// the durable warehouse:
+/// - it is genuinely CORRUPT — partially-written or scribbled segments (a torn
+///   write, a bad block), an unparseable meta.json, a version-incompatible
+///   index. This is what makes `reindex` an actual recovery path for a corrupt
+///   index (its documented job): otherwise `Store::open_writable` fails on the
+///   very corruption reindex exists to heal.
+/// - it opens but was built with an OUTDATED schema (e.g. from before
+///   `ts_micros` was a fast field). A running `serve` keeps using such an index
+///   with time-range search degraded; `reindex` is the migration that rebuilds
+///   it current — Tantivy fixes an index's schema at creation, so `clear()`
+///   alone can never migrate it.
 ///
 /// Guardrails (from adversarial review):
-/// - A healthy index opens cleanly and is left untouched; a non-existent one is
-///   recreated by the open.
+/// - A healthy, current index opens cleanly and is left untouched; a
+///   non-existent one is recreated by the open.
 /// - A TRANSIENT open error (fd exhaustion, ENOMEM, EIO, a permission blip) is
 ///   NOT treated as corruption — we fail closed instead of destroying a warm
 ///   healthy index ([`index_error_is_corruption`]).
@@ -662,20 +670,29 @@ fn reset_search_index_if_unreadable(
     // Probe read-only (no writer lock): a corrupt segment footer / meta.json fails
     // here exactly as it does for the writer open, so this detects the damage
     // without conflicting with the writable open that follows.
-    let err = match garmr_store::SearchIndex::open_reader(search_dir) {
-        Ok(_) => return Ok(()), // healthy — leave it untouched
-        Err(e) => e,
+    let (why, aside_tag) = match garmr_store::SearchIndex::open_reader(search_dir) {
+        // Healthy and current — leave it untouched.
+        Ok(idx) if idx.schema_current() => return Ok(()),
+        // Opens, but with a pre-upgrade schema: rebuilding into it would keep
+        // the old schema forever (Tantivy fixes it at creation) — move it
+        // aside so the rebuild creates a current one.
+        Ok(_) => ("was built with an outdated schema", "outdated"),
+        Err(err) => {
+            if !index_error_is_corruption(&err.to_string()) {
+                // Not corruption — a transient/environmental failure. Refuse
+                // without touching the index; the operator resolves the
+                // condition and retries.
+                return Err(err).context(
+                    "opening the full-text index (this is NOT an index-corruption error — \
+                     refusing to move the index aside; resolve the underlying condition and \
+                     retry)",
+                );
+            }
+            ("is corrupt", "corrupt")
+        }
     };
-    if !index_error_is_corruption(&err.to_string()) {
-        // Not corruption — a transient/environmental failure. Refuse without
-        // touching the index; the operator resolves the condition and retries.
-        return Err(err).context(
-            "opening the full-text index (this is NOT an index-corruption error — refusing \
-             to move the index aside; resolve the underlying condition and retry)",
-        );
-    }
-    // A corrupt index must not be moved out from under a LIVE writer: reindex is a
-    // serve-stopped operation, and open_writable would fail on the corrupt footer
+    // An index must not be moved out from under a LIVE writer: reindex is a
+    // serve-stopped operation, and open_writable would fail on a corrupt footer
     // BEFORE its own lock check, so fence here first. Holding the exclusion across
     // the rename guarantees no `serve` starts mid-move; the guard drops on return,
     // so the writable open below re-acquires cleanly.
@@ -683,7 +700,7 @@ fn reset_search_index_if_unreadable(
     let _guard = match garmr_store::try_acquire_exclusion(&[state_db, catalog.as_path()])? {
         Some(guard) => guard,
         None => anyhow::bail!(
-            "the full-text index is corrupt but a writer (a running `serve`?) holds the store \
+            "the full-text index {why} but a writer (a running `serve`?) holds the store \
              — stop it first; refusing to move the index aside under a live writer"
         ),
     };
@@ -695,21 +712,21 @@ fn reset_search_index_if_unreadable(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let aside = search_dir.with_file_name(format!("{base}.corrupt-{ts}"));
+    let aside = search_dir.with_file_name(format!("{base}.{aside_tag}-{ts}"));
     tracing::warn!(
         dir = %search_dir.display(),
         moved_to = %aside.display(),
-        "full-text index is corrupt — moving it aside and rebuilding from the warehouse"
+        "full-text index {why} — moving it aside and rebuilding from the warehouse"
     );
     std::fs::rename(search_dir, &aside).with_context(|| {
         format!(
-            "moving the corrupt full-text index {} aside to {}",
+            "moving the full-text index (which {why}) {} aside to {}",
             search_dir.display(),
             aside.display()
         )
     })?;
     println!(
-        "full-text index was corrupt — moved aside to {} (safe to delete once the \
+        "full-text index {why} — moved aside to {} (safe to delete once the \
          rebuild is verified); rebuilding from the warehouse",
         aside.display()
     );
@@ -717,14 +734,14 @@ fn reset_search_index_if_unreadable(
 }
 
 /// Rebuild the full-text (Tantivy) index from the warehouse events — the recovery
-/// path after a `restore` (which leaves FTS COLD) or an index loss/corruption. A
-/// corrupt index is moved aside and rebuilt (see `reset_search_index_if_unreadable`)
-/// so recovery is a single command. Opens the store WRITABLE, so run it with
-/// `serve` stopped. `--hours` limits to recent events; omit to rebuild the whole
+/// path after a `restore` (which leaves FTS COLD) or an index loss/corruption, and
+/// the migration after a full-text schema change. A corrupt index, and one that
+/// opens but carries an outdated schema, are both moved aside and rebuilt (see
+/// `reset_search_index_if_unreadable`) so recovery and migration are one
+/// command. Opens the store WRITABLE, so run it with `serve` stopped. `--hours` limits to recent events; omit to rebuild the whole
 /// history. Clears the index first, then re-feeds it in disjoint time windows
 /// (bounded memory, no duplicate/skipped documents).
 pub(crate) async fn reindex_cmd(cli: &Cli, hours: Option<u64>) -> Result<()> {
-    use skade::arrow_array::{Array, StringArray, TimestampMicrosecondArray};
     let cfg = load_config(cli)?;
     // A corrupt on-disk index must not block the very command meant to rebuild it.
     reset_search_index_if_unreadable(
@@ -735,6 +752,17 @@ pub(crate) async fn reindex_cmd(cli: &Cli, hours: Option<u64>) -> Result<()> {
     let store = Store::open_writable(&cfg)
         .await
         .context("opening store (stop `serve` first — the embedded store is single-process)")?;
+    let total = reindex_store(&store, hours).await?;
+    println!("reindexed {total} event(s)");
+    Ok(())
+}
+
+/// Clear + rebuild the full-text index from the warehouse. The reusable half of
+/// `garmr reindex`, also the EXACT convergence step for field-based erasure:
+/// the index is derived data, so after the store is erased, `index = f(store)`
+/// is a rebuild — never a lossy predicate translation into token queries.
+pub(crate) async fn reindex_store(store: &Store, hours: Option<u64>) -> Result<usize> {
+    use skade::arrow_array::{Array, StringArray, TimestampMicrosecondArray};
 
     // Bounds of the events table.
     let bounds = store
@@ -744,7 +772,7 @@ pub(crate) async fn reindex_cmd(cli: &Cli, hours: Option<u64>) -> Result<()> {
     let (lo, hi) = ts_bounds(&bounds);
     let (Some(mut w), Some(max_us)) = (lo, hi) else {
         println!("no events in the warehouse — nothing to reindex");
-        return Ok(());
+        return Ok(0);
     };
     if let Some(h) = hours {
         let floor = Utc::now().timestamp_micros() - (h as i64).saturating_mul(3_600_000_000);
@@ -823,8 +851,7 @@ pub(crate) async fn reindex_cmd(cli: &Cli, hours: Option<u64>) -> Result<()> {
         total += n;
         w = end;
     }
-    println!("reindexed {total} events into the full-text index");
-    Ok(())
+    Ok(total)
 }
 
 /// Extract `(min, max)` epoch-micros from a `SELECT min(...), max(...)` result.
@@ -883,13 +910,16 @@ pub(crate) async fn embed_index(cli: &Cli, hours: u64, max: usize) -> Result<()>
         .await
         .context("opening store (stop `serve` first — the embedded store is single-process)")?;
     let (embedder, digest) = load_embedder()?;
-    // Distinct (host, service, message) so identical lines are embedded once;
-    // exclude the synthetic detection log_types.
+    // Distinct (host, service, source, message) so identical lines are embedded
+    // once; exclude the synthetic detection log_types. `source` is in the group
+    // key because a record carries it for data-scope filtering — grouping
+    // without it would collapse the same line from two sources into one record
+    // and attribute it to whichever won.
     let sql = format!(
-        "SELECT max(event_ts) AS ts, host, service, message FROM events \
+        "SELECT max(event_ts) AS ts, host, service, source, message FROM events \
          WHERE event_ts >= now() - INTERVAL '{hours} hours' \
            AND log_type NOT IN ('anomaly', 'risk', 'baseline') \
-         GROUP BY host, service, message ORDER BY ts DESC LIMIT {}",
+         GROUP BY host, service, source, message ORDER BY ts DESC LIMIT {}",
         max
     );
     let batches = store.events.sql(sql).await?;
@@ -903,8 +933,10 @@ pub(crate) async fn embed_index(cli: &Cli, hours: u64, max: usize) -> Result<()>
             .downcast_ref::<TimestampMicrosecondArray>();
         let host = b.column(1).as_any().downcast_ref::<StringArray>();
         let svc = b.column(2).as_any().downcast_ref::<StringArray>();
-        let msg = b.column(3).as_any().downcast_ref::<StringArray>();
-        let (Some(ts), Some(host), Some(svc), Some(msg)) = (ts, host, svc, msg) else {
+        let src = b.column(3).as_any().downcast_ref::<StringArray>();
+        let msg = b.column(4).as_any().downcast_ref::<StringArray>();
+        let (Some(ts), Some(host), Some(svc), Some(src), Some(msg)) = (ts, host, svc, src, msg)
+        else {
             continue;
         };
         for i in 0..b.num_rows() {
@@ -918,6 +950,13 @@ pub(crate) async fn embed_index(cli: &Cli, hours: u64, max: usize) -> Result<()>
                 host: if host.is_valid(i) {
                     host.value(i).into()
                 } else {
+                    String::new()
+                },
+                source: if src.is_valid(i) {
+                    src.value(i).into()
+                } else {
+                    // Empty = unattributable; `allowed_by` withholds it from any
+                    // confined credential rather than guessing.
                     String::new()
                 },
                 service: if svc.is_valid(i) {
@@ -1049,6 +1088,7 @@ impl garmr_query::SemanticSearch for LocalSemantic {
                 ts_micros: r.ts_micros,
                 host: r.host,
                 service: r.service,
+                source: r.source,
                 message: r.message,
                 score,
             })
@@ -1250,6 +1290,169 @@ pub(crate) async fn retention(cli: &Cli, what: &RetentionCmd) -> Result<()> {
                 );
             }
         }
+        RetentionCmd::Expire { older_than, apply } => {
+            let cutoff = chrono::Utc::now() - chrono::Duration::days(*older_than as i64);
+            let cutoff_us = cutoff.timestamp_micros();
+            let arcs = store.state.list_cold_archives()?;
+            let (expiring, held) = garmr_core::expired_archives(&arcs, cutoff_us);
+            // Resolved once, before anything is deleted: if the object store is
+            // configured but unreachable, expiry must fail here rather than
+            // half-way through, having already removed local copies.
+            let s3 = garmr_retention::S3Cold::from_env()?;
+
+            // Report holds FIRST and always. An operator running an erasure
+            // request has to be told what was NOT deleted, or they will report
+            // completion that did not happen.
+            for a in &held {
+                println!("HELD    {:<12} legal hold — not deleted", a.id);
+            }
+            if expiring.is_empty() {
+                println!("(nothing older than {older_than} days to expire)");
+                return Ok(());
+            }
+            for a in &expiring {
+                println!(
+                    "{} {:<12} rows={:<7} {} bytes",
+                    if *apply { "DELETE " } else { "would delete" },
+                    a.id,
+                    a.rows,
+                    a.bytes_out
+                );
+            }
+            if !*apply {
+                println!(
+                    "\ndry run — {} archive(s), {} row(s) would be deleted. Re-run with --apply.",
+                    expiring.len(),
+                    expiring.iter().map(|a| a.rows).sum::<u64>()
+                );
+                return Ok(());
+            }
+            for a in &expiring {
+                // Audit BEFORE deleting, fail-closed: an unrecorded deletion of
+                // evidence is indistinguishable from tampering, and unlike the
+                // read paths this cannot be made good afterwards.
+                crate::audit::record_admin_local(
+                    garmr_audit::action::RETENTION_EXPIRE,
+                    "cold_archive",
+                    Some(&a.id),
+                    Some(&format!(
+                        "retention expiry: {} rows, window end {}, cutoff {older_than} days",
+                        a.rows, a.end_us
+                    )),
+                )?;
+                // The bytes FIRST, then the manifest row. Sealing uploads the
+                // archive to S3 and drops the local copy, so the local unlink is
+                // usually a no-op and the object store holds the only copy —
+                // deleting the manifest row before the object would strand the
+                // data with nothing left pointing at it.
+                let path = a.path(&cfg.retention.cold_dir);
+                let local_removed = std::fs::remove_file(&path).is_ok();
+                let remote_removed = match &s3 {
+                    None => None,
+                    Some(s3) => match s3.delete(&a.file).await {
+                        Ok(()) => Some(true),
+                        Err(e) => {
+                            // Do NOT delete the manifest row: while the row
+                            // survives, a later run can retry this archive. Drop
+                            // it now and the object is unreachable forever.
+                            eprintln!(
+                                "FAILED  {:<12} object-store delete failed ({e}) — manifest row kept \
+                                 so a retry can still reach it; NOT counted as deleted",
+                                a.id
+                            );
+                            Some(false)
+                        }
+                    },
+                };
+                if remote_removed == Some(false) {
+                    continue;
+                }
+                let del = garmr_core::ColdDeletion {
+                    id: a.id.clone(),
+                    checksum: a.checksum.clone(),
+                    rows: a.rows,
+                    bytes_out: a.bytes_out,
+                    start_us: a.start_us,
+                    end_us: a.end_us,
+                    deleted_at: chrono::Utc::now(),
+                    reason: format!("retention expiry, cutoff {older_than} days"),
+                    local_removed,
+                    remote_removed,
+                };
+                // One transaction: the manifest row goes and the tombstone
+                // lands together, so there is no instant where an archive has
+                // vanished with nothing recording where it went.
+                let removed = store.state.delete_cold_archive_recorded(&del)?;
+                println!(
+                    "deleted {:<12} manifest={} local={} remote={}",
+                    a.id,
+                    removed,
+                    local_removed,
+                    match remote_removed {
+                        None => "n/a".to_string(),
+                        Some(b) => b.to_string(),
+                    }
+                );
+            }
+        }
+        RetentionCmd::Deletions => {
+            let dels = store.state.list_cold_deletions()?;
+            if dels.is_empty() {
+                println!("(no archives have been deleted)");
+                return Ok(());
+            }
+            for d in &dels {
+                println!(
+                    "{} {:<12} rows={:<7} checksum={} local={} remote={} — {}",
+                    // An incomplete deletion is flagged on its own line rather
+                    // than buried: it is the one row an operator must act on.
+                    if d.is_complete() {
+                        "deleted   "
+                    } else {
+                        "INCOMPLETE"
+                    },
+                    d.id,
+                    d.rows,
+                    &d.checksum[..d.checksum.len().min(12)],
+                    d.local_removed,
+                    match d.remote_removed {
+                        None => "n/a".to_string(),
+                        Some(b) => b.to_string(),
+                    },
+                    d.reason
+                );
+            }
+            let incomplete = dels.iter().filter(|d| !d.is_complete()).count();
+            if incomplete > 0 {
+                println!(
+                    "\n{incomplete} deletion(s) did NOT remove every copy — the data may still \
+                     exist. Do not report these as erased."
+                );
+            }
+        }
+        RetentionCmd::Hold { id, clear } => {
+            let changed = store.state.set_cold_legal_hold(id, !*clear)?;
+            if changed {
+                // Only audited when something actually changed: a no-op record
+                // would pad the ledger with events that did not happen.
+                crate::audit::record_admin_local(
+                    garmr_audit::action::RETENTION_LEGAL_HOLD,
+                    "cold_archive",
+                    Some(id),
+                    Some(if *clear {
+                        "hold cleared"
+                    } else {
+                        "hold placed"
+                    }),
+                )?;
+                println!(
+                    "{} legal hold on {id}",
+                    if *clear { "cleared" } else { "placed" }
+                );
+            } else {
+                println!("no change (unknown archive, or already in that state): {id}");
+            }
+        }
     }
     Ok(())
 }
@@ -1286,6 +1489,241 @@ pub(crate) async fn cold_query(
         print!("{}", format_batches(&res.batches));
     }
     Ok(())
+}
+
+/// `garmr erase` — targeted erasure. Offline; dry-run by default.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn erase(
+    cli: &Cli,
+    field: &str,
+    value: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+    reason: &str,
+    apply: bool,
+    out: &std::path::Path,
+) -> Result<()> {
+    let cfg = load_config(cli)?;
+
+    // --- The predicate, refused early when unenforceable -------------------
+    let efield = match field {
+        "host" => garmr_core::EraseField::Host,
+        "src_ip" => garmr_core::EraseField::SrcIp,
+        "user" => garmr_core::EraseField::User,
+        other => anyhow::bail!(
+            "unknown --field {other:?}: erasure selects on host, src_ip or user — a \
+             closed set, because every field must be enforceable in the store, the \
+             compaction hook and the search index alike"
+        ),
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        // An empty value with a substring needle would match EVERY row carrying
+        // the key — a mass deletion wearing a targeted request's clothes.
+        anyhow::bail!("--value must not be empty: an unfiltered erasure is refused, not narrowed");
+    }
+    let from_us = from
+        .map(|s| crate::parse_time(s, crate::Bound::Start))
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("--from: {e}"))?;
+    let to_us = to
+        .map(|s| crate::parse_time(s, crate::Bound::End))
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("--to: {e}"))?;
+
+    let store = Store::open(&cfg).await.context("opening store")?;
+
+    // --- Holds always win --------------------------------------------------
+    // Checked against the predicate's time bounds BEFORE anything else: a hold
+    // marks a period under litigation, and erasure inside it is exactly what
+    // the hold exists to prevent. Refusing the whole request (rather than
+    // skipping the held span) keeps the answer honest — a partial erasure
+    // reported as done is how "we erased them" becomes false.
+    let arcs = store.state.list_cold_archives()?;
+    let overlapping: Vec<_> = arcs
+        .iter()
+        .filter(|a| from_us.is_none_or(|f| a.end_us > f) && to_us.is_none_or(|t| a.start_us < t))
+        .collect();
+    let held: Vec<_> = overlapping.iter().filter(|a| a.legal_hold).collect();
+    if !held.is_empty() {
+        for a in &held {
+            eprintln!(
+                "HELD    {:<12} legal hold intersects the erasure window",
+                a.id
+            );
+        }
+        anyhow::bail!(
+            "refusing: {} archive(s) under legal hold intersect this erasure — release the \
+             hold(s) first if the erasure is genuinely authorised",
+            held.len()
+        );
+    }
+
+    // --- Count what the predicate reaches ----------------------------------
+    let tomb = garmr_core::Tombstone {
+        id: format!("erase-{}", uuid::Uuid::new_v4()),
+        field: efield,
+        value: value.to_string(),
+        from_us,
+        to_us,
+        placed_at: Utc::now(),
+        reason: reason.to_string(),
+    };
+    let where_clause = {
+        let mut parts: Vec<String> = Vec::new();
+        match tomb.fields_needle() {
+            None => parts.push(format!("host = '{}'", value.replace('\'', "''"))),
+            Some(needle) => parts.push(format!(
+                "fields LIKE '%{}%'",
+                needle
+                    .replace('\'', "''")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            )),
+        }
+        if let Some(f) = from_us {
+            parts.push(format!("event_ts >= to_timestamp_micros({f})"));
+        }
+        if let Some(t) = to_us {
+            parts.push(format!("event_ts < to_timestamp_micros({t})"));
+        }
+        parts.join(" AND ")
+    };
+    let count_sql = format!("SELECT count(*) AS n FROM events WHERE {where_clause}");
+    let hot_matches = count_rows(&store, &count_sql).await?;
+
+    println!("erasure plan for {field} = {value:?}");
+    println!("  hot rows matching:      {hot_matches}");
+    println!(
+        "  cold archives overlapped: {} (rewritten on --apply)",
+        overlapping.len()
+    );
+    for a in &overlapping {
+        println!("    pending {:<12} rows={}", a.id, a.rows);
+    }
+    if !apply {
+        println!("\ndry run — nothing was erased. Re-run with --apply.");
+        return Ok(());
+    }
+
+    // --- Audit BEFORE destruction, fail-closed -----------------------------
+    crate::audit::record_admin_local(
+        garmr_audit::action::DATA_ERASE,
+        "erasure",
+        Some(&tomb.id),
+        Some(&format!(
+            "targeted erasure {field}={value:?} hot_matches={hot_matches} reason={reason:?}"
+        )),
+    )?;
+
+    // --- Tombstone FIRST, then enforcement ---------------------------------
+    // Persisted before the rebuild so a crash mid-erase still converges at the
+    // next compaction instead of leaving a half-erased store with no record of
+    // the obligation.
+    store.state.put_tombstone(&tomb)?;
+    let erased = store.events.erase_matching(&store.state).await?;
+
+    // Full text. Host has an exact index predicate (the untokenized label
+    // term). Extracted fields do NOT: their values exist in the index only as
+    // message tokens, and a token query cannot be exact — a phrase over an IP
+    // degrades across tokenization into fragment matching (measured: it deleted
+    // another subject's rows via a shared "0" token). So for those the index is
+    // REBUILT from the just-erased store — the index is derived data, and exact
+    // convergence is index = f(store), not a lossy predicate translation.
+    let ft_semantics = match efield {
+        garmr_core::EraseField::Host => {
+            store.search.erase_host_docs(value).await?;
+            "host-term"
+        }
+        _ => {
+            let n = reindex_store(&store, None).await?;
+            println!("full-text index rebuilt from the erased store ({n} events)");
+            "rebuilt-from-store"
+        }
+    };
+
+    // --- Cold archives: thaw → filter → reseal ------------------------------
+    // Replacement-before-destruction throughout, checksum transitions recorded.
+    // A failure here leaves the certificate naming the archive as pending
+    // rather than pretending — the tombstone is already persistent, so a later
+    // re-run converges.
+    let rewrites = garmr_retention::rewrite_archives(
+        &store.state,
+        &cfg.retention.cold_dir,
+        cfg.retention.compression_level,
+        std::slice::from_ref(&tomb),
+    )
+    .await;
+    let (rewritten, cold_pending): (Vec<garmr_retention::RewriteOutcome>, Vec<String>) =
+        match rewrites {
+            Ok(out) => (out, Vec::new()),
+            Err(e) => {
+                eprintln!("cold rewrite FAILED ({e}) — archives remain pending; re-run to retry");
+                (
+                    Vec::new(),
+                    overlapping.iter().map(|a| a.id.clone()).collect(),
+                )
+            }
+        };
+    for r in &rewritten {
+        if r.rows_erased > 0 {
+            println!(
+                "cold    {:<12} erased {} row(s), checksum {} -> {}",
+                r.id,
+                r.rows_erased,
+                &r.old_checksum[..r.old_checksum.len().min(12)],
+                &r.new_checksum[..r.new_checksum.len().min(12)]
+            );
+        }
+    }
+
+    // --- Verify, then certify ----------------------------------------------
+    let remaining = count_rows(&store, &count_sql).await?;
+    let complete = remaining == 0 && cold_pending.is_empty();
+    let certificate = serde_json::json!({
+        "erasure_id": tomb.id,
+        "predicate": tomb,
+        "hot_rows_erased": erased,
+        "hot_rows_remaining": remaining,
+        "fulltext": ft_semantics,
+        // Every archive scanned, with its checksum transition — zero-delta rows
+        // included, so "we checked" is distinguishable from "we skipped".
+        "cold_archives_rewritten": rewritten,
+        // Named individually: "pending" must be checkable, not a vibe.
+        "cold_archives_pending": cold_pending,
+        // False whenever ANY copy might survive. A certificate that rounds this
+        // up is a false statement with a signature on it.
+        "complete": complete,
+        "note": "the tombstone is permanent: late-arriving matches are removed at every subsequent compaction, and a re-run retries any pending archive",
+    });
+    std::fs::write(out, serde_json::to_vec_pretty(&certificate)?)
+        .with_context(|| format!("writing certificate to {}", out.display()))?;
+    println!(
+        "\nerased {erased} hot row(s); full-text: {ft_semantics}; remaining hot matches: {remaining}"
+    );
+    println!(
+        "certificate: {} (complete: {complete}{})",
+        out.display(),
+        if complete {
+            ""
+        } else {
+            " — cold archives pending, do NOT report this as fully erased"
+        }
+    );
+    Ok(())
+}
+
+async fn count_rows(store: &Store, sql: &str) -> Result<i64> {
+    let rows = store.events.sql(sql.to_string()).await?;
+    Ok(rows
+        .first()
+        .and_then(|b| {
+            b.column(0)
+                .as_any()
+                .downcast_ref::<skade::arrow_array::Int64Array>()
+                .map(|a| a.value(0))
+        })
+        .unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -1383,6 +1821,45 @@ mod reindex_recovery_tests {
         reset_search_index_if_unreadable(&search, &state_db, &warehouse).unwrap();
         assert!(search.exists(), "a healthy index must NOT be moved aside");
         assert_eq!(corrupt_count(tmp.path()), 1);
+    }
+
+    // A pre-upgrade index (ts_micros not yet FAST) opens fine, so it is NOT
+    // corruption — but reindex must still move it aside: Tantivy fixes an
+    // index's schema at creation, so rebuilding INTO it would keep the old
+    // schema (and time-range search degraded) forever.
+    #[test]
+    fn outdated_schema_index_is_moved_aside_for_migration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let search = tmp.path().join("search");
+        let state_db = tmp.path().join("state.redb");
+        let warehouse = tmp.path().join("warehouse");
+        garmr_store::create_legacy_index_for_tests(&search).unwrap();
+        // Precondition: it opens cleanly, merely with an outdated schema.
+        assert!(!garmr_store::SearchIndex::open_reader(&search)
+            .unwrap()
+            .schema_current());
+
+        reset_search_index_if_unreadable(&search, &state_db, &warehouse).unwrap();
+        assert!(!search.exists(), "an outdated index should be moved aside");
+        let moved_aside = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("search.outdated-")
+            });
+        assert!(
+            moved_aside,
+            "the outdated index should be parked, not deleted"
+        );
+
+        // The recreated index is current, and a second pass leaves it alone.
+        assert!(garmr_store::SearchIndex::open_reader(&search)
+            .unwrap()
+            .schema_current());
+        reset_search_index_if_unreadable(&search, &state_db, &warehouse).unwrap();
+        assert!(search.exists(), "a current index must NOT be moved aside");
     }
 
     // A restored-but-unpromoted follower's index is never touched here — the marker

@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: COPY TO/FROM PROGRAM (command execution)
+id: garmr-pg-copy-program
+status: stable
+description: >
+    COPY ... PROGRAM executes a shell command as the postgres OS user - the
+    standard SQL-to-RCE escalation. No routine workload uses it.
+author: garmr
+logsource:
+    product: linux
+    service: postgres
+detection:
+    selection:
+        service: postgres
+        message|contains: 'AUDIT:'
+        message|contains|all:
+            - 'PROGRAM'
+            - 'COPY'
+    condition: selection
+falsepositives:
+    - ETL jobs using COPY PROGRAM deliberately (document them, then silence).
+level: critical
+tags:
+    - attack.execution
+    - attack.t1059

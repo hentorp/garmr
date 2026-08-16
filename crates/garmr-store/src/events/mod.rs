@@ -55,6 +55,7 @@ use crate::schema::{events_schema, T_EVENTS};
 use crate::state::StateStore;
 
 mod compaction;
+pub use compaction::TombstoneMatcher;
 
 use compaction::{cleanup_orphans, run_compaction};
 
@@ -68,6 +69,11 @@ enum Cmd {
     /// computed `event_id` column, and appends — sharing the write + compaction
     /// path with `Append`, so both ingest paths behave identically.
     AppendBatch(RecordBatch, Option<String>, oneshot::Sender<Result<usize>>),
+    /// Re-resolve the actor's table handle after an EXTERNALLY-driven rebuild
+    /// (the offline erase pass). Without this the actor's handle still points at
+    /// the retired data directory, and the next append writes into files the
+    /// next cleanup deletes — silent data loss, not an error.
+    Refresh(oneshot::Sender<Result<()>>),
 }
 
 /// Back-off after a FAILED compaction attempt. Success needs none — the next
@@ -96,6 +102,9 @@ struct CompactCfg {
     prune_sealed: bool,
     /// Agent-state store holding the retention watermark.
     state: StateStore,
+    /// `[[retention.class]]` policies: sources excluded from cold whose rows
+    /// prune from hot after their class's `hot_days`.
+    classes: Vec<garmr_core::RetentionClass>,
 }
 
 /// A cheap, clonable handle to the events store: appends via the writer actor,
@@ -291,6 +300,7 @@ pub async fn spawn(cfg: &Config, state: StateStore) -> Result<EventsHandle> {
         gc_grace: Duration::from_secs(cfg.store.compact_gc_grace_secs),
         prune_sealed: cfg.retention.enabled,
         state,
+        classes: cfg.retention.class.clone(),
     };
 
     let (tx, rx) = mpsc::channel(64);
@@ -318,6 +328,92 @@ pub async fn spawn(cfg: &Config, state: StateStore) -> Result<EventsHandle> {
 /// skade's single-writer contract requires no concurrent writer, and running
 /// alone (no scan contention) is the whole point. Keeps every row — it fixes
 /// metadata bloat, not data volume (no sealed-row pruning).
+impl EventsHandle {
+    /// Targeted-erasure pass: rebuild the events table dropping every row that
+    /// matches a persistent tombstone. For the OFFLINE `garmr erase` command —
+    /// run with the daemon stopped (the store locks enforce single-writer).
+    /// Returns the number of rows erased.
+    ///
+    /// This is the enforcement half of erasure: the tombstone is persisted
+    /// FIRST (so a crash here still converges at the next serve compaction),
+    /// then this rebuild makes the hot store clean now rather than eventually.
+    pub async fn erase_matching(&self, state: &StateStore) -> Result<u64> {
+        let n = erase_pass(&self.wh, state).await?;
+        // The rebuild swapped the table out from under the actor. Refresh its
+        // handle BEFORE returning: an append raced against a stale handle lands
+        // in the retired directory, which the next pass's cleanup deletes.
+        let (ack, rx) = oneshot::channel();
+        self.tx
+            .send(Cmd::Refresh(ack))
+            .await
+            .map_err(|_| Error::store("events writer gone"))?;
+        rx.await
+            .map_err(|_| Error::store("events writer dropped ack"))??;
+        Ok(n)
+    }
+}
+
+async fn erase_pass(wh: &skade::Warehouse, state: &StateStore) -> Result<u64> {
+    use std::sync::atomic::Ordering;
+
+    let matcher = compaction::TombstoneMatcher::new(state.list_tombstones().map_err(Error::store)?);
+    if matcher.is_empty() {
+        return Ok(0);
+    }
+    if let Err(e) = compaction::cleanup_orphans(wh, T_EVENTS).await {
+        tracing::warn!(error = %e, "scratch cleanup before erase failed (non-fatal)");
+    }
+    let erased = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let hook_count = erased.clone();
+    let hook = move |batch: skade::arrow_array::RecordBatch| -> skade::Result<skade::arrow_array::RecordBatch> {
+        use skade::arrow_array::Array;
+        let Some(ts) = batch
+            .column_by_name("event_ts")
+            .and_then(|c| c.as_any().downcast_ref::<skade::arrow_array::TimestampMicrosecondArray>())
+        else {
+            return Ok(batch);
+        };
+        let host_col = batch
+            .column_by_name("host")
+            .and_then(|c| c.as_any().downcast_ref::<skade::arrow_array::StringArray>());
+        let fields_col = batch
+            .column_by_name("fields")
+            .and_then(|c| c.as_any().downcast_ref::<skade::arrow_array::StringArray>());
+        let mut n = 0u64;
+        let keep: skade::arrow_array::BooleanArray = (0..ts.len())
+            .map(|i| {
+                if ts.is_null(i) {
+                    return Some(true);
+                }
+                let host = host_col
+                    .filter(|h| !h.is_null(i))
+                    .map(|h| h.value(i))
+                    .unwrap_or("");
+                let fields = fields_col.filter(|f| !f.is_null(i)).map(|f| f.value(i));
+                if matcher.matches(host, fields, ts.value(i)) {
+                    n += 1;
+                    return Some(false);
+                }
+                Some(true)
+            })
+            .collect();
+        hook_count.fetch_add(n, Ordering::Relaxed);
+        skade::datafusion::arrow::compute::filter_record_batch(&batch, &keep)
+            .map_err(|e| skade::SkadeError::other(e.to_string()))
+    };
+    let hook_ref: &(dyn Fn(skade::arrow_array::RecordBatch) -> skade::Result<skade::arrow_array::RecordBatch>
+          + Send
+          + Sync) = &hook;
+    wh.compact_table_props(
+        T_EVENTS,
+        Some(hook_ref),
+        &crate::schema::events_compact_write_props(),
+    )
+    .await
+    .map_err(Error::store)?;
+    Ok(erased.load(Ordering::Relaxed))
+}
+
 pub async fn compact_now(cfg: &Config) -> Result<skade::CompactReport> {
     let wh = skade::open(&cfg.store.warehouse_dir)
         .await
@@ -493,8 +589,18 @@ async fn actor_loop(
                     Err(e) => (Err(e), 0, submitted, reply),
                 }
             }
+            Cmd::Refresh(ack) => {
+                // Externally-driven rebuild (offline erase): re-resolve the
+                // table handle so subsequent appends land in the LIVE data dir,
+                // not the retired one.
+                let _ = ack.send(events.refresh().await.map_err(Error::store));
+                continue;
+            }
         };
         if submitted > n {
+            garmr_core::metrics::registry()
+                .ingest_dedup_dropped_total
+                .add(&[("path", "store")], (submitted - n) as u64);
             tracing::debug!(
                 dropped = submitted - n,
                 "ingest dedup: dropped duplicate event(s)"
@@ -719,6 +825,7 @@ mod tests {
         use garmr_core::{AgentConfig, DetectConfig, IngestConfig, LlmBackend, StoreConfig};
         Config {
             audit: Default::default(),
+            backup: Default::default(),
             store: StoreConfig {
                 warehouse_dir: base.join("wh"),
                 state_db: base.join("state.redb"),
@@ -737,6 +844,7 @@ mod tests {
                 ui_dir: None,
                 dedup_recent: 0,
                 flight_bind: None,
+                collectors_file: None,
             },
             detect: DetectConfig {
                 rules_dir: base.join("rules"),
@@ -760,6 +868,7 @@ mod tests {
                 freq_min_count: 20,
                 prediction_discount: 0.5,
             },
+            cases: Default::default(),
             agent: AgentConfig {
                 backend: LlmBackend::Anthropic,
                 model: "claude-opus-4-8".into(),
@@ -772,6 +881,7 @@ mod tests {
                 geoip_dir: None,
                 ioc_feeds: vec![],
                 mcp_servers: vec![],
+                pricing: Default::default(),
             },
             retention: Default::default(),
             route: Default::default(),
@@ -780,6 +890,93 @@ mod tests {
             environment: Default::default(),
             matrix: None,
         }
+    }
+
+    /// End-to-end proof that `constrain_sources` actually FILTERS, not merely
+    /// that it produces plausible SQL. A rewrite can look correct as a string
+    /// and still return every row — only executing it against DataFusion
+    /// settles that.
+    #[tokio::test]
+    async fn source_scoped_sql_returns_only_allowed_sources_through_datafusion() {
+        use crate::sql_guard::constrain_sources;
+
+        let base = tmp("scoped-sql");
+        std::fs::create_dir_all(&base).unwrap();
+        let cfg = test_cfg(&base, 0);
+        let state = StateStore::open(&cfg.store.state_db).expect("state");
+        let handle = spawn(&cfg, state).await.expect("spawn");
+
+        let mut hr = event("hr record one");
+        hr.source = "hr".into();
+        let mut hr2 = event("hr record two");
+        hr2.source = "hr".into();
+        let mut infra = event("infra record");
+        infra.source = "infra".into();
+        handle
+            .append(vec![hr.clone(), hr2.clone(), infra.clone()])
+            .await
+            .unwrap();
+
+        let allowed = vec!["hr".to_string()];
+        let count_scoped = |sql: &str| {
+            let rewritten = constrain_sources(sql, &allowed).expect("rewrite");
+            let h = &handle;
+            async move {
+                let rows = h.sql(rewritten).await.expect("scoped query runs");
+                rows[0]
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<skade::arrow_array::Int64Array>()
+                    .unwrap()
+                    .value(0)
+            }
+        };
+
+        // Unscoped sees all three; every scoped shape sees only the two hr rows.
+        assert_eq!(count_via(&handle).await, 3);
+        assert_eq!(count_scoped("SELECT count(*) AS n FROM events").await, 2);
+        assert_eq!(
+            count_scoped("SELECT count(*) AS n FROM events AS t").await,
+            2,
+            "an alias must not widen the scope"
+        );
+        assert_eq!(
+            count_scoped("WITH t AS (SELECT source FROM events) SELECT count(*) AS n FROM t").await,
+            2,
+            "a CTE must not widen the scope"
+        );
+        assert_eq!(
+            count_scoped(
+                "SELECT count(*) AS n FROM (SELECT source FROM events UNION ALL \
+                 SELECT source FROM events) u"
+            )
+            .await,
+            4,
+            "both UNION branches are constrained (2 hr rows twice), not 6"
+        );
+
+        // And the infra row is genuinely unreachable, not merely uncounted.
+        let rewritten = constrain_sources("SELECT message FROM events", &allowed).expect("rewrite");
+        let rows = handle.sql(rewritten).await.expect("runs");
+        let msgs: Vec<String> = rows
+            .iter()
+            .flat_map(|b| {
+                use skade::arrow_array::Array;
+                let col = b
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<skade::arrow_array::StringArray>()
+                    .unwrap();
+                (0..col.len())
+                    .map(|i| col.value(i).to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(
+            !msgs.iter().any(|m| m.contains("infra")),
+            "an out-of-scope row leaked: {msgs:?}"
+        );
+        assert_eq!(msgs.len(), 2, "{msgs:?}");
     }
 
     async fn count_via(handle: &EventsHandle) -> i64 {
@@ -1055,6 +1252,7 @@ mod tests {
                 checksum: String::new(),
                 hot_pruned: false,
                 sealed_at: cutoff,
+                legal_hold: false,
             })
             .unwrap();
         let handle = spawn(&cfg, state).await.expect("spawn");
@@ -1238,5 +1436,190 @@ mod tests {
         assert!(row.is_some(), "exact event_id lookup finds the row");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Walk `root` and total the Iceberg metadata footprint — the pathology is
+    /// the resident `*.metadata.json` growing without bound as the table accretes
+    /// one tiny Parquet file per commit. Returns
+    /// `(largest_metadata_json_bytes, total_metadata_json_bytes, parquet_files)`.
+    fn metadata_footprint(root: &std::path::Path) -> (u64, u64, u64) {
+        fn walk(dir: &std::path::Path, acc: &mut (u64, u64, u64)) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, acc);
+                    continue;
+                }
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                let len = e.metadata().map(|m| m.len()).unwrap_or(0);
+                if name.ends_with(".metadata.json") {
+                    acc.0 = acc.0.max(len); // largest single = the one loaded into RAM
+                    acc.1 += len;
+                } else if name.ends_with(".parquet") {
+                    acc.2 += 1;
+                }
+            }
+        }
+        let mut acc = (0u64, 0u64, 0u64);
+        walk(root, &mut acc);
+        acc
+    }
+
+    /// THE OOM PROOF. Drive the same continuous single-row-per-commit ingest
+    /// (what group-commit produces on a live SOC) two ways — compaction OFF vs
+    /// ON — and show that OFF grows the resident metadata O(appends) while ON
+    /// stays flat. This is the regression guard for the pathology that OOM-killed
+    /// the dogfood every ~5 h and hung 208 soc-warehouse (RSS 1.1→6.1 GB).
+    ///
+    /// `#[ignore]` — it does N fsync-ing commits; run explicitly:
+    /// `cargo test -p garmr-store growth -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn compaction_bounds_metadata_growth_over_time() {
+        const N: usize = 250;
+        const THRESHOLD: usize = 8;
+
+        // --- OFF: fast_append per commit, never compacted (today's pathology).
+        let off_dir = tmp("growth-off");
+        let off = skade::open(&off_dir).await.unwrap();
+        {
+            let mut t = off
+                .table_or_create(T_EVENTS, &events_schema())
+                .await
+                .unwrap();
+            for i in 0..N {
+                t.append(&[build_events_batch(&[event(&format!("line {i}"))]).unwrap()])
+                    .await
+                    .unwrap();
+            }
+        }
+        let off_snaps = snapshot_count(&off, T_EVENTS).await;
+        let (off_cur, off_total, off_parquet) = metadata_footprint(&off_dir);
+
+        // --- ON: identical ingest, compacted every THRESHOLD fresh snapshots
+        // (what the actor does automatically; done inline here so the test needs
+        // no live Loki/actor plumbing).
+        let on_dir = tmp("growth-on");
+        let on = skade::open(&on_dir).await.unwrap();
+        {
+            let mut t = on
+                .table_or_create(T_EVENTS, &events_schema())
+                .await
+                .unwrap();
+            let mut baseline = 1usize;
+            for i in 0..N {
+                t.append(&[build_events_batch(&[event(&format!("line {i}"))]).unwrap()])
+                    .await
+                    .unwrap();
+                let snaps = t.inner().metadata().snapshots().len();
+                if snaps.saturating_sub(baseline) >= THRESHOLD {
+                    on.compact_table(T_EVENTS, None).await.unwrap();
+                    t.refresh().await.unwrap();
+                    baseline = t.inner().metadata().snapshots().len();
+                }
+            }
+        }
+        let on_snaps = snapshot_count(&on, T_EVENTS).await;
+        let (on_cur, on_total, on_parquet) = metadata_footprint(&on_dir);
+
+        // Both paths preserved every row (correctness before footprint).
+        assert_eq!(count_events(&off).await, N as i64, "OFF kept all rows");
+        assert_eq!(count_events(&on).await, N as i64, "ON kept all rows");
+
+        eprintln!("\n=== skade metadata growth over {N} commits (threshold {THRESHOLD}) ===");
+        eprintln!("               snapshots  live-metadata.json  all-metadata.json  parquet-files");
+        eprintln!(
+            "  compaction OFF: {off_snaps:>7}  {off_cur:>14} B  {off_total:>15} B  {off_parquet:>10}"
+        );
+        eprintln!(
+            "  compaction ON:  {on_snaps:>7}  {on_cur:>14} B  {on_total:>15} B  {on_parquet:>10}"
+        );
+        eprintln!(
+            "  → live-metadata shrunk {:.1}×, snapshots {:.1}× fewer, tiny files {:.1}× fewer\n",
+            off_cur as f64 / on_cur.max(1) as f64,
+            off_snaps as f64 / on_snaps.max(1) as f64,
+            off_parquet as f64 / on_parquet.max(1) as f64,
+        );
+
+        // The pathology: OFF's live metadata.json grows ~linearly with commits.
+        assert!(off_snaps >= N - 1, "OFF accretes one snapshot per commit");
+        // The fix: ON's live metadata.json (the thing loaded into RAM) and its
+        // snapshot count are BOUNDED — independent of how long ingest runs.
+        assert!(
+            on_snaps <= THRESHOLD + 2,
+            "ON snapshot count bounded, got {on_snaps}"
+        );
+        assert!(
+            on_cur * 4 < off_cur,
+            "ON live metadata.json must be far smaller: on={on_cur} off={off_cur}"
+        );
+
+        std::fs::remove_dir_all(&off_dir).ok();
+        std::fs::remove_dir_all(&on_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn erase_removes_the_subject_and_spares_everyone_else() {
+        // The M3 acceptance line: src_ip A erased from hot, B survives, and a
+        // re-run is a zero-delta no-op (idempotent convergence).
+        let base = tmp("erase");
+        std::fs::create_dir_all(&base).unwrap();
+        let cfg = test_cfg(&base, 0);
+        let state = StateStore::open(&cfg.store.state_db).expect("state");
+        let handle = spawn(&cfg, state.clone()).await.expect("spawn");
+
+        let with_ip = |msg: &str, ip: &str| {
+            let mut e = event(msg);
+            e.fields.insert("src_ip".to_string(), ip.to_string());
+            e
+        };
+        handle
+            .append(vec![
+                with_ip("login A one", "203.0.113.7"),
+                with_ip("login A two", "203.0.113.7"),
+                with_ip("login B", "10.0.0.5"),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(count_via(&handle).await, 3);
+
+        state
+            .put_tombstone(&garmr_core::Tombstone {
+                id: "erase-test".into(),
+                field: garmr_core::EraseField::SrcIp,
+                value: "203.0.113.7".into(),
+                from_us: None,
+                to_us: None,
+                placed_at: chrono::Utc::now(),
+                reason: "test".into(),
+            })
+            .unwrap();
+
+        let erased = handle.erase_matching(&state).await.unwrap();
+        assert_eq!(erased, 2, "both of A's rows go");
+        assert_eq!(count_via(&handle).await, 1, "B survives");
+
+        // Idempotent: nothing left to erase, nothing else harmed.
+        let again = handle.erase_matching(&state).await.unwrap();
+        assert_eq!(again, 0, "re-run is a zero-delta no-op");
+        assert_eq!(count_via(&handle).await, 1);
+
+        // Convergence: a LATE ARRIVAL matching the tombstone is erased by the
+        // next pass — the reason the tombstone is persistent.
+        handle
+            .append(vec![with_ip("late replay of A", "203.0.113.7")])
+            .await
+            .unwrap();
+        assert_eq!(count_via(&handle).await, 2);
+        assert_eq!(handle.erase_matching(&state).await.unwrap(), 1);
+        assert_eq!(
+            count_via(&handle).await,
+            1,
+            "the late arrival converged away"
+        );
     }
 }

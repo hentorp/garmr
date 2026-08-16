@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use crate::ir::{FusionConfig, FusionMethod};
+use crate::ir::{FusionConfig, FusionMethod, Window};
 use crate::result::{HybridResult, ResultItem, SemanticStatus, Signal, SignalMatch};
 
 /// One event row shuttled from the executor into fusion (and out as a
@@ -47,6 +47,11 @@ pub struct SemanticHit {
     pub service: String,
     pub message: String,
     pub score: f32,
+    /// Ingest origin, so the semantic leg can be filtered by a credential's data
+    /// scope. Additive with a `Default` of empty — a backend that does not
+    /// populate it produces hits no CONFINED credential can see, which is the
+    /// safe direction for a field whose absence means "unattributable".
+    pub source: String,
 }
 
 /// The per-event fusion key (16-byte BLAKE3 of the event identity).
@@ -82,6 +87,14 @@ fn frame16(parts: &[&[u8]]) -> [u8; 16] {
 /// its `structured` rows are the GATE: when true, text/semantic contributions
 /// only count for events in the structured candidate set. Inputs are in each
 /// signal's own rank order (index 0 = best).
+///
+/// `window` is the query's resolved time window and is enforced here as the LAST
+/// word: each leg already bounds itself, so this only ever catches a leg that
+/// failed to — but it makes "no result ever falls outside the requested window"
+/// a property of the fuser rather than a promise spread across three legs. It
+/// also decides the one case a leg genuinely cannot: a semantic hit names a
+/// message group, not an event, so it may only stand alone as a row when its
+/// own (group-max) timestamp is inside the window.
 #[allow(clippy::too_many_arguments)]
 pub fn fuse(
     structured: &[Row],
@@ -89,6 +102,7 @@ pub fn fuse(
     fulltext: &[(Row, f32)],
     semantic: &[SemanticHit],
     semantic_status: SemanticStatus,
+    window: Window,
     cfg: &FusionConfig,
 ) -> HybridResult {
     let mut rows: HashMap<[u8; 16], Row> = HashMap::new();
@@ -108,6 +122,9 @@ pub fn fuse(
         None
     };
     for (i, r) in structured.iter().enumerate() {
+        if !window.contains(r.ts_micros) {
+            continue;
+        }
         let k = event_key(r);
         rows.insert(k, r.clone());
         prov.entry(k).or_default().push(SignalMatch {
@@ -122,6 +139,9 @@ pub fn fuse(
 
     // 2. Full-text hits — gated by event-key membership when a gate is active.
     for (i, (r, score)) in fulltext.iter().enumerate() {
+        if !window.contains(r.ts_micros) {
+            continue;
+        }
         let k = event_key(r);
         if let Some(g) = &gate {
             if !g.contains(&k) {
@@ -154,6 +174,13 @@ pub fn fuse(
         if targets.is_empty() {
             if gate.is_some() {
                 continue; // outside the structured candidate set
+            }
+            if !window.contains(h.ts_micros) {
+                // Standing alone, the hit would be RENDERED at its group-max
+                // timestamp — a row outside the window the analyst asked for.
+                // Reinforcing an in-window event (the branch below) is fine:
+                // that event's own timestamp is what the row shows.
+                continue;
             }
             let r = Row {
                 ts_micros: h.ts_micros,
@@ -287,6 +314,7 @@ mod tests {
             &[(hot.clone(), 9.0)], // full-text reinforces the hot event
             &[],
             SemanticStatus::NotRequested,
+            Window::default(),
             &cfg(),
         );
         assert_eq!(res.items[0].message, "the doubly matched event");
@@ -304,6 +332,7 @@ mod tests {
             &[(a.clone(), 5.0)], // full-text: A rank1
             &[],
             SemanticStatus::NotRequested,
+            Window::default(),
             &cfg(),
         );
         assert_eq!(res.items.len(), 2);
@@ -323,6 +352,7 @@ mod tests {
             host: "h".into(),
             service: "svc".into(),
             message: "Failed password for root".into(),
+            source: "journald".into(),
             score: 0.9,
         }];
         let res = fuse(
@@ -331,6 +361,7 @@ mod tests {
             &[],
             &sem,
             SemanticStatus::Used,
+            Window::default(),
             &cfg(),
         );
         // BOTH events get a semantic provenance entry (the FIX #1 behaviour).
@@ -351,6 +382,7 @@ mod tests {
             &[(outside.clone(), 9.0)], // full-text hit outside the gate
             &[],
             SemanticStatus::NotRequested,
+            Window::default(),
             &cfg(),
         );
         assert_eq!(res.items.len(), 1);
@@ -364,11 +396,93 @@ mod tests {
             host: "h".into(),
             service: "svc".into(),
             message: "anomalous login".into(),
+            source: "journald".into(),
             score: 0.7,
         }];
-        let res = fuse(&[], false, &[], &sem, SemanticStatus::Used, &cfg());
+        let res = fuse(
+            &[],
+            false,
+            &[],
+            &sem,
+            SemanticStatus::Used,
+            Window::default(),
+            &cfg(),
+        );
         assert_eq!(res.items.len(), 1);
         assert_eq!(res.items[0].message, "anomalous login");
+    }
+
+    // ---- the window is the fuser's last word --------------------------------
+
+    fn window(from: i64, to: i64) -> Window {
+        Window {
+            from_us: Some(from),
+            to_us: Some(to),
+        }
+    }
+
+    #[test]
+    fn no_signal_can_place_a_row_outside_the_window() {
+        // Each leg bounds itself; the fuser is the backstop that makes it an
+        // invariant. Feed every leg an out-of-window row and expect none back.
+        let inside = row(150, "h", "inside");
+        let early = row(50, "h", "too early");
+        let late = row(250, "h", "too late");
+        let res = fuse(
+            &[inside.clone(), early.clone()],
+            true,
+            &[(late.clone(), 9.0)],
+            &[],
+            SemanticStatus::NotRequested,
+            window(100, 200),
+            &cfg(),
+        );
+        assert_eq!(res.items.len(), 1);
+        assert_eq!(res.items[0].message, "inside");
+    }
+
+    #[test]
+    fn a_semantic_hit_may_reinforce_in_window_events_but_not_stand_outside() {
+        // The hit's timestamp is its message group's MAX (200 = out of window),
+        // yet an in-window event shares the triple: reinforcing THAT event is
+        // honest — the row shows the event's own in-window timestamp.
+        let e = row(150, "h", "Failed password for root");
+        let sem = vec![SemanticHit {
+            ts_micros: 200,
+            host: "h".into(),
+            service: "svc".into(),
+            message: "Failed password for root".into(),
+            source: "journald".into(),
+            score: 0.9,
+        }];
+        let res = fuse(
+            std::slice::from_ref(&e),
+            false,
+            &[],
+            &sem,
+            SemanticStatus::Used,
+            window(100, 200),
+            &cfg(),
+        );
+        assert_eq!(res.items.len(), 1);
+        assert_eq!(res.items[0].ts_micros, 150);
+        assert!(res.items[0]
+            .provenance
+            .iter()
+            .any(|p| p.signal == Signal::Semantic));
+
+        // With no event to reinforce, the same hit would have to be rendered at
+        // its own out-of-window timestamp — so it is dropped instead.
+        let alone = fuse(
+            &[],
+            false,
+            &[],
+            &sem,
+            SemanticStatus::Used,
+            window(100, 200),
+            &cfg(),
+        );
+        assert!(alone.items.is_empty());
     }
 
     #[test]
@@ -376,7 +490,15 @@ mod tests {
         let mut c = cfg();
         c.limit = 1;
         let rows: Vec<Row> = (0..5).map(|i| row(i, "h", &format!("m{i}"))).collect();
-        let res = fuse(&rows, true, &[], &[], SemanticStatus::NotRequested, &c);
+        let res = fuse(
+            &rows,
+            true,
+            &[],
+            &[],
+            SemanticStatus::NotRequested,
+            Window::default(),
+            &c,
+        );
         assert_eq!(res.items.len(), 1);
         assert!(res.truncated);
     }

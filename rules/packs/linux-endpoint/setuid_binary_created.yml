@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Setuid bit set on a binary
+id: garmr-ep-setuid
+status: stable
+description: >
+    chmod u+s / chmod 4755 - creating a setuid binary is a persistence-grade
+    privilege escalation, and vanishingly rare as legitimate activity.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    selection:
+        message|contains:
+            - 'chmod u+s'
+            - 'chmod 4755'
+            - 'chmod 4777'
+    condition: selection
+falsepositives:
+    - Package scripts (which do it via their own tooling, not chmod).
+level: critical
+tags:
+    - attack.privilege_escalation
+    - attack.t1548.001

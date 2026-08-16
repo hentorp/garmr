@@ -4,6 +4,8 @@ description = "garmr analyst console — Leptos (CSR/WASM) frontend over the ser
 version = "0.1.0"
 edition = "2021"
 publish = false
+# Own workspace, so the root workspace license does not reach it — state it here.
+license = "AGPL-3.0-only"
 
 [dependencies]
 leptos = { version = "0.7", features = ["csr"] }

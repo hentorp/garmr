@@ -112,6 +112,14 @@ pub struct IngestConfig {
     /// queries go through the daemon, not a second CLI process.
     #[serde(default = "default_api_bind")]
     pub api_bind: Option<String>,
+    /// Optional path of the collector-credential registry file, managed by
+    /// `garmr collector add|rotate|revoke|list`. `None` disables file-based
+    /// collector credentials (the `GARMR_COLLECTORS` env registry still works).
+    /// The keyed-digest key lives in a sibling `<file>.key` (0600, created on
+    /// first use) — deliberately NOT in the state store, so the CLI can manage
+    /// credentials without contending for the single-writer redb lock.
+    #[serde(default)]
+    pub collectors_file: Option<PathBuf>,
     /// Optional directory of the built web console (the garmr-webui `dist/`).
     /// When set — or overridden by the `GARMR_UI_DIR` env var — `serve` hosts
     /// the SPA at `/` on the same bind as the API, so a browser and the API
@@ -297,6 +305,31 @@ fn default_realert_secs() -> u64 {
     900
 }
 
+/// `[cases.sla]` — service-level clocks on the human queue.
+///
+/// EVERY default is 0 = disabled, and that is a safety property, not a
+/// placeholder: a deployment whose whole queue is NeedsHuman by design (the
+/// LLM-off posture) would mass-breach the moment a non-zero default shipped,
+/// tagging every open case and flooding the alerts room in one tick. SLAs are
+/// a promise an operator makes explicitly, not one a default makes for them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SlaConfig {
+    /// Minutes a case may sit in the human queue (NeedsHuman/Escalated)
+    /// UNASSIGNED before the ack clock breaches. 0 = no ack SLA.
+    #[serde(default)]
+    pub ack_minutes: u64,
+    /// Minutes from a case's opening until it must be Closed. 0 = no resolve SLA.
+    #[serde(default)]
+    pub resolve_minutes: u64,
+}
+
+/// `[cases]` — case-queue behaviour.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CasesConfig {
+    #[serde(default)]
+    pub sla: SlaConfig,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub backend: LlmBackend,
@@ -308,6 +341,15 @@ pub struct AgentConfig {
     /// Base URL for the OpenAI-compatible backend (ignored for Anthropic).
     #[serde(default)]
     pub openai_base_url: Option<String>,
+    /// USD per million tokens as `model = [input, output]`, consulted before the
+    /// built-in table. This is what lets the daily budget bind on an endpoint
+    /// garmr does not ship prices for: without a price the ledger records $0 for
+    /// every call, so `daily_budget_usd` silently bounds nothing. A paid remote
+    /// endpoint whose model is unpriced is refused at startup rather than run
+    /// unmetered. Prefix keys are allowed (`"gpt-4o" = [2.5, 10.0]` prices
+    /// `gpt-4o-2026-01-01`), longest match wins.
+    #[serde(default)]
+    pub pricing: std::collections::BTreeMap<String, [f64; 2]>,
     /// Max tool-loop iterations per case.
     #[serde(default = "default_max_iterations")]
     pub max_iterations: u32,
@@ -407,6 +449,41 @@ impl Default for ColdArchiverKind {
     }
 }
 
+/// Scheduled ONLINE backups, taken by the running daemon.
+///
+/// Separate from the offline `garmr backup create`, which stops the writer. This
+/// is the 24/7 path: the daemon captures while it serves. Off by default —
+/// `interval_secs = 0` — because a backup schedule that appears without an
+/// operator choosing it writes to a disk nobody sized for it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupConfig {
+    /// Seconds between scheduled backups. `0` (default) disables the loop
+    /// entirely; the offline CLI path is unaffected either way.
+    #[serde(default)]
+    pub interval_secs: u64,
+    /// Where images are written. Each run creates a timestamped subdirectory.
+    #[serde(default = "default_backup_dir")]
+    pub dir: PathBuf,
+    /// How many images to retain. `0` means NO PRUNING — never "delete them
+    /// all", which is what an unset or mistyped value would otherwise mean.
+    #[serde(default)]
+    pub keep: usize,
+}
+
+fn default_backup_dir() -> PathBuf {
+    PathBuf::from("./data/backups")
+}
+
+impl Default for BackupConfig {
+    fn default() -> Self {
+        Self {
+            interval_secs: 0,
+            dir: default_backup_dir(),
+            keep: 0,
+        }
+    }
+}
+
 /// Cold-storage / retention: aged events are sealed into immutable cold
 /// archives (never silently deleted) that stay queryable via `garmr cold-query`.
 ///
@@ -434,6 +511,35 @@ pub struct RetentionConfig {
     /// znippy/zstd compression level for the archive layer.
     #[serde(default = "default_compression_level")]
     pub compression_level: i32,
+    /// Per-class retention overrides (`[[retention.class]]`).
+    ///
+    /// A listed class is EXCLUDED from cold archives and its rows are pruned
+    /// from the hot store once older than `hot_days`. That single semantic is
+    /// deliberate: "archive, but with a shorter hot window" would require
+    /// seal-before-prune coordination (pruning a row before its window seals
+    /// destroys the only copy), so it is not expressible here — a class either
+    /// follows the global retention lifecycle by not being listed, or opts out
+    /// of archiving entirely and accepts that its rows past `hot_days` are gone.
+    #[serde(default)]
+    pub class: Vec<RetentionClass>,
+}
+
+/// One `[[retention.class]]` stanza: a source whose rows are never archived and
+/// are pruned from the hot store after `hot_days`.
+///
+/// Selected by exact `source` match — the same key the authorization scopes and
+/// collector bindings use, so one vocabulary names data everywhere. Typical use
+/// is high-volume endpoint telemetry (kunai, netflow) whose value decays in
+/// days while the sources worth keeping for a year (auth logs, audit trails)
+/// stay on the global lifecycle.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RetentionClass {
+    /// Exact `event.source` this class covers.
+    pub source: String,
+    /// Rows older than this many days are pruned at the next compaction.
+    /// Clamped to at least 1: `hot_days = 0` would race ingest, pruning rows
+    /// moments after they arrive.
+    pub hot_days: u32,
 }
 
 impl Default for RetentionConfig {
@@ -445,6 +551,7 @@ impl Default for RetentionConfig {
             window_days: default_window_days(),
             interval_secs: default_retention_interval_secs(),
             compression_level: default_compression_level(),
+            class: Vec::new(),
         }
     }
 }
@@ -591,9 +698,14 @@ pub struct Config {
     pub ingest: IngestConfig,
     pub detect: DetectConfig,
     pub agent: AgentConfig,
+    #[serde(default)]
+    pub cases: CasesConfig,
     /// Tamper-evident audit ledger. Enabled by default.
     #[serde(default)]
     pub audit: AuditConfig,
+    /// Scheduled online backups (off by default).
+    #[serde(default)]
+    pub backup: BackupConfig,
     /// Cold-storage / retention. Defaults to disabled.
     #[serde(default)]
     pub retention: RetentionConfig,

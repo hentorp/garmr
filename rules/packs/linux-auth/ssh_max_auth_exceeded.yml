@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: SSH maximum authentication attempts exceeded
+id: garmr-auth-ssh-max-auth
+status: stable
+description: >
+    sshd disconnected a peer for exceeding MaxAuthTries in a single
+    connection - a brute-force tool cycling credentials, not a human.
+author: garmr
+logsource:
+    product: linux
+    service: sshd
+detection:
+    selection:
+        service: sshd
+        message|contains: 'maximum authentication attempts exceeded'
+    condition: selection
+falsepositives:
+    - A badly configured SSH client cycling through many keys.
+level: high
+tags:
+    - attack.credential_access
+    - attack.t1110.001

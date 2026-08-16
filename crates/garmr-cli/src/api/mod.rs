@@ -39,6 +39,22 @@ const MAX_SEARCH_LIMIT: usize = 1000;
 /// Tokio's blocking pool. Permits are held by the blocking closure itself.
 const MAX_CONCURRENT_SEARCHES: usize = 2;
 const MAX_QUERY_ROWS: usize = 5000;
+
+/// The self-declared client marker (`X-Garmr-Client`), sanitized to
+/// `[a-z0-9_-]`, ≤32 chars. Advisory, not authentication: a client that lies
+/// about the marker gains nothing (identity comes from the credential), but an
+/// honest one lets audit reviewers separate MCP-proxied reads from direct
+/// ones. Absent or empty after sanitizing → `None`.
+fn client_marker(headers: &axum::http::HeaderMap) -> Option<String> {
+    let raw = headers.get("x-garmr-client")?.to_str().ok()?;
+    let clean: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .flat_map(|c| c.to_lowercase())
+        .take(32)
+        .collect();
+    (!clean.is_empty()).then_some(clean)
+}
 const QUERY_TIMEOUT_SECS: u64 = 30;
 /// Cold queries thaw + decompress archives before scanning — allow longer.
 const COLD_QUERY_TIMEOUT_SECS: u64 = 120;
@@ -49,6 +65,7 @@ mod applications;
 mod auth;
 mod behavioral;
 mod capabilities;
+mod capacity;
 mod config;
 // pub(crate) so the offline `garmr recover` command can reuse CredentialStore.
 pub(crate) mod credentials;
@@ -57,8 +74,11 @@ mod explain;
 mod feedback;
 mod hsearch;
 mod llm;
+mod metrics;
+mod oidc;
 mod passkey;
 mod policies;
+mod principals;
 mod query;
 mod registry;
 mod resources;
@@ -94,6 +114,10 @@ struct ApiState {
     matrix: Option<std::sync::Arc<garmr_agent::Matrix>>,
     /// Time-bounded entity-graph cache shared across pivots.
     graph_cache: std::sync::Arc<garmr_graph::GraphCache>,
+    /// OIDC relying party, present only when SSO is fully configured. `None`
+    /// means the routes 404 and the login page shows no button — a partially
+    /// configured IdP is refused rather than half-enabled.
+    oidc: Option<std::sync::Arc<oidc::OidcClient>>,
     /// Passkey (WebAuthn) login state, present when `GARMR_WEBAUTHN_RP_ID` is
     /// set; `None` keeps the surface token-only as before.
     webauthn: Option<std::sync::Arc<passkey::Webauthn>>,
@@ -106,6 +130,9 @@ struct ApiState {
     /// This node's HA role: `true` = a read-only follower (writes/LLM/admin
     /// unmounted); `false` = the writer/leader. Surfaced by `/api/ha/status`.
     read_only: bool,
+    /// The live rule set (writer only) — POST /admin/rules/reload swaps it
+    /// without a restart.
+    live_rules: Option<std::sync::Arc<crate::rules::LiveRules>>,
     /// Live semantic-search state (model + vector index), present when the
     /// `semantic` feature is built and GARMR_EMBED_MODEL is set.
     #[cfg(feature = "semantic")]
@@ -221,6 +248,10 @@ impl ApiState {
 struct SemanticHandle {
     embedder: std::sync::Arc<garmr_embed::Embedder>,
     index: std::sync::Arc<tokio::sync::RwLock<garmr_embed::VectorStore>>,
+}
+
+fn not_found(msg: impl std::fmt::Display) -> (StatusCode, String) {
+    (StatusCode::NOT_FOUND, msg.to_string())
 }
 
 fn bad(msg: impl std::fmt::Display) -> (StatusCode, String) {

@@ -1,4 +1,7 @@
-# Example scheduled hunt — rename to .toml to enable.
+# Scheduled beacon hunt — ENABLED as part of the day-one content packs.
+# Budget-gated like all agent work: with agent.daily_budget_usd = 0 it is
+# inert (queues nothing, spends nothing), so shipping it enabled is safe in
+# the LLM-off posture and it lights up the moment a budget exists.
 # Each run costs a model call (budget-capped). Findings become synthetic
 # detections in the same case flow as Sigma/correlation.
 id = "beacon-outbound"

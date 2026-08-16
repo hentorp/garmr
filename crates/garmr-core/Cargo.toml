@@ -26,3 +26,23 @@ figment.workspace = true
 anyhow.workspace = true
 # Inventory import (parse_inventory) reads local TOML files — air-gap friendly.
 toml.workspace = true
+
+[dev-dependencies]
+# The SILENCED-TEST guard (`tests/silenced_tests_guard.rs`): edda's
+# `nornir_testmatrix::gatedtests::audit_repo`, which fails this repo's own
+# `cargo test` the moment a `tests/*.rs` goes dark behind an off-by-default
+# feature (as `garmr-ingest/tests/flight_e2e.rs` silently was until 2026-08-01).
+# PATH, and deliberately NO `version` — crates.io's newest nornir-testmatrix
+# (0.2.7) does not contain the `gatedtests` module at all; the guard exists only
+# in edda's unpublished 0.2.9, so a version requirement would be a claim the
+# registry cannot honour. garmr-core is `publish = false`, and this is dev-only,
+# so the edge never leaves the repo.
+#
+# VENDORED, not a sibling path. This pointed at `../../../edda/crates/...` —
+# outside the repository — until 2026-08-14. No CI runner has a checkout there,
+# so `cargo metadata` could not resolve the workspace at all and every job that
+# needs it (cargo-deny, clippy, test, the SBOM gate) died before it evaluated
+# anything. The subtree now lives under vendor/edda/ beside nornir-graph, which
+# is where the other four siblings already were; `vendor/edda` is in the
+# workspace `exclude` list, so its test fixtures are not absorbed as members.
+nornir-testmatrix = { path = "../../vendor/edda/nornir-testmatrix", default-features = false }

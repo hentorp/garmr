@@ -587,11 +587,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/async-trait@0.1.91",
+      "bom-ref": "pkg:cargo/async-trait@0.1.92",
       "type": "library",
       "name": "async-trait",
-      "version": "0.1.91",
-      "purl": "pkg:cargo/async-trait@0.1.91",
+      "version": "0.1.92",
+      "purl": "pkg:cargo/async-trait@0.1.92",
       "licenses": [
         {
           "license": {
@@ -5622,6 +5622,34 @@
         {
           "license": {
             "name": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:cargo/nornir-graph@0.1.0",
+      "type": "library",
+      "name": "nornir-graph",
+      "version": "0.1.0",
+      "purl": "pkg:cargo/nornir-graph@0.1.0",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT OR Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:cargo/nornir-testmatrix@0.2.9",
+      "type": "library",
+      "name": "nornir-testmatrix",
+      "version": "0.2.9",
+      "purl": "pkg:cargo/nornir-testmatrix@0.2.9",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT OR Apache-2.0"
           }
         }
       ]

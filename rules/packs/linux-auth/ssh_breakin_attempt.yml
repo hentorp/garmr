@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: SSH reverse-mapping break-in warning
+id: garmr-auth-ssh-breakin
+status: stable
+description: >
+    sshd's own POSSIBLE BREAK-IN ATTEMPT warning: the peer's DNS does not map
+    back to its address - crude scanners and spoofed infrastructure trip it.
+author: garmr
+logsource:
+    product: linux
+    service: sshd
+detection:
+    selection:
+        service: sshd
+        message|contains: 'POSSIBLE BREAK-IN ATTEMPT'
+    condition: selection
+falsepositives:
+    - Broken reverse DNS on legitimate clients.
+level: medium
+tags:
+    - attack.initial_access
+    - attack.t1190

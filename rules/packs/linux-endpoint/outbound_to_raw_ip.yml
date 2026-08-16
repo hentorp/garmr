@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Download tool aimed at a raw IP address
+id: garmr-ep-curl-raw-ip
+status: stable
+description: >
+    curl/wget fetching from a bare IPv4 address - C2 and droppers skip DNS;
+    legitimate software rarely does.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    selection:
+        message|contains:
+            - 'curl http://1'
+            - 'curl http://2'
+            - 'curl http://3'
+            - 'curl http://4'
+            - 'curl http://5'
+            - 'curl http://6'
+            - 'curl http://7'
+            - 'curl http://8'
+            - 'curl http://9'
+            - 'wget http://1'
+            - 'wget http://2'
+            - 'wget http://3'
+            - 'wget http://4'
+            - 'wget http://5'
+            - 'wget http://6'
+            - 'wget http://7'
+            - 'wget http://8'
+            - 'wget http://9'
+    condition: selection
+falsepositives:
+    - Internal tooling fetching from IP-addressed services (common in labs).
+level: medium
+tags:
+    - attack.command_and_control
+    - attack.t1105

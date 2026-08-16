@@ -20,13 +20,23 @@ use crate::{AccessProjection, Detection, Event};
 /// as the RBA risk score (the single source of truth; risk.rs delegates here).
 /// Unknown levels fall back to "low".
 pub fn level_weight(level: &str) -> f64 {
-    match level.to_ascii_lowercase().as_str() {
-        "critical" => 13.0,
-        "high" => 8.0,
-        "medium" => 4.0,
-        "low" => 2.0,
-        "informational" | "info" => 1.0,
-        _ => 2.0,
+    // Compare case-insensitively without allocating: callers on the detection hot
+    // path pass hardcoded lowercase literals, so the old `to_ascii_lowercase()`
+    // minted a throwaway `String` per call for nothing. `eq_ignore_ascii_case`
+    // is byte-identical to lowercase-then-match for this ASCII vocabulary.
+    let eq = |c: &str| level.eq_ignore_ascii_case(c);
+    if eq("critical") {
+        13.0
+    } else if eq("high") {
+        8.0
+    } else if eq("medium") {
+        4.0
+    } else if eq("low") {
+        2.0
+    } else if eq("informational") || eq("info") {
+        1.0
+    } else {
+        2.0
     }
 }
 
@@ -78,12 +88,19 @@ impl SeverityBand {
 
     /// The band a level string names (unknown → Low).
     pub fn from_level(level: &str) -> SeverityBand {
-        match level.to_ascii_lowercase().as_str() {
-            "critical" => SeverityBand::Critical,
-            "high" => SeverityBand::High,
-            "medium" => SeverityBand::Medium,
-            "informational" | "info" => SeverityBand::Informational,
-            _ => SeverityBand::Low,
+        // Allocation-free, byte-identical to the old lowercase-then-match (see
+        // `level_weight`): the hot-path callers pass lowercase literals.
+        let eq = |c: &str| level.eq_ignore_ascii_case(c);
+        if eq("critical") {
+            SeverityBand::Critical
+        } else if eq("high") {
+            SeverityBand::High
+        } else if eq("medium") {
+            SeverityBand::Medium
+        } else if eq("informational") || eq("info") {
+            SeverityBand::Informational
+        } else {
+            SeverityBand::Low
         }
     }
 }

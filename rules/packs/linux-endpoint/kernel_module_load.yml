@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Kernel module loaded from a non-standard path
+id: garmr-ep-insmod
+status: stable
+description: >
+    insmod/modprobe referencing a module outside /lib/modules - rootkit
+    staging territory.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    selection:
+        message|contains:
+            - 'insmod /tmp'
+            - 'insmod /dev/shm'
+            - 'insmod /var/tmp'
+            - 'insmod /home'
+    condition: selection
+falsepositives:
+    - Kernel developers testing modules (not on production).
+level: critical
+tags:
+    - attack.persistence
+    - attack.t1547.006

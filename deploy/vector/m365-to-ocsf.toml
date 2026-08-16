@@ -1,0 +1,78 @@
+# Microsoft 365 (Management Activity API) → OCSF → garmr. See
+# cloudtrail-to-ocsf.toml for the strategy; `fixtures/ocsf/m365-mailbox-rule.json`
+# is this transform's output, and a test in garmr-ingest asserts what it becomes.
+#
+# The Management Activity API delivers Exchange, SharePoint, Entra sign-in and
+# admin audit records through one subscription feed. The RecordType/Workload
+# pair decides the OCSF class: sign-ins are Authentication (3002), everything
+# else API Activity (6003) — getting the class wrong is worse than a coarse
+# mapping, because a rule scoped to authentication silently stops matching.
+
+[sources.m365]
+type = "http_client"
+# The content-blob flow: list available content, then fetch each blob. In
+# production put the auth (client-credentials token refresh) in front of this,
+# or use the vendored community source; the transform below is the contract.
+endpoint = "https://manage.office.com/api/v1.0/${M365_TENANT_ID}/activity/feed/audit/general"
+scrape_interval_secs = 60
+decoding.codec = "json"
+headers.Authorization = "Bearer ${M365_ACCESS_TOKEN}"
+
+[transforms.ocsf]
+type = "remap"
+inputs = ["m365"]
+source = '''
+# RecordType 15 = AzureActiveDirectoryStsLogon (interactive sign-in).
+is_signin = .RecordType == 15
+
+.class_uid = if is_signin { 3002 } else { 6003 }
+.class_name = if is_signin { "Authentication" } else { "API Activity" }
+.category_name = "Identity & Access Management"
+.activity_name = string!(.Operation)
+.time = string!(.CreationTime)
+.status = if to_string(.ResultStatus) ?? "Succeeded" == "Succeeded" { "Success" } else { "Failure" }
+# Inbox-rule creation is the classic BEC persistence move; a failed sign-in is
+# an attempt. Neither may arrive as routine.
+.severity = if .Operation == "New-InboxRule" || .Operation == "Set-InboxRule" {
+    "High"
+} else if .status == "Failure" && is_signin {
+    "Medium"
+} else {
+    "Informational"
+}
+
+.metadata.product.name = "Microsoft 365"
+.metadata.product.vendor_name = "Microsoft"
+.metadata.version = "1.3.0"
+
+.actor.user.name = to_string(.UserId) ?? to_string(.UserKey) ?? "unknown"
+.actor.user.uid = to_string(.UserKey) ?? ""
+.src_endpoint.ip = to_string(.ClientIP) ?? ""
+# The workload (Exchange/SharePoint/AzureActiveDirectory) is the closest thing
+# to a host: it names the service surface the action happened on.
+.device.hostname = to_string(.Workload) ?? "m365"
+
+.message = join!([string!(.Operation), "by", .actor.user.name, "on",
+                  to_string(.Workload) ?? ""], " ")
+
+# Keep the original identifiers for pivoting without bloating the shape.
+.unmapped.record_type = to_string(.RecordType) ?? ""
+.unmapped.organization_id = to_string(.OrganizationId) ?? ""
+del(.CreationTime); del(.Operation); del(.ResultStatus); del(.UserId)
+del(.UserKey); del(.ClientIP); del(.Workload); del(.RecordType)
+del(.OrganizationId); del(.Id); del(.UserType); del(.Version)
+'''
+
+[sinks.garmr]
+type = "loki"
+inputs = ["ocsf"]
+endpoint = "${GARMR_LOKI_URL}"
+encoding.codec = "json"
+# `source = "ocsf"` is what routes this stream through the OCSF adapter on the
+# LIVE path (garmr-ingest/src/loki.rs). The adapter is mounted on the
+# Loki-compat receiver ONLY — the native /ingest/v1/events decoder accepts
+# canonical garmr events and would reject these documents outright.
+labels.source = "ocsf"
+# Phase-12 collector auth: mint with `garmr collector add m365 --sources ocsf`.
+auth.strategy = "bearer"
+auth.token = "${GARMR_M365_COLLECTOR_TOKEN}"

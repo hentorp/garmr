@@ -207,6 +207,25 @@ async fn create(
         ),
     };
 
+    // AUDITED, fail-closed (the promote discipline): a backup is a complete copy
+    // of the dataset leaving the node's enforcement boundary, and an unrecorded
+    // one is indistinguishable from exfiltration. Opening the ledger here is
+    // safe — the exclusion fence above proves no live writer has it open.
+    // Auditing disabled is tolerated (a backup is a safety mechanism and must
+    // not depend on an optional subsystem); an append FAILURE refuses the
+    // backup, because nothing has been written yet.
+    crate::audit::ensure_init(&cfg.audit)?;
+    if crate::audit::record_admin_local(
+        garmr_audit::action::BACKUP,
+        "backup",
+        Some(&dir.display().to_string()),
+        Some(&format!("offline backup (include_cold={include_cold})")),
+    )?
+    .is_none()
+    {
+        eprintln!("note: auditing is disabled — this backup is not tamper-evidently recorded");
+    }
+
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
 
     // 1. Copy the durable trees into staging (no digests yet).
@@ -397,7 +416,7 @@ fn relativize_location(loc: &str, abs_warehouse: &Path) -> String {
 /// Copy ONLY the audit-ledger allow-list (segments/, checkpoints/,
 /// public_key.hex) — NEVER `signing.key`, exactly as `garmr audit export`.
 /// Returns whether any ledger content was captured.
-fn copy_ledger_allowlisted(audit_dir: &Path, dst: &Path) -> Result<bool> {
+pub(crate) fn copy_ledger_allowlisted(audit_dir: &Path, dst: &Path) -> Result<bool> {
     if !audit_dir.is_dir() {
         return Ok(false);
     }
@@ -485,7 +504,7 @@ fn is_denied_secret(rel: &str) -> bool {
 }
 
 /// Recursively copy a directory tree, rejecting symlinks and non-regular files.
-fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
+pub(crate) fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
@@ -730,6 +749,29 @@ async fn restore(
         println!("  ledger head:        seq {}", m.ledger.head_seq);
         println!("  (verification passed; run without --dry-run to apply)");
         return Ok(());
+    }
+
+    // AUDITED, fail-closed, into the CURRENT chain BEFORE any mutation: when the
+    // backup carries a ledger, the restore replaces the audit directory itself,
+    // so this record's home is the pre-restore chain — which the swap moves
+    // aside to *.pre-restore-<ts> rather than deleting. The restored chain gets
+    // its half from the audited `promote`, which binds the same backup id. An
+    // append failure refuses the restore (nothing has been touched yet).
+    crate::audit::ensure_init(&cfg.audit)?;
+    if crate::audit::record_admin_local(
+        garmr_audit::action::RESTORE,
+        "backup",
+        Some(&m.backup_id),
+        Some(&format!(
+            "restoring {} (warehouse snapshot {}, ledger head seq {}) over this node",
+            backup_dir.display(),
+            m.warehouse.current_snapshot_id,
+            m.ledger.head_seq
+        )),
+    )?
+    .is_none()
+    {
+        eprintln!("note: auditing is disabled — this restore is not tamper-evidently recorded");
     }
 
     // Materialize each staging tree (a pristine byte copy — no open before apply,
@@ -1156,6 +1198,90 @@ fn walk_backup(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gap this closes: every existing test here exercises `verify` against
+    /// a HAND-BUILT manifest. Nothing ran `create` itself, so the assembly —
+    /// walk, digest, classify, sign — was the one part of the disaster-recovery
+    /// path with no coverage at all. That is also exactly the code any future
+    /// refactor (sharing it with the online capture) would touch, and
+    /// refactoring untested code is how behaviour changes in silence.
+    #[tokio::test]
+    async fn a_created_backup_verifies_against_its_own_key() {
+        let root = std::env::temp_dir().join(format!(
+            "garmr-create-rt-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (wh, state_dir, out) = (
+            root.join("warehouse"),
+            root.join("state"),
+            root.join("image"),
+        );
+        std::fs::create_dir_all(wh.join("data")).unwrap();
+        std::fs::create_dir_all(&state_dir).unwrap();
+        // A warehouse-shaped tree plus a state DB file. `create` copies and
+        // digests whatever is there; it does not require a real lakehouse.
+        std::fs::write(wh.join("data/part-1.parquet"), b"columnar bytes").unwrap();
+        // A REAL redb file: the writer-liveness probe opens it, so a dummy byte
+        // blob fails as "invalid data" long before the assembly runs. Opened and
+        // dropped so the exclusive lock is released before `create` probes.
+        let state_db = state_dir.join("state.redb");
+        drop(garmr_store::state::StateStore::open(&state_db).unwrap());
+
+        let cfg_path = root.join("garmr.toml");
+        std::fs::write(
+            &cfg_path,
+            format!(
+                "[store]\nwarehouse_dir = {:?}\nstate_db = {:?}\nsearch_dir = {:?}\n\
+                 [ingest]\n\
+                 [detect]\nrules_dir = {:?}\ncorrelations_dir = {:?}\nhunts_dir = {:?}\n\
+                 policies_dir = {:?}\n\
+                 [agent]\nbackend = \"anthropic\"\nmodel = \"m\"\n\
+                 [audit]\nenabled = true\ndir = {:?}\n",
+                wh,
+                state_db,
+                root.join("search"),
+                root.join("rules"),
+                root.join("correlations"),
+                root.join("hunts"),
+                root.join("policies"),
+                root.join("audit"),
+            ),
+        )
+        .unwrap();
+
+        let cli = crate::cli::Cli {
+            config: Some(cfg_path),
+            cmd: crate::cli::Cmd::Serve,
+        };
+        create(&cli, &out, false, None)
+            .await
+            .expect("create should produce an image");
+
+        // The real assertion: the image verifies against the key create signed
+        // it with. A manifest that is written but does not verify is the failure
+        // an operator meets at the worst possible moment.
+        let key = SoftwareSigner::load_or_create(&default_key_path(
+            &garmr_core::Config::load(&root.join("garmr.toml")).unwrap(),
+        ))
+        .unwrap();
+        let findings = verify_backup(&out, Some(key.public_key())).unwrap();
+        assert!(
+            findings.is_empty(),
+            "a freshly created backup must verify: {findings:?}"
+        );
+
+        // And the mode is the offline one — the online loop must not be able to
+        // claim this path's guarantees by accident.
+        let signed: SignedBackup =
+            serde_json::from_slice(&std::fs::read(out.join("backup.json")).unwrap()).unwrap();
+        assert_eq!(signed.manifest.mode, "offline_quiesced");
+        assert_eq!(signed.manifest.state.kind, "redb_file");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn classify_maps_each_subsystem_path() {

@@ -344,6 +344,30 @@ pub fn detect_access(
 /// UEBA-meaningful dimensions are surfaced; the rest (database/schema/operation/
 /// subject-type) are still learned and available to search + the ensemble, but
 /// do not each spawn their own finding (that would be noise).
+/// The insider-plane detectors this build ships, for ATT&CK coverage reporting:
+/// `(detector id, title, level, technique ids)`.
+///
+/// Derived from [`NOVELTY_DETECTORS`] rather than restated, so the coverage
+/// matrix cannot drift from what actually fires. A hand-maintained second list
+/// is how a product ends up claiming detections it does not have.
+///
+/// An entry with no techniques contributes no coverage: `app-new-query-pattern`
+/// is a novel query SHAPE, which no single technique describes, and an invented
+/// tag would inflate the matrix while making the claim unfalsifiable.
+pub fn detector_inventory() -> Vec<(&'static str, &'static str, &'static str, Vec<String>)> {
+    NOVELTY_DETECTORS
+        .iter()
+        .map(|(_, id, title, level, attack)| {
+            (
+                *id,
+                *title,
+                *level,
+                attack.iter().map(|s| s.to_string()).collect(),
+            )
+        })
+        .collect()
+}
+
 const NOVELTY_DETECTORS: &[(Dimension, &str, &str, &str, &[&str])] = &[
     (
         Dimension::QueryFingerprint,

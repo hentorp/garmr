@@ -277,6 +277,10 @@ fn freq_detection(
         rule_id: format!("garmr-freq-{host}-{service}"),
         rule_title: "Unusual event volume (frequency baseline)".to_string(),
         level: level.to_string(),
+        // Untagged on purpose, same reasoning as the new-template detector: a
+        // volume deviation is direction-less. A spike fits brute force, exfil,
+        // and a backup job equally well; a DROP fits a collector dying. Picking
+        // one technique would misreport the other cases.
         attack: vec![],
         event: Event {
             ts: now,
@@ -319,6 +323,7 @@ mod tests {
     fn cfg(base: &std::path::Path) -> Config {
         Config {
             audit: Default::default(),
+            backup: Default::default(),
             store: StoreConfig {
                 warehouse_dir: base.join("wh"),
                 state_db: base.join("state.redb"),
@@ -337,6 +342,7 @@ mod tests {
                 ui_dir: None,
                 dedup_recent: 0,
                 flight_bind: None,
+                collectors_file: None,
             },
             detect: DetectConfig {
                 rules_dir: base.join("rules"),
@@ -360,6 +366,7 @@ mod tests {
                 freq_min_count: 20,
                 prediction_discount: 0.5,
             },
+            cases: Default::default(),
             agent: AgentConfig {
                 backend: LlmBackend::Anthropic,
                 model: "m".into(),
@@ -372,6 +379,7 @@ mod tests {
                 geoip_dir: None,
                 ioc_feeds: vec![],
                 mcp_servers: vec![],
+                pricing: Default::default(),
             },
             retention: Default::default(),
             route: Default::default(),

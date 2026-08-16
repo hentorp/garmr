@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: PAM session opened for root
+id: garmr-auth-pam-root-session
+status: stable
+description: >
+    A PAM session opened for root by a non-root invoking user - su/sudo -i
+    style elevation to an interactive root shell.
+author: garmr
+logsource:
+    product: linux
+detection:
+    selection:
+        message|contains: 'session opened for user root'
+    filter_cron:
+        service: 
+            - cron
+            - CRON
+    condition: selection and not filter_cron
+falsepositives:
+    - Admins doing interactive root work; systemd user sessions on some distros.
+level: low
+tags:
+    - attack.privilege_escalation
+    - attack.t1548

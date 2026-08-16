@@ -15,16 +15,27 @@
 //! is deferred), and [`query`] for the thaw-and-query path.
 
 pub mod archiver;
+mod erase;
 mod ha;
 mod manager;
 mod query;
 mod s3;
 
 pub use archiver::{blake3_file, make_archiver, ColdArchiver, SealOutcome};
-pub use ha::HaSync;
+pub use erase::{rewrite_archives, RewriteOutcome};
+pub use ha::{fence_verdict, status as ha_status, FenceVerdict, HaSync, Lease};
 pub use manager::{ts_literal, RetentionManager, RetentionRun};
 pub use query::{ColdQuery, ColdQueryResult};
 pub use s3::S3Cold;
+
+/// Retry/backoff shared by every object-store client this crate builds (the
+/// cold tier and HA replication): the library defaults — up to 10 retries with
+/// jittered exponential backoff, bounded to 3 minutes per request — so a
+/// transient S3 hiccup is absorbed inside the client instead of failing a
+/// whole seal, ship, or pull.
+pub(crate) fn object_retry() -> object_store::RetryConfig {
+    object_store::RetryConfig::default()
+}
 
 #[cfg(test)]
 mod tests {
@@ -47,6 +58,7 @@ mod tests {
     fn test_config(base: &std::path::Path, archiver: ColdArchiverKind) -> Config {
         Config {
             audit: Default::default(),
+            backup: Default::default(),
             store: StoreConfig {
                 warehouse_dir: base.join("wh"),
                 state_db: base.join("state.redb"),
@@ -65,6 +77,7 @@ mod tests {
                 ui_dir: None,
                 dedup_recent: 0,
                 flight_bind: None,
+                collectors_file: None,
             },
             detect: DetectConfig {
                 rules_dir: base.join("rules"),
@@ -88,6 +101,7 @@ mod tests {
                 freq_min_count: 20,
                 prediction_discount: 0.5,
             },
+            cases: Default::default(),
             agent: AgentConfig {
                 backend: LlmBackend::Anthropic,
                 model: "claude-opus-4-8".into(),
@@ -100,6 +114,7 @@ mod tests {
                 geoip_dir: None,
                 ioc_feeds: vec![],
                 mcp_servers: vec![],
+                pricing: Default::default(),
             },
             retention: RetentionConfig {
                 enabled: true,
@@ -108,6 +123,7 @@ mod tests {
                 window_days: 1,
                 interval_secs: 3600,
                 compression_level: 6,
+                class: Vec::new(),
             },
             route: Default::default(),
             executor: Default::default(),
@@ -407,5 +423,190 @@ mod tests {
     #[test]
     fn ts_literal_is_datafusion_shaped() {
         assert_eq!(ts_literal(0), "TIMESTAMP '1970-01-01T00:00:00.000000'");
+    }
+
+    #[tokio::test]
+    async fn a_sealed_archive_contains_zero_excluded_class_rows() {
+        // The exclusion has to happen AT THE SEAL: an archive is immutable and
+        // outlives every policy change, so a class row sealed by mistake would
+        // sit in cold storage for the archive's whole life.
+        let base = tmp("class-excl");
+        std::fs::create_dir_all(&base).unwrap();
+        let mut cfg = test_config(&base, ColdArchiverKind::Plain);
+        cfg.retention.class = vec![garmr_core::RetentionClass {
+            source: "kunai".into(),
+            hot_days: 10,
+        }];
+        let store = Store::open(&cfg).await.unwrap();
+        let now = Utc::now();
+
+        let mut kunai = event_at(days_ago_at(now, 35, 3), "exec /usr/bin/curl", "10.0.0.9");
+        kunai.source = "kunai".into();
+        let journald = event_at(
+            days_ago_at(now, 35, 4),
+            "Failed password for root",
+            "203.0.113.7",
+        );
+        store.events.append(vec![kunai, journald]).await.unwrap();
+
+        let mgr = RetentionManager::new(store.clone(), &cfg).unwrap();
+        let run = mgr.run_once(now).await.unwrap();
+        assert_eq!(run.windows, 1);
+        assert_eq!(run.rows, 1, "only the journald row is sealed");
+
+        // And the archive itself proves it: thaw and look for the class row.
+        let cq = ColdQuery::new(store.clone(), &cfg);
+        let res = cq
+            .query(
+                "SELECT count(*) AS c FROM events WHERE source = 'kunai'",
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let c = res.batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<skade::arrow_array::Int64Array>()
+            .unwrap()
+            .value(0);
+        assert_eq!(c, 0, "no kunai row may exist in cold storage");
+        let total = cq
+            .query("SELECT count(*) AS c FROM events", None, None)
+            .await
+            .unwrap();
+        let t = total.batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<skade::arrow_array::Int64Array>()
+            .unwrap()
+            .value(0);
+        assert_eq!(t, 1, "the journald row IS there — exclusion, not data loss");
+    }
+
+    #[tokio::test]
+    async fn cold_rewrite_erases_the_subject_and_records_the_checksum_transition() {
+        // The M3 cold acceptance: A erased from the archive, B survives, the
+        // manifest records the transition, and a re-run is a zero-delta no-op.
+        let base = tmp("cold-rewrite");
+        std::fs::create_dir_all(&base).unwrap();
+        let cfg = test_config(&base, ColdArchiverKind::Plain);
+        let store = Store::open(&cfg).await.unwrap();
+        let now = Utc::now();
+
+        store
+            .events
+            .append(vec![
+                event_at(days_ago_at(now, 35, 3), "login A", "203.0.113.7"),
+                event_at(days_ago_at(now, 35, 4), "login B", "10.0.0.5"),
+            ])
+            .await
+            .unwrap();
+        let mgr = RetentionManager::new(store.clone(), &cfg).unwrap();
+        assert_eq!(mgr.run_once(now).await.unwrap().rows, 2);
+        let before = &store.state.list_cold_archives().unwrap()[0];
+        let (old_id, old_checksum, old_rows) =
+            (before.id.clone(), before.checksum.clone(), before.rows);
+        assert_eq!(old_rows, 2);
+
+        let tomb = garmr_core::Tombstone {
+            id: "erase-cold-test".into(),
+            field: garmr_core::EraseField::SrcIp,
+            value: "203.0.113.7".into(),
+            from_us: None,
+            to_us: None,
+            placed_at: now,
+            reason: "test".into(),
+        };
+        let out = rewrite_archives(
+            &store.state,
+            &cfg.retention.cold_dir,
+            cfg.retention.compression_level,
+            std::slice::from_ref(&tomb),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rows_erased, 1, "A's row leaves the archive");
+        assert_ne!(
+            out[0].new_checksum, old_checksum,
+            "the manifest must record a real transition"
+        );
+
+        // The manifest agrees with the rewrite, and the archive itself proves
+        // the subject is gone while B remains.
+        let after = &store.state.list_cold_archives().unwrap()[0];
+        assert_eq!(after.id, old_id);
+        assert_eq!(after.rows, 1);
+        assert_eq!(after.checksum, out[0].new_checksum);
+        let cq = ColdQuery::new(store.clone(), &cfg);
+        let res = cq
+            .query("SELECT message FROM events ORDER BY event_ts", None, None)
+            .await
+            .unwrap();
+        use skade::arrow_array::Array as _;
+        // Column-type agnostic read: the resealed parquet may come back as
+        // Utf8View rather than Utf8 depending on the reader's defaults.
+        let col = res.batches[0].column(0);
+        assert_eq!(col.len(), 1);
+        let msg = skade::datafusion::arrow::util::display::array_value_to_string(col, 0).unwrap();
+        assert_eq!(msg, "login B", "B survives, A is gone");
+
+        // Idempotent: the second pass scans, matches nothing, changes nothing.
+        let again = rewrite_archives(
+            &store.state,
+            &cfg.retention.cold_dir,
+            cfg.retention.compression_level,
+            std::slice::from_ref(&tomb),
+        )
+        .await
+        .unwrap();
+        assert_eq!(again[0].rows_erased, 0);
+        assert_eq!(
+            again[0].old_checksum, again[0].new_checksum,
+            "zero-delta re-run leaves the archive byte-identical"
+        );
+    }
+
+    #[tokio::test]
+    async fn cold_rewrite_refuses_a_held_archive() {
+        let base = tmp("cold-rewrite-held");
+        std::fs::create_dir_all(&base).unwrap();
+        let cfg = test_config(&base, ColdArchiverKind::Plain);
+        let store = Store::open(&cfg).await.unwrap();
+        let now = Utc::now();
+        store
+            .events
+            .append(vec![event_at(
+                days_ago_at(now, 35, 3),
+                "held row",
+                "203.0.113.7",
+            )])
+            .await
+            .unwrap();
+        let mgr = RetentionManager::new(store.clone(), &cfg).unwrap();
+        mgr.run_once(now).await.unwrap();
+        let id = store.state.list_cold_archives().unwrap()[0].id.clone();
+        store.state.set_cold_legal_hold(&id, true).unwrap();
+
+        let tomb = garmr_core::Tombstone {
+            id: "erase-held-test".into(),
+            field: garmr_core::EraseField::SrcIp,
+            value: "203.0.113.7".into(),
+            from_us: None,
+            to_us: None,
+            placed_at: now,
+            reason: "test".into(),
+        };
+        let err = rewrite_archives(
+            &store.state,
+            &cfg.retention.cold_dir,
+            cfg.retention.compression_level,
+            std::slice::from_ref(&tomb),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("legal hold"), "{err}");
     }
 }

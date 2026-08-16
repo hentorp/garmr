@@ -17,6 +17,25 @@ use garmr_core::{Detection, Error, Event, Result};
 use rsigma_eval::{Engine, JsonEvent};
 use rsigma_parser::parse_sigma_directory;
 
+pub use mapping::{event_to_json, field_class, FieldClass};
+
+/// The lower-cased name of a Sigma severity level, as a `&'static str`.
+///
+/// Byte-identical to the old `format!("{l:?}").to_lowercase()` (the
+/// `rsigma_parser::Level` variants are `Informational`/`Low`/`Medium`/`High`/
+/// `Critical`), but without the two throwaway heap allocations per fired
+/// detection — the `format!` buffer and the `to_lowercase` copy.
+fn level_str(level: rsigma_parser::Level) -> &'static str {
+    use rsigma_parser::Level;
+    match level {
+        Level::Informational => "informational",
+        Level::Low => "low",
+        Level::Medium => "medium",
+        Level::High => "high",
+        Level::Critical => "critical",
+    }
+}
+
 /// A loaded Sigma rule set ready to evaluate events.
 pub struct Detector {
     engine: Engine,
@@ -84,7 +103,8 @@ pub fn rule_metas(dir: &Path) -> Result<Vec<RuleMeta>> {
                 title: r.title.clone(),
                 level: r
                     .level
-                    .map(|l| format!("{l:?}").to_lowercase())
+                    .map(level_str)
+                    .map(str::to_string)
                     .unwrap_or_else(|| "medium".into()),
                 techniques,
                 tactics,
@@ -137,7 +157,7 @@ impl Detector {
                     rule_title: h.rule_title.clone(),
                     level: h
                         .level
-                        .map(|l| format!("{l:?}").to_lowercase())
+                        .map(|l| level_str(l).to_string())
                         .unwrap_or_else(|| "medium".to_string()),
                     attack: h.tags.clone(),
                     event: event.clone(),
@@ -249,6 +269,82 @@ level: medium
             d.evaluate(&e).len(),
             1,
             "ECS-keyed rule should match via alias"
+        );
+    }
+
+    #[test]
+    fn ecs_rule_on_the_occupied_source_and_host_roots_matches() {
+        // The two ECS roots garmr's own labels occupy. A large share of the
+        // community corpus keys on exactly these, and before the flat dotted
+        // aliases such a rule traversed into a string and silently never fired.
+        const ECS_RULE: &str = r#"
+title: Auth failure from a known-bad address
+id: test-ecs-source-host
+logsource:
+    product: linux
+detection:
+    selection:
+        source.ip: '10.0.0.5'
+        host.name: 'pve'
+    condition: selection
+level: high
+"#;
+        let d = Detector::from_yaml(ECS_RULE).unwrap();
+        let mut fields = BTreeMap::new();
+        fields.insert("src_ip".to_string(), "10.0.0.5".to_string());
+        let e = Event {
+            ts: Utc::now(),
+            host: "pve".into(),
+            service: "sshd".into(),
+            source: "journald".into(),
+            environment: "prod".into(),
+            severity: "info".into(),
+            log_type: "system".into(),
+            message: "Failed password for root".into(),
+            fields,
+        };
+        assert_eq!(
+            d.evaluate(&e).len(),
+            1,
+            "community rule keyed on source.ip + host.name should fire"
+        );
+    }
+
+    #[test]
+    fn garmr_native_source_and_host_labels_survive_the_aliases() {
+        // The aliases must not cost garmr its own vocabulary: `source` is the
+        // ingest origin and `host` the hostname, and every shipped rule keys on
+        // those. A nested alias object would have destroyed both.
+        const NATIVE_RULE: &str = r#"
+title: Journald on pve
+id: test-native-source-host
+logsource:
+    product: linux
+detection:
+    selection:
+        source: 'journald'
+        host: 'pve'
+    condition: selection
+level: low
+"#;
+        let d = Detector::from_yaml(NATIVE_RULE).unwrap();
+        let mut fields = BTreeMap::new();
+        fields.insert("src_ip".to_string(), "10.0.0.5".to_string());
+        let e = Event {
+            ts: Utc::now(),
+            host: "pve".into(),
+            service: "sshd".into(),
+            source: "journald".into(),
+            environment: "prod".into(),
+            severity: "info".into(),
+            log_type: "system".into(),
+            message: "Failed password for root".into(),
+            fields,
+        };
+        assert_eq!(
+            d.evaluate(&e).len(),
+            1,
+            "garmr-native source/host rule must still fire"
         );
     }
 
