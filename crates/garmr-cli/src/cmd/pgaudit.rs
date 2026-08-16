@@ -222,10 +222,7 @@ impl Config {
     fn from_env() -> Self {
         let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
         Config {
-            ingest_url: env(
-                "GARMR_INGEST_URL",
-                "http://127.0.0.1:3100/ingest/v1/events",
-            ),
+            ingest_url: env("GARMR_INGEST_URL", "http://127.0.0.1:3100/ingest/v1/events"),
             token: std::env::var("GARMR_COLLECTOR_TOKEN")
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
