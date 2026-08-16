@@ -42,8 +42,8 @@ bytes = { version = "1", optional = true }
 # owned Event). arrow-flight 58 resolves to the SAME crates.io arrow-array 58 skade
 # is built against, so the decoded batch is exactly the type `append_batch` wants.
 tonic = { version = "0.14", optional = true }
-arrow-flight = { version = "58", optional = true }
-arrow-array = { version = "58", optional = true }
+arrow-flight = { version = "59", optional = true }
+arrow-array = { version = "59", optional = true }
 futures = { version = "0.3", optional = true }
 
 [features]
