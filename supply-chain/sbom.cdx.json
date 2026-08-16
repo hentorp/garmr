@@ -223,11 +223,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/anyhow@1.0.103",
+      "bom-ref": "pkg:cargo/anyhow@1.0.104",
       "type": "library",
       "name": "anyhow",
-      "version": "1.0.103",
-      "purl": "pkg:cargo/anyhow@1.0.103",
+      "version": "1.0.104",
+      "purl": "pkg:cargo/anyhow@1.0.104",
       "licenses": [
         {
           "license": {
@@ -587,11 +587,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/async-trait@0.1.89",
+      "bom-ref": "pkg:cargo/async-trait@0.1.91",
       "type": "library",
       "name": "async-trait",
-      "version": "0.1.89",
-      "purl": "pkg:cargo/async-trait@0.1.89",
+      "version": "0.1.91",
+      "purl": "pkg:cargo/async-trait@0.1.91",
       "licenses": [
         {
           "license": {
@@ -7195,11 +7195,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/regex@1.12.4",
+      "bom-ref": "pkg:cargo/regex@1.13.1",
       "type": "library",
       "name": "regex",
-      "version": "1.12.4",
-      "purl": "pkg:cargo/regex@1.12.4",
+      "version": "1.13.1",
+      "purl": "pkg:cargo/regex@1.13.1",
       "licenses": [
         {
           "license": {
@@ -7209,11 +7209,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/regex-automata@0.4.14",
+      "bom-ref": "pkg:cargo/regex-automata@0.4.18",
       "type": "library",
       "name": "regex-automata",
-      "version": "0.4.14",
-      "purl": "pkg:cargo/regex-automata@0.4.14",
+      "version": "0.4.18",
+      "purl": "pkg:cargo/regex-automata@0.4.18",
       "licenses": [
         {
           "license": {
@@ -7657,11 +7657,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/schemars@1.2.1",
+      "bom-ref": "pkg:cargo/schemars@1.2.2",
       "type": "library",
       "name": "schemars",
-      "version": "1.2.1",
-      "purl": "pkg:cargo/schemars@1.2.1",
+      "version": "1.2.2",
+      "purl": "pkg:cargo/schemars@1.2.2",
       "licenses": [
         {
           "license": {
@@ -7671,11 +7671,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/schemars_derive@1.2.1",
+      "bom-ref": "pkg:cargo/schemars_derive@1.2.2",
       "type": "library",
       "name": "schemars_derive",
-      "version": "1.2.1",
-      "purl": "pkg:cargo/schemars_derive@1.2.1",
+      "version": "1.2.2",
+      "purl": "pkg:cargo/schemars_derive@1.2.2",
       "licenses": [
         {
           "license": {
@@ -7853,11 +7853,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/serde_derive_internals@0.29.1",
+      "bom-ref": "pkg:cargo/serde_derive_internals@0.30.0",
       "type": "library",
       "name": "serde_derive_internals",
-      "version": "0.29.1",
-      "purl": "pkg:cargo/serde_derive_internals@0.29.1",
+      "version": "0.30.0",
+      "purl": "pkg:cargo/serde_derive_internals@0.30.0",
       "licenses": [
         {
           "license": {
@@ -8245,11 +8245,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/snap@1.1.1",
+      "bom-ref": "pkg:cargo/snap@1.1.2",
       "type": "library",
       "name": "snap",
-      "version": "1.1.1",
-      "purl": "pkg:cargo/snap@1.1.1",
+      "version": "1.1.2",
+      "purl": "pkg:cargo/snap@1.1.2",
       "licenses": [
         {
           "license": {
