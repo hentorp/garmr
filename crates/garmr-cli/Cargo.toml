@@ -82,7 +82,7 @@ libc = "0.2"
 # Passkey / WebAuthn login (pure-Rust RustCrypto — no openssl, airgap-clean).
 # Runtime-enabled when GARMR_WEBAUTHN_RP_ID is set; ES256 (P-256) authenticators.
 p256 = { version = "0.14", features = ["ecdsa"] }
-sha2 = "0.10"
+sha2 = "0.11"
 ciborium = "0.2"
 serde.workspace = true
 anyhow.workspace = true

@@ -16,7 +16,7 @@ serde_json.workspace = true
 chrono.workspace = true
 tracing.workspace = true
 skade.workspace = true
-sha2 = "0.10"
+sha2 = "0.11"
 gatling = { path = "../../vendor/znippy-zoomies/gatling", package = "rotaryengine", version = "0.1" }
 
 [dev-dependencies]
