@@ -14,7 +14,6 @@
 //! are all exercised exactly as a shipper would hit them. No HTTP client crate is
 //! needed, which keeps garmr-ingest's dev-dependency surface at tokio.
 
-use std::sync::Arc;
 
 use garmr_core::CollectorRegistry;
 use garmr_ingest::{IngestAuditor, IngestBatch};
@@ -63,7 +62,10 @@ async fn start(registry: CollectorRegistry) -> (String, mpsc::Receiver<Delivered
             &serve_bind,
             tx,
             "test".to_string(),
-            Arc::new(registry),
+            // The receiver takes the swappable handle (hot rotate/revoke without a
+            // restart), not a fixed registry. Wrapped here the way serve builds
+            // it, so these tests exercise the same gate production runs.
+            garmr_core::SharedCollectors::new(registry),
             IngestAuditor::noop(),
             None,
         )
