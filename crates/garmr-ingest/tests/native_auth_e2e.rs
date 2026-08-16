@@ -14,7 +14,6 @@
 //! are all exercised exactly as a shipper would hit them. No HTTP client crate is
 //! needed, which keeps garmr-ingest's dev-dependency surface at tokio.
 
-
 use garmr_core::CollectorRegistry;
 use garmr_ingest::{IngestAuditor, IngestBatch};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
