@@ -46,9 +46,21 @@ pub(super) fn build_router(state: ApiState, opts: RouterOpts) -> Router {
 
     let mut app = Router::new()
         .route("/health", get(|| async { "ok" }))
+        // Readiness (public, like /health): can this node actually serve reads?
+        // A probe cannot hold a credential, and the body is one bit plus a fixed
+        // reason. /health is liveness; this is readiness.
+        .route("/ready", get(super::metrics::ready))
+        // Prometheus exposition. AUTHENTICATED on purpose: a scrape names every
+        // collector and the HA role, which is posture an anonymous caller must
+        // not read. Prometheus attaches a bearer per scrape job.
+        .route("/metrics", get(super::metrics::metrics))
         // Runtime feature/permission/health manifest — the web console's single
         // source of "what can work here and why not" (never an authz decision).
         .route("/api/capabilities", get(super::capabilities::capabilities))
+        // Storage occupancy, growth projection and the static single-node caps —
+        // the "what hardware do I need" question as one request. Reads cached
+        // state only; never queues on the search/warehouse permits.
+        .route("/api/capacity", get(super::capacity::capacity))
         // First-run setup completeness (admin-gated in the handler: it reports
         // secret presence + posture, the admin-only dimension /api/secrets withholds).
         .route("/api/setup/status", get(super::setup::setup_status))
@@ -64,6 +76,10 @@ pub(super) fn build_router(state: ApiState, opts: RouterOpts) -> Router {
             get(super::config::config_effective),
         )
         .route("/api/config/status", get(super::config::config_status))
+        // The named identities that can act here, for assignment and approver
+        // pickers. Viewer-gated: who works in the SOC is not public, but every
+        // authenticated role needs the list.
+        .route("/api/principals", get(super::principals::principals))
         // Applied-override revision history (admin-gated in the handler). The
         // write paths (validate/apply/rollback) are on /admin/config/*.
         .route(
@@ -197,6 +213,11 @@ pub(super) fn build_router(state: ApiState, opts: RouterOpts) -> Router {
         // (inside the handler AND by the middleware, so bootstrap needs the
         // admin bearer token). All are no-ops with a 404 when passkey is off.
         .route("/login", get(super::passkey::login_page))
+        // OIDC login: the browser is sent to the IdP (start) and returns with a
+        // code (callback). Both public — they ARE the front door — and inert
+        // (404-equivalent redirect to /login) when OIDC is not configured.
+        .route("/auth/oidc/start", get(super::oidc::start))
+        .route("/auth/oidc/callback", get(super::oidc::callback))
         .route("/auth/status", get(super::passkey::status))
         .route("/auth/logout", axum::routing::post(super::passkey::logout))
         .route(
@@ -258,6 +279,25 @@ pub(super) fn build_router(state: ApiState, opts: RouterOpts) -> Router {
                 "/api/cases/{id}/decision",
                 axum::routing::post(submit_decision),
             )
+            // Ownership + collaboration (2.9): all analyst-gated, all audited,
+            // all through atomic mutators so concurrent edits merge instead of
+            // clobbering.
+            .route(
+                "/api/cases/{id}/assign",
+                axum::routing::post(super::feedback::assign_case),
+            )
+            .route(
+                "/api/cases/{id}/comment",
+                axum::routing::post(super::feedback::comment_case),
+            )
+            .route(
+                "/api/cases/{id}/tags",
+                axum::routing::post(super::feedback::tag_case),
+            )
+            .route(
+                "/api/cases/{id}/link",
+                axum::routing::post(super::feedback::link_case),
+            )
             .route("/api/incidents", axum::routing::post(submit_incident))
             .route(
                 "/api/false-negatives",
@@ -295,6 +335,10 @@ pub(super) fn build_router(state: ApiState, opts: RouterOpts) -> Router {
             .route("/admin/action/deny", axum::routing::post(admin_action_deny))
             // Case retention/cleanup over the live store (admin-gated).
             .route("/admin/cases/prune", axum::routing::post(admin_cases_prune))
+            .route(
+                "/admin/rules/reload",
+                axum::routing::post(super::admin::rules_reload),
+            )
             // Scoped machine API credentials: issue/rotate/revoke (Admin +
             // step-up + audit; the token is returned once, at issue/rotate).
             .route(
@@ -465,9 +509,14 @@ pub(super) fn build_router(state: ApiState, opts: RouterOpts) -> Router {
     // Security response headers, applied UNCONDITIONALLY and OUTERMOST (after auth
     // + CSRF), so they decorate EVERY response — auth's own 401s, the CSRF 403,
     // static console + 404/500, and the loopback/no-token default deployment.
-    app.layer(axum::middleware::from_fn(
+    let app = app.layer(axum::middleware::from_fn(
         super::security::security_headers_layer,
-    ))
+    ));
+    // Request metrics, OUTERMOST of all: every response is counted, including
+    // auth's 401s and the CSRF 403 — the rejections are exactly what an operator
+    // needs to see. Labels come from the matched ROUTE TEMPLATE, so cardinality
+    // stays bounded by the route table rather than by caller-chosen paths.
+    app.layer(axum::middleware::from_fn(super::metrics::track_layer))
 }
 
 /// Serve the query API. `read_only` (an HA follower) omits every route that
@@ -483,6 +532,8 @@ pub async fn serve(
     // Phase 11: after the embedding model loads here, the SAME backend is injected
     // into the agent's hybrid_search tool so the model is loaded exactly once.
     agent: Option<std::sync::Arc<garmr_agent::Agent>>,
+    // The live rule set (writer only): POST /admin/rules/reload swaps it.
+    live_rules: Option<std::sync::Arc<crate::rules::LiveRules>>,
 ) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let loopback = listener
@@ -630,10 +681,13 @@ pub async fn serve(
         creds,
         matrix,
         graph_cache,
+        oidc: super::oidc::OidcConfig::from_env()
+            .map(|c| std::sync::Arc::new(super::oidc::OidcClient::new(c))),
         webauthn,
         audit,
         app_audit,
         read_only,
+        live_rules,
         #[cfg(feature = "semantic")]
         semantic,
     };

@@ -28,6 +28,12 @@ precedence = "override"
 SPDX-FileCopyrightText = "Rickard Lundin and the znippy contributors (codeberg.org/nordisk)"
 SPDX-License-Identifier = "MIT"
 
+[[annotations]]
+path = "vendor/edda/**"
+precedence = "override"
+SPDX-FileCopyrightText = "The nornir authors (codeberg.org/nordisk/nornir)"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
+
 # Garmr's own repo meta, CI, config, and web assets → AGPL like the source.
 [[annotations]]
 path = [".github/**", ".cargo/**", "CLAUDE.md", "**/*.html", "**/Cargo.lock", "**/.gitignore"]

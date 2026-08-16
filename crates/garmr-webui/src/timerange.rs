@@ -133,6 +133,30 @@ pub fn read_param(query: &str) -> Option<TimeRange> {
         .and_then(|(_, v)| TimeRange::from_slug(v))
 }
 
+/// Carry the range out of an existing query string into a freshly built one.
+///
+/// A view that rebuilds its own query from scratch — publishing a search, a
+/// pivot — must not drop the window the analyst chose on the way there. Keeping
+/// that in one place beats every publishing view remembering to re-add `t=`,
+/// which is exactly what they forgot: switching Audit's mode or Intelligence's
+/// tab silently widened the range back out.
+pub fn carry(from: &str, into: &str) -> String {
+    // A caller that names its own range wins: the picker publishes the window
+    // the operator just chose, and Investigations' "reproduce" names the case's
+    // own — carrying the outgoing URL's range over either would undo the
+    // choice, and the shell's restore effect would then pull the picker there.
+    if into
+        .split('&')
+        .any(|kv| kv.split('=').next() == Some(PARAM))
+    {
+        return into.to_string();
+    }
+    match read_param(from) {
+        Some(tr) => write_param(into, tr),
+        None => into.to_string(),
+    }
+}
+
 /// Does the global range actually govern this area?
 ///
 /// Being honest about this is the point. The Command Center's sources
@@ -199,6 +223,44 @@ mod tests {
         assert_eq!(read_param("t="), None);
         assert_eq!(read_param("tab=events"), None);
         assert_eq!(read_param(""), None);
+    }
+
+    #[test]
+    fn the_range_is_carried_into_a_rebuilt_query() {
+        // A search or pivot rebuilds its own query; the window must survive it.
+        let q = carry(
+            "tab=relationships&t=24h",
+            "tab=relationships&kind=host&name=pve",
+        );
+        assert_eq!(read_param(&q), Some(TimeRange::Last(24)));
+        assert!(q.contains("name=pve"), "the new query was lost: {q}");
+        assert_eq!(q.matches("t=").count(), 1, "duplicate range params in {q}");
+    }
+
+    #[test]
+    fn a_caller_that_names_its_own_range_keeps_it() {
+        // The picker writes t= itself; carrying the old one over it would undo
+        // the operator's choice.
+        let next = write_param("mode=text", TimeRange::Last(72));
+        assert_eq!(carry("mode=text&t=24h", &next), "mode=text&t=72h");
+    }
+
+    #[test]
+    fn a_pivot_that_names_its_window_is_not_overwritten_by_the_one_it_leaves() {
+        // Investigations' "reproduce" opens the Audit Explorer on the case's
+        // own 72 h. The window it happens to be leaving (here 24 h) must not
+        // win, or the button reproduces a case in the wrong window.
+        let next = write_param("q=web01&mode=text", TimeRange::Last(72));
+        assert_eq!(carry("q=other&t=24h", &next), "q=web01&mode=text&t=72h");
+    }
+
+    #[test]
+    fn carrying_nothing_invents_nothing() {
+        // No range chosen yet is not a reason to write one into the URL.
+        assert_eq!(carry("tab=map", "tab=relationships"), "tab=relationships");
+        assert_eq!(carry("", "mode=text"), "mode=text");
+        // An unreadable range is dropped rather than guessed at.
+        assert_eq!(carry("t=nonsense", "mode=text"), "mode=text");
     }
 
     // ---- custom range validation: never silently ignored --------------------
@@ -290,6 +352,48 @@ mod tests {
             assert!(m.len() > 12, "{e:?} message too terse: {m}");
             assert!(m.ends_with('.'), "{e:?} message should be a sentence");
         }
+    }
+
+    // ---- the range reaches the search request -------------------------------
+
+    #[test]
+    fn hsearch_time_carries_the_active_window_as_ir_micros() {
+        // Live is the IR's default (no time clause) — nothing to claim.
+        assert_eq!(TimeRange::Live.hsearch_time(), None);
+        // A preset stays relative; the server anchors it to its own clock.
+        assert_eq!(
+            TimeRange::Last(24).hsearch_time(),
+            Some(serde_json::json!({ "last_hours": 24 }))
+        );
+        // An absolute range converts millis → the IR's micros.
+        assert_eq!(
+            TimeRange::Absolute(1_754_179_200_000, 1_754_265_600_000).hsearch_time(),
+            Some(serde_json::json!({
+                "from_micros": 1_754_179_200_000_000i64,
+                "to_micros": 1_754_265_600_000_000i64,
+            }))
+        );
+        // A nonsense slug saturates to an empty window (finds nothing) rather
+        // than dropping the bound and searching unbounded behind the picker.
+        assert_eq!(
+            TimeRange::Absolute(i64::MAX, i64::MAX).hsearch_time(),
+            Some(serde_json::json!({
+                "from_micros": i64::MAX,
+                "to_micros": i64::MAX,
+            }))
+        );
+    }
+
+    #[test]
+    fn search_params_carry_the_active_window() {
+        // Live is the endpoint's default (unbounded) — no parameter to claim.
+        assert_eq!(TimeRange::Live.search_params(), "");
+        // Presets and absolute ranges append the same window /map understands.
+        assert_eq!(TimeRange::Last(24).search_params(), "&hours=24");
+        assert_eq!(
+            TimeRange::Absolute(1_754_179_200_000, 1_754_265_600_000).search_params(),
+            "&from=1754179200000&to=1754265600000"
+        );
     }
 
     // ---- honesty about scope ------------------------------------------------

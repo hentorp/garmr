@@ -20,9 +20,14 @@ pub const KIND_STAFF: &str = "staff";
 pub const KIND_PERSON: &str = "person";
 
 /// Edge provenance. Ordered so `Case > Event` (a stronger link wins on merge).
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize)]
+///
+/// `Default` is `Event`, the WEAKER of the two: the shared seam merges two labels
+/// recorded for the same pair with `max`, so the default can never downgrade a
+/// real one.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EdgeKind {
+    #[default]
     Event,
     Case,
 }
@@ -32,6 +37,34 @@ impl EdgeKind {
         match self {
             EdgeKind::Event => "event",
             EdgeKind::Case => "case",
+        }
+    }
+}
+
+/// Carry `EdgeKind` through the shared graph seam losslessly.
+///
+/// [`nornir_graph::EdgeLabel`] is the seam's domain-owned edge label: the graph
+/// backends store `encode`'s `i64` and hand it back through `decode`, and never
+/// learn what the variants mean. The codes are `event = 0`, `case = 1`, matching
+/// this enum's own `Ord` — which is what makes the backends' numeric "stronger
+/// link wins" merge reproduce [`EdgeKind`]'s ordering exactly. These are the same
+/// two integers the old hand-written `kind_to_int` / `kind_from_int` pair used, so
+/// nothing about the stored representation changed.
+///
+/// `decode` saturates rather than failing, per the trait's contract: any code at or
+/// below 0 reads as `Event`, anything above as `Case`.
+impl nornir_graph::EdgeLabel for EdgeKind {
+    fn encode(self) -> i64 {
+        match self {
+            EdgeKind::Event => 0,
+            EdgeKind::Case => 1,
+        }
+    }
+    fn decode(code: i64) -> Self {
+        if code >= 1 {
+            EdgeKind::Case
+        } else {
+            EdgeKind::Event
         }
     }
 }
@@ -72,11 +105,13 @@ pub struct Node {
 
 /// One pivot result: a reachable node, its hop distance, and the provenance of
 /// the edge that first reached it.
-pub struct Hit<'a> {
-    pub hop: usize,
-    pub via: EdgeKind,
-    pub node: &'a Node,
-}
+///
+/// This is the shared seam's [`nornir_graph::Hit`] instantiated with garmr's own
+/// payload and label, so the fields are exactly what they always were —
+/// `{ hop: usize, via: EdgeKind, node: &Node }` — and every call site is
+/// unchanged. The type is generic in the seam precisely so a consumer's domain
+/// types ride through without the seam naming them.
+pub type Hit<'a> = nornir_graph::Hit<'a, Node, EdgeKind>;
 
 /// One attack path: a case reachable from the pivot start, with the risk it
 /// carries (its level × disposition, like RBA) and the shortest route to it.

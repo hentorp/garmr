@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: LD_PRELOAD injection on the command line
+id: garmr-ep-ld-preload
+status: stable
+description: >
+    A command launched with LD_PRELOAD pointing at a shared object - userland
+    hooking, the standard library-injection persistence and evasion primitive.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    selection:
+        message|contains: 'LD_PRELOAD='
+    condition: selection
+falsepositives:
+    - Legitimate wrappers (jemalloc, ASAN) on build hosts.
+level: high
+tags:
+    - attack.defense_evasion
+    - attack.t1574.006

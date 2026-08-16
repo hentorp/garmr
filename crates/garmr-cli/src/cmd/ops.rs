@@ -260,7 +260,7 @@ pub(crate) async fn selftest(cli: &Cli) -> Result<()> {
     let (detector, agent, _provider) = build_agent_from(&store, &cfg, true).await?;
     let ev = canned_event();
     store.events.append(vec![ev.clone()]).await?;
-    let dets = detector.evaluate(&ev);
+    let dets = detector.detector().evaluate(&ev);
     println!("  detection: {} rule(s) fired", dets.len());
     let Some(det) = dets.into_iter().next() else {
         println!("  no rule fired — check rules_dir; selftest cannot exercise the agent");
@@ -336,6 +336,11 @@ async fn recover_issue_admin(cli: &Cli, label: &str, hours: i64) -> Result<()> {
             vec!["system:admin".to_string()],
             expires_at,
             "cli-recovery",
+            // A break-glass recovery credential is deliberately unrestricted:
+            // it exists for the case where nothing else works, and a data scope
+            // on it would be one more thing that can be wrong at exactly the
+            // wrong moment.
+            None,
             |id, fp| {
                 // Fail-closed: with auditing ON the record MUST land before the
                 // credential is saved. With auditing OFF there is nothing to

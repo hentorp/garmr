@@ -1,0 +1,35 @@
+[package]
+name = "nornir-testmatrix"
+version = "0.2.9"
+edition = "2024"
+rust-version = "1.85"
+description = "Reusable, multi-aspect Rust test-matrix engine: wrap a repo's native cargo test/nextest plus build/clippy/fmt/audit/coverage/doctest aspects, parse the results into rows, and ship them to any TestSink. Pure std + serde — no iceberg, arrow, eframe. The portable core of nornir's `nornir test` matrix."
+license = "MIT OR Apache-2.0"
+repository = "https://codeberg.org/nordisk/nornir"
+readme = "README.md"
+keywords = ["cargo", "test", "matrix", "ci", "clippy"]
+categories = ["development-tools::cargo-plugins", "development-tools::testing"]
+# Keep the published crate lean: the .nornir design/runtime dir is not part of
+# the library.
+exclude = ["/.nornir/"]
+
+[dependencies]
+# The ONLY deps — the crate must stay heavy-dep-free (no iceberg/arrow/eframe/
+# tantivy/skade) so leaf repos pull it cheaply.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[features]
+# `testmatrix` — the functional-status MODE. When ON, `functional_status(...)`
+# records a component's self-reported pass/fail into a process-global buffer that
+# `drain_functional_rows()` turns into `Aspect::Functional` `test_results` rows
+# for the matrix. When OFF (the release default), `functional_status` compiles to
+# a `#[inline]` empty stub — zero release cost. Consumers that build a *detail*
+# string (formatting, scene walks) should still wrap the call site in
+# `#[cfg(feature = "testmatrix")]` so that work is also stripped in release.
+#
+# Default is empty: release builds never opt in. CI / dev / the `nornir test`
+# matrix build with `--features testmatrix`.
+default = []
+testmatrix = []

@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Download piped straight into a shell
+id: garmr-ep-curl-pipe-shell
+status: stable
+description: >
+    A curl/wget download piped directly into sh or bash - the canonical
+    one-liner dropper. Nothing legitimate needs to execute a download unseen.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    downloader:
+        message|contains:
+            - 'curl'
+            - 'wget'
+    piped_shell:
+        message|contains:
+            - '| sh'
+            - '| bash'
+            - '|sh'
+            - '|bash'
+    condition: downloader and piped_shell
+falsepositives:
+    - Developer-machine installers (rustup-style). Rare on servers.
+level: high
+tags:
+    - attack.execution
+    - attack.t1059.004

@@ -71,16 +71,17 @@ impl StructuredFilter {
         }
         let mut conj: Vec<String> = Vec::new();
 
-        // Time bounds — numeric only, via the proven to_timestamp_micros idiom.
-        if let Some(h) = self.time.last_hours {
-            let cutoff = now_micros.saturating_sub((h * 3_600_000_000.0) as i64);
-            conj.push(format!("event_ts >= to_timestamp_micros({cutoff})"));
-        }
-        if let Some(from) = self.time.from_micros {
+        // Time bounds — numeric only, via the proven to_timestamp_micros idiom,
+        // over the ONE window every leg shares (`TimeRange::resolve`), so this
+        // leg cannot drift from the full-text and semantic legs. Half-open
+        // `[from, to)` like theirs: an event at exactly `to` is the next
+        // window's, never both windows'.
+        let w = self.time.resolve(now_micros);
+        if let Some(from) = w.from_us {
             conj.push(format!("event_ts >= to_timestamp_micros({from})"));
         }
-        if let Some(to) = self.time.to_micros {
-            conj.push(format!("event_ts <= to_timestamp_micros({to})"));
+        if let Some(to) = w.to_us {
+            conj.push(format!("event_ts < to_timestamp_micros({to})"));
         }
 
         // Label columns — closed identifier set, values only inside sql_lit.
@@ -205,7 +206,25 @@ mod tests {
             sql.contains("event_ts >= to_timestamp_micros(2800000000)"),
             "{sql}"
         );
-        assert!(sql.contains("event_ts <= to_timestamp_micros(1000000)"));
+        // Half-open, like the full-text leg's range query: `<`, never `<=`.
+        assert!(
+            sql.contains("event_ts < to_timestamp_micros(1000000)"),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn a_time_only_filter_still_compiles_to_the_windows_feed() {
+        // Time alone no longer GATES the fusion, but it is still a compilable
+        // filter — `garmr hsearch --since 24` with no other clause is exactly
+        // "the last 24h", and must not compile to nothing.
+        let mut f = sf();
+        f.time = TimeRange {
+            last_hours: Some(24.0),
+            ..Default::default()
+        };
+        let sql = f.compile_sql(500, 10_000_000_000).unwrap();
+        assert!(sql.contains("event_ts >= to_timestamp_micros("), "{sql}");
     }
 
     #[test]

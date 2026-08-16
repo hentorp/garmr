@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: SSH disconnect before authentication
+id: garmr-auth-ssh-preauth-disconnect
+status: stable
+description: >
+    A peer disconnected before authenticating - the signature of scanners and
+    banner-grabbers. One is noise; the burst-fold makes a sweep one case.
+author: garmr
+logsource:
+    product: linux
+    service: sshd
+detection:
+    disconnect:
+        service: sshd
+        message|contains: 'Received disconnect'
+    preauth:
+        message|contains: 'preauth'
+    condition: disconnect and preauth
+falsepositives:
+    - Monitoring probes that TCP-check the SSH port.
+level: low
+tags:
+    - attack.reconnaissance
+    - attack.t1595

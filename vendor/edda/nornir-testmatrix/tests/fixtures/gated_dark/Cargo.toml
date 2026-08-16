@@ -1,0 +1,23 @@
+# Test fixture: a repo that FALLS INTO the silenced-test trap.
+#
+# `dark_gate.rs` carries the constellation's camouflage shape —
+# `all(default-on, default-OFF)` — so it reads exactly like its running sibling
+# `lit_gate.rs` while compiling to ZERO tests under a plain `cargo test`. The
+# guard (`tests/gated_tests_guard.rs`) must REPORT it, count its hidden tests,
+# and stay silent about the sibling.
+#
+# Standalone `[workspace]` + zero dependencies so the parent never builds it and
+# `cargo metadata --no-deps` resolves offline.
+[package]
+name = "gated_dark"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[features]
+default = ["light"]
+light = []
+# NOT in `default` — the dark conjunct.
+heavy = []
+
+[workspace]

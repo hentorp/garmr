@@ -1,0 +1,16 @@
+# Test fixture: a CLEAN repo. Every gated test file is reachable from `default`
+# (including through a transitive `default → bundle → light` chain and a
+# platform-only `not(target_os = ...)` gate that must never be flagged), so the
+# guard's report is GREEN with zero silenced files.
+[package]
+name = "gated_default_on"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[features]
+default = ["bundle"]
+bundle = ["light"]
+light = []
+
+[workspace]

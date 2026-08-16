@@ -50,8 +50,71 @@ impl std::str::FromStr for Role {
     }
 }
 
+/// Which sources a credential may read.
+///
+/// Absent (`Unrestricted`) is the historical behaviour and stays the default:
+/// every existing token keeps seeing everything, so introducing scopes cannot
+/// silently narrow an operator's access. A restricted scope is an explicit
+/// allow-list — never a deny-list — because a deny-list has to enumerate every
+/// source that will ever exist, and a source that appears tomorrow would be
+/// visible to a credential that was meant to be confined.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DataScope {
+    /// Reads every source. The default for credentials with no `sources` field.
+    Unrestricted,
+    /// Reads exactly these sources, and nothing else.
+    Sources(Vec<String>),
+}
+
+impl DataScope {
+    /// Build from an optional allow-list. An empty list is deliberately NOT the
+    /// same as absent: `sources: []` means "this credential may read nothing",
+    /// which is a coherent thing for an operator to configure while a collector
+    /// is being provisioned. Treating it as unrestricted would turn the most
+    /// locked-down configuration into the most permissive one — the classic
+    /// empty-list-means-all footgun.
+    pub fn from_opt(sources: Option<Vec<String>>) -> Self {
+        match sources {
+            None => DataScope::Unrestricted,
+            Some(list) => DataScope::Sources(list),
+        }
+    }
+
+    pub fn is_unrestricted(&self) -> bool {
+        matches!(self, DataScope::Unrestricted)
+    }
+
+    /// The allowed sources, or `None` when unrestricted.
+    pub fn allowed(&self) -> Option<&[String]> {
+        match self {
+            DataScope::Unrestricted => None,
+            DataScope::Sources(s) => Some(s),
+        }
+    }
+
+    /// May this scope read `source`?
+    pub fn allows_source(&self, source: &str) -> bool {
+        match self {
+            DataScope::Unrestricted => true,
+            DataScope::Sources(s) => s.iter().any(|a| a == source),
+        }
+    }
+
+    /// Is every requested source inside this scope? Used by lanes that take an
+    /// explicit source filter, so a request for something outside the scope is a
+    /// 403 rather than silently narrowed results — a caller that asked for infra
+    /// logs and got HR logs back would draw wrong conclusions from the silence.
+    pub fn covers_all(&self, requested: &[String]) -> bool {
+        requested.iter().all(|r| self.allows_source(r))
+    }
+}
+
 /// An authenticated identity: who, and at what role.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serializable on purpose and safe to serialize by construction: it has a user
+/// and a role and no field a token or credential could occupy, so any surface
+/// that lists principals is token-free without a stripping step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Principal {
     pub user: String,
     pub role: Role,
@@ -102,6 +165,22 @@ impl AuthRegistry {
         let n = list.len();
         self.users.extend(list);
         Ok(n)
+    }
+
+    /// Every configured principal, without its secret.
+    ///
+    /// The return type is the guarantee: [`Principal`] holds a user and a role
+    /// and has no field a token could live in, so a caller that lists principals
+    /// **cannot** leak one — this is a type-level property rather than a
+    /// remember-to-strip-it convention at each serialization site.
+    pub fn principals(&self) -> Vec<Principal> {
+        self.users
+            .iter()
+            .map(|u| Principal {
+                user: u.user.clone(),
+                role: u.role,
+            })
+            .collect()
     }
 
     /// Resolve a token to its principal, or `None`. Constant-time: every entry is

@@ -104,6 +104,12 @@ struct ApiCredential {
     /// Keyed BLAKE3 digest of the token — the only thing that can verify it, and
     /// useless as a bearer itself.
     digest: Vec<u8>,
+    /// Which event sources this credential may read. Absent = unrestricted,
+    /// which is what every credential issued before this field existed
+    /// deserializes to — introducing data scopes must not silently narrow an
+    /// operator's existing access.
+    #[serde(default)]
+    sources: Option<Vec<String>>,
 }
 
 /// Runtime handle: the auth state store plus the keyed-hash key for digests.
@@ -164,11 +170,16 @@ impl CredentialStore {
     /// Resolve a presented bearer to a principal + scopes if it matches an active,
     /// unexpired credential. Constant-time digest comparison (BLAKE3 `Hash` eq).
     /// Stamps `last_used` at most once per minute to bound write amplification.
+    /// Resolve a presented token to its principal, action scopes, and DATA scope.
+    ///
+    /// The data scope rides along with resolution rather than being looked up
+    /// separately: a second lookup is a second chance to forget it, and a
+    /// forgotten data scope fails open — the credential would read everything.
     pub(super) fn resolve(
         &self,
         presented: &str,
         source: Option<&str>,
-    ) -> Option<(Principal, Vec<String>)> {
+    ) -> Option<(Principal, Vec<String>, garmr_core::DataScope)> {
         // Fast reject anything that is not one of our tokens (avoids a store read
         // for every legacy/env bearer).
         if !presented.starts_with(TOKEN_PREFIX) {
@@ -196,6 +207,7 @@ impl CredentialStore {
             role: creds[i].role,
         };
         let scopes = creds[i].scopes.clone();
+        let data_scope = garmr_core::DataScope::from_opt(creds[i].sources.clone());
         // Throttled last-use stamp — under the write lock with a RE-LOAD, so a
         // revoke/rotate/issue that landed between our read and here is preserved
         // (never resurrect a credential another writer just revoked). Skip if the
@@ -213,7 +225,7 @@ impl CredentialStore {
                 let _ = self.save(&fresh);
             }
         }
-        Some((principal, scopes))
+        Some((principal, scopes, data_scope))
     }
 
     /// Mint a credential and persist it, running `audit(id, fingerprint)` UNDER the
@@ -230,6 +242,7 @@ impl CredentialStore {
         scopes: Vec<String>,
         expires_at: Option<i64>,
         created_by: &str,
+        sources: Option<Vec<String>>,
         audit: impl FnOnce(&str, &str) -> Result<(), String>,
     ) -> Result<(String, serde_json::Value), String> {
         let token = format!("{TOKEN_PREFIX}{}", B64.encode(rand32()));
@@ -250,6 +263,7 @@ impl CredentialStore {
             rotated_from: None,
             fingerprint: fp.clone(),
             digest: self.digest(&token).to_vec(),
+            sources,
         };
         let id = cred.id.clone();
         let meta = credential_json(&cred);
@@ -312,7 +326,7 @@ pub(super) fn require_scope(
         return Ok(p);
     }
     // Scoped credential.
-    if let Some((p, scopes)) = st.creds.resolve(&presented, None) {
+    if let Some((p, scopes, _data_scope)) = st.creds.resolve(&presented, None) {
         if scopes.iter().any(|s| s == scope) || scopes.iter().any(|s| s == "system:admin") {
             return Ok(p);
         }
@@ -345,7 +359,7 @@ pub(super) fn system_admin_principal(st: &ApiState, headers: &HeaderMap) -> Opti
     let presented = bearer(headers);
     st.creds
         .resolve(&presented, None)
-        .and_then(|(who, scopes)| scopes.iter().any(|s| s == "system:admin").then_some(who))
+        .and_then(|(who, scopes, _)| scopes.iter().any(|s| s == "system:admin").then_some(who))
 }
 
 /// GET /api/credentials — admin-gated. Credential metadata (never a token/digest),
@@ -391,6 +405,9 @@ fn credential_json(c: &ApiCredential) -> serde_json::Value {
         "revoked_at": c.revoked_at,
         "rotated_from": c.rotated_from,
         "fingerprint": c.fingerprint,
+        // Null = unrestricted. Shown so an operator can see at a glance which
+        // credentials are confined and to what.
+        "sources": c.sources,
     })
 }
 
@@ -404,6 +421,11 @@ pub(super) struct IssueReq {
     scopes: Vec<String>,
     #[serde(default)]
     expires_in_days: Option<i64>,
+    /// Optional data scope. Omitted = unrestricted (today's behaviour); an
+    /// explicit empty list means "read no source at all", which is a coherent
+    /// thing to issue while a collector is being provisioned.
+    #[serde(default)]
+    sources: Option<Vec<String>>,
 }
 
 /// POST /admin/credentials — issue a new credential. Admin-gated, step-up, audited.
@@ -439,6 +461,7 @@ pub(super) async fn issue(
             scopes,
             expires_at,
             &who.user,
+            req.sources,
             |id, fp| {
                 st.record_admin(
                     &who,
@@ -598,6 +621,7 @@ mod tests {
             rotated_from: None,
             fingerprint: fingerprint(token),
             digest: store.digest(token).to_vec(),
+            sources: None,
         }
     }
 
@@ -608,10 +632,12 @@ mod tests {
         let cred = mkcred(&s, token, &["secrets:write"], None);
         s.save(std::slice::from_ref(&cred)).unwrap();
         // The real token resolves.
-        let (p, scopes) = s.resolve(token, None).expect("token resolves");
+        let (p, scopes, data_scope) = s.resolve(token, None).expect("token resolves");
         assert_eq!(p.user, "svc");
         assert_eq!(p.role, Role::Analyst);
         assert_eq!(scopes, vec!["secrets:write".to_string()]);
+        // No `sources` on this credential ⇒ unrestricted, unchanged behaviour.
+        assert!(data_scope.is_unrestricted());
         // The stored digest (hex/bytes) must NOT authenticate as a token.
         let digest_as_token = format!("garmr_pat_{}", B64.encode(&cred.digest));
         assert!(
@@ -696,5 +722,57 @@ mod tests {
         assert_eq!(f, fingerprint("garmr_pat_secret"));
         assert!(f.starts_with("pat_"));
         assert!(!f.contains("secret"));
+    }
+
+    #[test]
+    fn a_credential_stored_before_data_scopes_existed_is_unrestricted() {
+        // The compatibility guarantee: introducing scopes must not narrow any
+        // existing operator's access. An old blob has no `sources` key at all.
+        let old = r#"{
+            "id":"cred_1","name":"n","principal":"p","role":"analyst","scopes":["api:read"],
+            "created":1,"created_by":"admin","expires_at":null,"last_used_at":null,
+            "last_used_source":null,"status":"active","revoked_at":null,
+            "rotated_from":null,"fingerprint":"ab","digest":[1,2,3]
+        }"#;
+        let c: ApiCredential = serde_json::from_str(old).expect("old blob still deserializes");
+        assert!(c.sources.is_none());
+        assert!(garmr_core::DataScope::from_opt(c.sources).is_unrestricted());
+    }
+
+    #[test]
+    fn an_explicit_empty_source_list_reads_nothing_not_everything() {
+        // `sources: []` is a coherent thing to issue while provisioning. Treating
+        // it as unrestricted would make the most locked-down credential the most
+        // permissive one.
+        let blob = r#"{
+            "id":"cred_2","name":"n","principal":"p","role":"analyst","scopes":[],
+            "created":1,"created_by":"admin","expires_at":null,"last_used_at":null,
+            "last_used_source":null,"status":"active","revoked_at":null,
+            "rotated_from":null,"fingerprint":"ab","digest":[1],"sources":[]
+        }"#;
+        let c: ApiCredential = serde_json::from_str(blob).unwrap();
+        let scope = garmr_core::DataScope::from_opt(c.sources);
+        assert!(!scope.is_unrestricted());
+        assert!(!scope.allows_source("hr"));
+    }
+
+    #[test]
+    fn the_listing_shows_the_scope_and_still_never_a_secret() {
+        let c: ApiCredential = serde_json::from_str(
+            r#"{"id":"c","name":"n","principal":"p","role":"analyst","scopes":[],
+                "created":1,"created_by":"a","expires_at":null,"last_used_at":null,
+                "last_used_source":null,"status":"active","revoked_at":null,
+                "rotated_from":null,"fingerprint":"fp","digest":[9,9,9],
+                "sources":["hr"]}"#,
+        )
+        .unwrap();
+        let j = credential_json(&c);
+        assert_eq!(j["sources"][0], "hr");
+        let text = j.to_string();
+        assert!(
+            !text.contains("digest"),
+            "the digest must never be listed: {text}"
+        );
+        assert!(!text.contains("9,9,9"), "{text}");
     }
 }

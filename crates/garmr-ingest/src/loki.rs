@@ -41,17 +41,51 @@ static ADAPTERS: std::sync::LazyLock<crate::adapter::AdapterRegistry> =
 /// adapter's default host (csvlog carries none). On a parse error we log and
 /// fall through to the generic classifier.
 ///
-/// Routing is deliberately restricted to the line-oriented pg formats: the JSON
-/// adapters (ocsf/otel) are whole-document-per-line and would be corrupted by a
-/// newline-join, so they are NOT auto-routed here. Every other source — the
-/// firehose's journald / kunai / pve-firewall / syslog — takes the generic
-/// per-entry classifier path, byte-identical to before adapters existed.
+/// The line-oriented pg formats are newline-JOINED before parsing, because a
+/// csvlog record spans several delivered values. The JSON adapters (ocsf/otel)
+/// are whole-document-per-line and would be CORRUPTED by that join, so they are
+/// routed per entry instead — same registry, different framing. This is what
+/// makes the OCSF-first source strategy real on the live path: anything a
+/// pipeline shapes into OCSF and labels `source="ocsf"` is ingested here, not
+/// only through the offline `garmr replay --format ocsf`.
+///
+/// Every other source — the firehose's journald / kunai / pve-firewall /
+/// syslog — takes the generic per-entry classifier path, byte-identical to
+/// before adapters existed.
 fn stream_to_events(
     labels: &BTreeMap<String, String>,
     entries: &[(DateTime<Utc>, String)],
     default_environment: &str,
 ) -> Vec<Event> {
     let source = labels.get("source").map(String::as_str).unwrap_or("");
+    // Whole-document-per-line adapters: parse each entry on its own. Joining
+    // would splice independent JSON documents into one unparseable blob.
+    if matches!(source, "ocsf" | "otel") && ADAPTERS.get(source).is_some() {
+        let mut out = Vec::new();
+        for (ts, line) in entries {
+            if line.trim().is_empty() {
+                continue;
+            }
+            match ADAPTERS.parse(source, line.as_bytes(), default_environment) {
+                Ok(mut evs) => {
+                    if let Some(host) = labels.get("host") {
+                        for ev in &mut evs {
+                            ev.host = host.clone().into();
+                        }
+                    }
+                    out.append(&mut evs);
+                }
+                // One malformed document must not discard the rest of the
+                // batch: fall through to the generic classifier for THAT line
+                // so it is still stored and searchable, just not parsed.
+                Err(e) => {
+                    tracing::warn!(source, error = %e, "adapter parse failed — classifying the raw line");
+                    out.push(labels::to_event(labels, line, *ts, default_environment));
+                }
+            }
+        }
+        return out;
+    }
     if matches!(source, "postgres-csvlog" | "postgres-jsonlog") && ADAPTERS.get(source).is_some() {
         let blob = entries
             .iter()
@@ -366,5 +400,46 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].source, "journald");
         assert_eq!(events[0].src_ip(), Some("10.0.0.9"));
+    }
+
+    #[test]
+    fn an_ocsf_stream_is_parsed_per_document_on_the_live_path() {
+        // The OCSF-first strategy has to hold for STREAMING, not just for
+        // `garmr replay`. Two documents in one push must yield two parsed
+        // events — before this, ocsf was excluded from adapter routing and both
+        // fell through to the raw-line classifier, losing actor and address.
+        let doc = r#"{"class_uid":3002,"class_name":"Authentication","category_name":"Identity & Access Management","activity_name":"Logon","time":"2026-08-14T06:12:44Z","severity":"Medium","status":"Failure","message":"ConsoleLogin failed for deploy-bot","metadata":{"product":{"name":"AWS CloudTrail"}},"actor":{"user":{"name":"deploy-bot"}},"src_endpoint":{"ip":"203.0.113.42"},"device":{"hostname":"signin.amazonaws.com"}}"#;
+        let body = push_body(
+            serde_json::json!({"source":"ocsf"}),
+            serde_json::json!([["1720000000000000000", doc], ["1720000000000000001", doc]]),
+        );
+        let events = decode_json(&body, "prod").unwrap();
+        assert_eq!(events.len(), 2, "each document is its own event");
+        for e in &events {
+            assert_eq!(e.source, "ocsf");
+            assert_eq!(e.field("user"), Some("deploy-bot"));
+            assert_eq!(e.src_ip(), Some("203.0.113.42"));
+            assert_eq!(e.service, "AWS CloudTrail");
+        }
+    }
+
+    #[test]
+    fn one_malformed_ocsf_document_does_not_discard_the_batch() {
+        // A single bad document from a misconfigured pipeline must not take the
+        // good ones with it — and the bad line is still STORED (classified
+        // generically) rather than dropped, because an event nobody can search
+        // for is indistinguishable from one that never arrived.
+        let doc = r#"{"class_uid":3002,"class_name":"Authentication","category_name":"Identity & Access Management","activity_name":"Logon","time":"2026-08-14T06:12:44Z","severity":"Medium","status":"Failure","message":"ConsoleLogin failed for deploy-bot","metadata":{"product":{"name":"AWS CloudTrail"}},"actor":{"user":{"name":"deploy-bot"}},"src_endpoint":{"ip":"203.0.113.42"},"device":{"hostname":"signin.amazonaws.com"}}"#;
+        let body = push_body(
+            serde_json::json!({"source":"ocsf"}),
+            serde_json::json!([
+                ["1720000000000000000", doc],
+                ["1720000000000000001", "{not json at all"]
+            ]),
+        );
+        let events = decode_json(&body, "prod").unwrap();
+        assert_eq!(events.len(), 2, "the malformed line is kept, not dropped");
+        assert_eq!(events[0].field("user"), Some("deploy-bot"));
+        assert!(events[1].message.contains("not json"));
     }
 }

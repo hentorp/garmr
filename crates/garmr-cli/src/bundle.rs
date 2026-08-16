@@ -34,7 +34,14 @@ pub(crate) async fn bundle_cmd(cli: &Cli, what: &BundleCmd) -> Result<()> {
             dir,
             binary,
             signing_key,
-        } => build(cli, dir, binary.as_deref(), signing_key.as_deref()),
+            content_only,
+        } => build(
+            cli,
+            dir,
+            binary.as_deref(),
+            signing_key.as_deref(),
+            *content_only,
+        ),
         BundleCmd::Verify { dir, key } => {
             let findings = verify(cli, dir, key.as_deref())?;
             if !findings.is_empty() {
@@ -66,8 +73,9 @@ pub(crate) async fn bundle_cmd(cli: &Cli, what: &BundleCmd) -> Result<()> {
         BundleCmd::Rollback {
             to_version,
             channel,
+            name,
             reason,
-        } => rollback(cli, to_version, channel, reason).await,
+        } => rollback(cli, to_version, channel, name, reason).await,
     }
 }
 
@@ -84,12 +92,13 @@ fn parse_key(hex_str: &str) -> Result<[u8; 32]> {
 fn audited_promotion(
     store: &Store,
     op: &str,
+    name: &str,
     version: &str,
     target_digest: &str,
     channel: &str,
     reason: &str,
 ) -> Result<()> {
-    let coord = format!("garmr@{version}");
+    let coord = format!("{name}@{version}");
     let audit_id = crate::audit::record_admin_local(
         BUNDLE_IMPORT,
         "registry_promotion",
@@ -104,7 +113,7 @@ fn audited_promotion(
     let ev: garmr_core::PromotionEvent = serde_json::from_value(serde_json::json!({
         "promotion_id": uuid::Uuid::new_v4().to_string(),
         "kind": "release",
-        "name": "garmr",
+        "name": name,
         "op": op,
         "to_version": version,
         "to_state": "approved",
@@ -171,6 +180,19 @@ async fn import(
             sb.manifest.release_digest
         );
     }
+    // A bundle with no binary entry is the content-update channel: same
+    // signature, same digest discipline, but its import ALSO installs the
+    // detection content — so it gets the import-time lint a release does not
+    // need (a release's rules load through serve's own strict startup path).
+    let content_only = !sb
+        .manifest
+        .entries
+        .iter()
+        .any(|e| matches!(e.kind, BundleEntryKind::Binary));
+    if content_only {
+        lint_bundle_rules(dir, &sb)?;
+    }
+
     crate::audit::ensure_init(&cfg.audit)?;
     // Refuse an UNAUDITABLE import BEFORE any store write (review fix): ensure_init
     // is a no-op when audit.enabled=false, so check up front — otherwise the
@@ -199,16 +221,134 @@ async fn import(
     audited_promotion(
         &store,
         "promote",
+        &rec.name,
         &ver,
         &record.content_digest,
         channel,
         reason,
     )?;
-    println!("imported release garmr@{ver} → active on {channel} (reversible: garmr bundle rollback <prev-version>)");
+    // The audited intent is recorded; now the effect. Install AFTER the
+    // promotion so a half-installed tree can never exist without its ledger
+    // record — the reverse order would be an unaudited content change.
+    if content_only {
+        install_content(&cfg.detect, dir)?;
+        println!(
+            "imported content bundle {}@{ver} → active on {channel}",
+            rec.name
+        );
+        println!(
+            "  detection content installed; the previous dirs were moved aside to \
+             *.pre-bundle-<ts>"
+        );
+        println!(
+            "  activate: start serve (loads at startup), or on a live node POST \
+             /admin/rules/reload (strict, audited)"
+        );
+    } else {
+        println!(
+            "imported release {}@{ver} → active on {channel} (reversible: garmr bundle rollback <prev-version>)",
+            rec.name
+        );
+    }
     Ok(())
 }
 
-async fn rollback(cli: &Cli, to_version: &str, channel: &str, reason: &str) -> Result<()> {
+/// Import-time lint for the content channel: every Sigma rule in the bundle
+/// must parse AND compile (the same gate serve applies at load, run here so a
+/// broken rules refresh is refused at the door instead of discovered at the
+/// next reload). Unknown fields are warned, not fatal — the mapping lint is
+/// advisory at import exactly as it is in `garmr rules import`.
+fn lint_bundle_rules(dir: &Path, sb: &SignedBundle) -> Result<()> {
+    let mut errors: Vec<String> = Vec::new();
+    let mut unknown = 0usize;
+    let mut rules = 0usize;
+    for e in &sb.manifest.entries {
+        if !matches!(e.kind, BundleEntryKind::SigmaRule) {
+            continue;
+        }
+        rules += 1;
+        let path = dir.join(&e.path);
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let lint = crate::cmd::rules_import::lint_rule(&path, &text);
+        if let Some(err) = lint.error {
+            errors.push(format!("  {}: {err}", e.path));
+        } else if !lint.unknown_fields.is_empty() {
+            unknown += 1;
+        }
+    }
+    if !errors.is_empty() {
+        bail!(
+            "refusing to import — {} rule(s) fail to parse/compile:\n{}",
+            errors.len(),
+            errors.join("\n")
+        );
+    }
+    if unknown > 0 {
+        println!(
+            "note: {unknown}/{rules} rule(s) reference fields outside the field mapping — they \
+             load, but those selections cannot match (see `garmr rules import` lint)"
+        );
+    }
+    Ok(())
+}
+
+/// Install a verified content bundle's detection dirs over the configured ones.
+/// Each live dir is moved aside to `<dir>.pre-bundle-<ts>` first — garmr never
+/// hard-deletes — so a content rollback is a rename away.
+fn install_content(detect: &garmr_core::DetectConfig, bundle_dir: &Path) -> Result<()> {
+    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let plan = [
+        ("rules", &detect.rules_dir),
+        ("correlations", &detect.correlations_dir),
+        ("hunts", &detect.hunts_dir),
+    ];
+    for (sub, target) in plan {
+        let src = bundle_dir.join(sub);
+        if !src.is_dir() {
+            continue; // the bundle does not carry this content class
+        }
+        if target.exists() {
+            let aside = PathBuf::from(format!("{}.pre-bundle-{ts}", target.display()));
+            std::fs::rename(target, &aside)
+                .with_context(|| format!("moving {} aside", target.display()))?;
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        copy_dir(&src, target).with_context(|| format!("installing {sub}"))?;
+    }
+    Ok(())
+}
+
+/// Recursive plain-file copy (rejecting symlinks, like the backup path).
+fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let meta = std::fs::symlink_metadata(entry.path())?;
+        let to = dst.join(entry.file_name());
+        if meta.is_dir() {
+            copy_dir(&entry.path(), &to)?;
+        } else if meta.is_file() {
+            std::fs::copy(entry.path(), &to)?;
+        } else {
+            bail!(
+                "refusing to install {}: not a regular file or directory",
+                entry.path().display()
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn rollback(
+    cli: &Cli,
+    to_version: &str,
+    channel: &str,
+    name: &str,
+    reason: &str,
+) -> Result<()> {
     let cfg = crate::load_config(cli)?;
     crate::audit::ensure_init(&cfg.audit)?;
     let store = Store::open_writable(&cfg)
@@ -216,17 +356,24 @@ async fn rollback(cli: &Cli, to_version: &str, channel: &str, reason: &str) -> R
         .context("opening store (writable) — run with serve stopped")?;
     let rec = store
         .state
-        .get_record(RegistryKind::Release, "garmr", to_version)?
-        .with_context(|| format!("no release record garmr@{to_version} to roll back to"))?;
+        .get_record(RegistryKind::Release, name, to_version)?
+        .with_context(|| format!("no release record {name}@{to_version} to roll back to"))?;
     audited_promotion(
         &store,
         "rollback",
+        name,
         to_version,
         &rec.content_digest,
         channel,
         reason,
     )?;
-    println!("rolled back garmr → {to_version} active on {channel}");
+    println!("rolled back {name} → {to_version} active on {channel}");
+    if name == "garmr-content" {
+        println!(
+            "  the registry pointer is restored; restore the FILES from the matching \
+             *.pre-bundle-<ts> dirs (import moved them aside, it never deleted them)"
+        );
+    }
     Ok(())
 }
 
@@ -314,25 +461,36 @@ fn sbom_from_lockfile() -> String {
     out
 }
 
-fn build(cli: &Cli, dir: &Path, binary: Option<&Path>, signing_key: Option<&Path>) -> Result<()> {
+fn build(
+    cli: &Cli,
+    dir: &Path,
+    binary: Option<&Path>,
+    signing_key: Option<&Path>,
+    content_only: bool,
+) -> Result<()> {
     let cfg = crate::load_config(cli)?;
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let mut entries: Vec<BundleEntry> = Vec::new();
 
-    // 1) the garmr binary (streamed, bounded memory).
-    let bin_src = match binary {
-        Some(p) => p.to_path_buf(),
-        None => std::env::current_exe().context("locating the running garmr binary")?,
-    };
-    let (bin_digest, bin_size) = stream_digest(&bin_src)?;
-    std::fs::create_dir_all(dir.join("bin"))?;
-    std::fs::copy(&bin_src, dir.join("bin/garmr"))?;
-    entries.push(BundleEntry {
-        path: "bin/garmr".into(),
-        kind: BundleEntryKind::Binary,
-        digest: bin_digest.clone(),
-        size_bytes: bin_size,
-    });
+    // 1) the garmr binary (streamed, bounded memory). A content-only bundle
+    // carries none — it is the signed content-update channel, and shipping a
+    // binary would make every rules refresh look like (and be reviewed as) a
+    // release.
+    if !content_only {
+        let bin_src = match binary {
+            Some(p) => p.to_path_buf(),
+            None => std::env::current_exe().context("locating the running garmr binary")?,
+        };
+        let (bin_digest, bin_size) = stream_digest(&bin_src)?;
+        std::fs::create_dir_all(dir.join("bin"))?;
+        std::fs::copy(&bin_src, dir.join("bin/garmr"))?;
+        entries.push(BundleEntry {
+            path: "bin/garmr".into(),
+            kind: BundleEntryKind::Binary,
+            digest: bin_digest.clone(),
+            size_bytes: bin_size,
+        });
+    }
 
     // 2) detection content.
     add_dir(
@@ -382,8 +540,13 @@ fn build(cli: &Cli, dir: &Path, binary: Option<&Path>, signing_key: Option<&Path
     )?;
     let now = chrono::Utc::now();
     let git_commit = std::env::var("GARMR_GIT_COMMIT").unwrap_or_default();
+    let variant = if content_only {
+        "content-only"
+    } else {
+        "release"
+    };
     let provenance = format!(
-        "garmr air-gap bundle\nversion: {}\ngit_commit: {}\nbuilt_at: {}\nnode: {}\n",
+        "garmr air-gap bundle ({variant})\nversion: {}\ngit_commit: {}\nbuilt_at: {}\nnode: {}\n",
         env!("CARGO_PKG_VERSION"),
         git_commit,
         now.to_rfc3339(),
@@ -423,10 +586,10 @@ fn build(cli: &Cli, dir: &Path, binary: Option<&Path>, signing_key: Option<&Path
     let record: RegistryRecord = serde_json::from_value(serde_json::json!({
         "id": uuid::Uuid::new_v4().to_string(),
         "kind": "release",
-        "name": "garmr",
+        "name": if content_only { "garmr-content" } else { "garmr" },
         "version": env!("CARGO_PKG_VERSION"),
         "content_digest": rel_digest,
-        "rationale": "air-gap bundle release",
+        "rationale": if content_only { "content-update bundle" } else { "air-gap bundle release" },
         "registered_by": "bundle",
         "spec": spec,
     }))?;
@@ -468,7 +631,12 @@ fn build(cli: &Cli, dir: &Path, binary: Option<&Path>, signing_key: Option<&Path
         node_id: cfg.audit.node_id.clone(),
         garmr_version: env!("CARGO_PKG_VERSION").into(),
         git_commit,
-        release_name: "garmr".into(),
+        release_name: if content_only {
+            "garmr-content"
+        } else {
+            "garmr"
+        }
+        .into(),
         release_version: env!("CARGO_PKG_VERSION").into(),
         release_digest: rel_digest,
         entries,
@@ -805,6 +973,89 @@ mod tests {
             .unwrap()
             .iter()
             .any(|x| x.category == "digest_mismatch"));
+    }
+
+    #[test]
+    fn lint_refuses_a_bundle_with_a_broken_rule() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A rule that parses as YAML but cannot compile: bad modifier.
+        std::fs::create_dir_all(tmp.path().join("rules")).unwrap();
+        let bad = b"title: broken\ndetection:\n  sel:\n    f|nosuchmod: x\n  condition: sel\n";
+        std::fs::write(tmp.path().join("rules/bad.yml"), bad).unwrap();
+        let manifest = BundleManifest {
+            format_version: garmr_core::BUNDLE_FORMAT,
+            release_name: "garmr-content".into(),
+            entries: vec![BundleEntry {
+                path: "rules/bad.yml".into(),
+                kind: BundleEntryKind::SigmaRule,
+                digest: blake3::hash(bad).to_hex().to_string(),
+                size_bytes: bad.len() as u64,
+            }],
+            ..Default::default()
+        };
+        let signer = SoftwareSigner::from_seed([7u8; 32]);
+        let sig = signer.sign(&garmr_core::canonical_manifest_body(&manifest));
+        let signed = SignedBundle {
+            manifest_digest: manifest_digest(&manifest),
+            manifest,
+            signature_format: "ed25519".into(),
+            signing_key_id: signer.key_id().to_string(),
+            public_key: hex::encode(signer.public_key()),
+            signature: sig.to_hex(),
+        };
+        let err = lint_bundle_rules(tmp.path(), &signed)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("rules/bad.yml"),
+            "the refusal names the broken rule: {err}"
+        );
+    }
+
+    #[test]
+    fn install_content_moves_the_prior_dirs_aside() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle = tmp.path().join("bundle");
+        std::fs::create_dir_all(bundle.join("rules")).unwrap();
+        std::fs::write(bundle.join("rules/new.yml"), b"title: new\n").unwrap();
+
+        let mut detect: garmr_core::DetectConfig =
+            toml::from_str("rules_dir = \"unused\"").expect("only rules_dir is required");
+        detect.rules_dir = tmp.path().join("live-rules");
+        detect.correlations_dir = tmp.path().join("live-correlations");
+        detect.hunts_dir = tmp.path().join("live-hunts");
+        std::fs::create_dir_all(&detect.rules_dir).unwrap();
+        std::fs::write(detect.rules_dir.join("old.yml"), b"title: old\n").unwrap();
+
+        install_content(&detect, &bundle).unwrap();
+
+        assert!(
+            detect.rules_dir.join("new.yml").is_file(),
+            "the bundle's rule is installed"
+        );
+        assert!(
+            !detect.rules_dir.join("old.yml").exists(),
+            "the live dir was replaced, not merged"
+        );
+        let aside: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("live-rules.pre-bundle-")
+            })
+            .collect();
+        assert_eq!(aside.len(), 1, "the prior dir was moved aside, not deleted");
+        assert!(
+            aside[0].path().join("old.yml").is_file(),
+            "the prior rule survives in the aside dir"
+        );
+        // Content classes the bundle does not carry are untouched.
+        assert!(
+            !bundle.join("hunts").exists() && !detect.hunts_dir.join("x").exists(),
+            "absent classes are left alone"
+        );
     }
 
     #[test]

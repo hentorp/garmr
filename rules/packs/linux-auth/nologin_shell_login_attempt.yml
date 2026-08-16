@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Login attempt on a service account
+id: garmr-auth-service-account-login
+status: stable
+description: >
+    An interactive login attempt against an account with a nologin shell -
+    service accounts exist to run daemons, not to be logged into.
+author: garmr
+logsource:
+    product: linux
+detection:
+    selection:
+        message|contains:
+            - 'This account is currently not available'
+    condition: selection
+falsepositives:
+    - Operators poking service accounts by mistake.
+level: medium
+tags:
+    - attack.initial_access
+    - attack.t1078.003

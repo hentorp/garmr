@@ -52,6 +52,22 @@ pub(super) async fn capabilities(State(st): State<ApiState>) -> ApiResult {
     #[cfg(not(feature = "semantic"))]
     let semantic = feature("disabled", Some("built without the `semantic` feature"));
 
+    // Full-text search: serving, but impaired on an index built before
+    // `ts_micros` became a fast field — every time-range-bounded search 503s
+    // until `garmr reindex` rebuilds it, so the manifest must not claim healthy.
+    let full_text = if st.store.search.supports_ts_range() {
+        feature("healthy", None)
+    } else {
+        feature(
+            "degraded",
+            Some(
+                "the full-text index predates time-range filtering — searching a time range \
+                 fails until `garmr reindex` rebuilds it (with `serve` stopped); unbounded \
+                 search works",
+            ),
+        )
+    };
+
     // Application-audit plane (behavioral baselines, users, applications, insider risk).
     let app_audit = if st.app_audit.is_some() {
         feature("healthy", None)
@@ -160,15 +176,34 @@ pub(super) async fn capabilities(State(st): State<ApiState>) -> ApiResult {
         "read_only": read_only,
         "ha_role": if read_only { "follower" } else { "leader" },
         "writes_enabled": !read_only,
+        // Replication state. `configured` is whether the object-store target is
+        // set; last_snapshot_* are this process's last successful ship (writer)
+        // or applied pull (follower) — null until one happens, so a stalled
+        // replica is visibly stalled rather than silently "healthy".
+        "ha": {
+            "replication_configured": std::env::var("GARMR_S3_ENDPOINT").is_ok()
+                && std::env::var("GARMR_S3_BUCKET").is_ok(),
+            "last_ship_at_us": match garmr_retention::ha_status::snapshot() {
+                (0, _) => serde_json::Value::Null,
+                (at, _) => serde_json::json!(at),
+            },
+            "last_snapshot_id": match garmr_retention::ha_status::snapshot() {
+                (0, _) => serde_json::Value::Null,
+                (_, id) => serde_json::json!(id),
+            },
+        },
         "auth": {
             "enabled": !st.auth.is_empty(),
             "passkey_enabled": st.webauthn.is_some(),
+            // The console shows the SSO entry point only when a redirect will
+            // actually land somewhere.
+            "oidc_enabled": st.oidc.is_some(),
         },
         // Per-feature runtime state. The console maps these to task areas and to
         // individual controls; anything not `healthy` renders a labelled
         // disabled/degraded state instead of a dead button.
         "features": {
-            "full_text_search": feature("healthy", None),
+            "full_text_search": full_text,
             "structured_query": feature("healthy", None),
             "semantic_search": semantic,
             "hybrid_search": feature("healthy", None),

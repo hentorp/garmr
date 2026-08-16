@@ -41,7 +41,7 @@ use super::{bad, oops, ApiResult, ApiState};
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
 const SESSION_COOKIE: &str = "garmr_session";
-const SESSION_TTL_SECS: i64 = 12 * 3600;
+pub(super) const SESSION_TTL_SECS: i64 = 12 * 3600;
 const CHALLENGE_TTL: Duration = Duration::from_secs(300);
 /// Sensitive operations (credential/secret writes) require an interactive login
 /// that happened within this window AND was user-verified (PIN/biometric) — a
@@ -215,12 +215,72 @@ impl Webauthn {
         })
     }
 
+    /// Mint a session cookie for an identity authenticated by ANOTHER method
+    /// (today: OIDC), reusing this layer's keyed-MAC format, TTL and revocation
+    /// epoch so `verify_cookie` and `log out all sessions` treat it exactly like
+    /// a passkey session.
+    ///
+    /// `uv = false` deliberately: user-verification is a property of the local
+    /// authenticator ceremony. An IdP may well have enforced MFA, but garmr did
+    /// not observe it, and claiming an assurance it cannot see is how a step-up
+    /// gate becomes decorative. Step-up therefore stays passkey-only.
+    pub(super) fn mint_federated_session(&self, user: &str, role: Role) -> String {
+        self.make_session(user, role, false)
+    }
+
     /// Verify a session cookie → `(user, role)`: constant-time MAC, expiry, AND
     /// the current-epoch (revocation) check, so a logged-out-all session is
     /// rejected by every authorization path that resolves a cookie.
     pub(super) fn verify_cookie(&self, cookie: &str) -> Option<(String, Role)> {
         let info = self.parse_session(cookie)?;
         (info.epoch == self.current_epoch()).then_some((info.user, info.role))
+    }
+
+    /// The data scope for a logged-in passkey identity, read from the STORE on
+    /// every request rather than carried in the session cookie.
+    ///
+    /// That costs a lookup and buys immediacy: narrowing or revoking an
+    /// identity's sources takes effect on the next request, instead of whenever
+    /// the holder's cookie happens to expire. A scope baked into the cookie
+    /// would leave a window — up to the full session TTL — in which a credential
+    /// an admin has just confined still reads everything, and that window is
+    /// exactly the one that matters after a suspected compromise.
+    ///
+    /// Union across the identity's ACTIVE credentials: someone with two passkeys
+    /// gets what either grants, and a single unrestricted credential makes the
+    /// identity unrestricted. Disabled credentials contribute nothing, so
+    /// disabling the wide one narrows the identity immediately.
+    pub(super) fn data_scope_for(&self, user: &str) -> garmr_core::DataScope {
+        // Read through the handle Webauthn already holds, so this needs no new
+        // plumbing into the auth middleware.
+        let creds: Vec<StoredCred> = self
+            .state
+            .auth_get("passkeys")
+            .ok()
+            .flatten()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let mine: Vec<&StoredCred> = creds
+            .iter()
+            .filter(|c| !c.disabled && c.user == user)
+            .collect();
+        if mine.is_empty() {
+            // No active credential for this identity. The session is still
+            // MAC-valid, so this is the moment after a revoke: read nothing
+            // rather than everything.
+            return garmr_core::DataScope::Sources(Vec::new());
+        }
+        if mine.iter().any(|c| c.sources.is_none()) {
+            return garmr_core::DataScope::Unrestricted;
+        }
+        let mut union: Vec<String> = mine
+            .iter()
+            .filter_map(|c| c.sources.clone())
+            .flatten()
+            .collect();
+        union.sort();
+        union.dedup();
+        garmr_core::DataScope::Sources(union)
     }
 
     /// The full session info (for step-up checks), including the revocation check.
@@ -319,6 +379,10 @@ struct StoredCred {
     /// A disabled credential cannot log in (soft-revoke; kept for audit history).
     #[serde(default)]
     disabled: bool,
+    /// Which event sources this identity may read. Absent = unrestricted, which
+    /// is what every credential registered before this field existed decodes to.
+    #[serde(default)]
+    sources: Option<Vec<String>>,
 }
 
 fn default_user() -> String {
@@ -336,6 +400,23 @@ fn load_creds(store: &garmr_store::Store) -> Vec<StoredCred> {
         .flatten()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default()
+}
+
+/// The named identities that own a passkey, with the role each logs in as.
+///
+/// Returns [`garmr_core::Principal`] — a type with nowhere to put a credential —
+/// so the listing surface cannot expose key material even by mistake. Disabled
+/// (soft-revoked) credentials are excluded: they cannot log in, so listing them
+/// as available approvers would misrepresent who can act.
+pub(super) fn passkey_principals(store: &garmr_store::Store) -> Vec<garmr_core::Principal> {
+    load_creds(store)
+        .into_iter()
+        .filter(|c| !c.disabled)
+        .map(|c| garmr_core::Principal {
+            user: c.user,
+            role: c.role,
+        })
+        .collect()
 }
 
 fn save_creds(
@@ -628,6 +709,9 @@ pub(super) async fn register_finish(
         role,
         last_used: None,
         disabled: false,
+        // Unrestricted by default. A registration flow that silently confined a
+        // new passkey would lock an admin out of their own console.
+        sources: None,
     });
     // Fail-closed audit BEFORE persisting: this mints a durable login credential,
     // so it must never land without a tamper-evident record (mirrors the
@@ -889,7 +973,28 @@ struct LoginOk {
 }
 
 /// POST /auth/logout — clears the session cookie.
-pub(super) async fn logout() -> Response {
+///
+/// Audited (best-effort, attributed): a logout is the bookend of a session,
+/// and an access review reconstructing "who was logged in when" needs both
+/// ends. Best-effort like the other read-adjacent records — refusing to log a
+/// user OUT because the ledger is unavailable would hold a session open
+/// against its owner's will, which is backwards.
+pub(super) async fn logout(State(st): State<super::ApiState>, headers: HeaderMap) -> Response {
+    let user = st
+        .webauthn
+        .as_ref()
+        .and_then(|w| session_cookie(&headers).and_then(|c| w.verify_cookie(&c)))
+        .map(|(user, _)| user);
+    crate::audit::record_best_effort(
+        garmr_audit::AuditRecord::new(garmr_audit::action::AUTH_LOGOUT, "session")
+            .actor(
+                garmr_audit::ActorType::Human,
+                user.as_deref().unwrap_or("unauthenticated"),
+                None,
+            )
+            .auth_method("passkey_session")
+            .outcome(garmr_audit::Outcome::Success),
+    );
     (
         [(header::SET_COOKIE, session_cookie_str("", 0))],
         Json(serde_json::json!({"ok": true})),
@@ -923,8 +1028,21 @@ pub(super) async fn status(State(st): State<ApiState>, headers: HeaderMap) -> Ap
 }
 
 /// GET /login — the self-contained login page (plain HTML + JS, no WASM).
-pub(super) async fn login_page() -> Html<&'static str> {
-    Html(LOGIN_HTML)
+pub(super) async fn login_page(
+    axum::extract::State(st): axum::extract::State<super::ApiState>,
+) -> Html<String> {
+    // The SSO button renders only when OIDC is actually configured: a button
+    // that leads to a redirect-to-nowhere teaches operators to distrust the
+    // login page. Static substitution, no templating engine — the page stays
+    // a single reviewable file.
+    let button = if st.oidc.is_some() {
+        r#"<a href="/auth/oidc/start" style="display:block;text-align:center;margin-top:10px;
+           padding:12px 14px;border-radius:9px;border:1px solid #2c73b8;background:#152c47;
+           color:inherit;text-decoration:none">Log in with SSO</a>"#
+    } else {
+        ""
+    };
+    Html(LOGIN_HTML.replace("<!--OIDC_BUTTON-->", button))
 }
 
 // ------------------------------------------- credential + session management --
@@ -1142,7 +1260,7 @@ pub(super) fn session_cookie(headers: &HeaderMap) -> Option<String> {
     })
 }
 
-fn session_cookie_str(value: &str, max_age: i64) -> String {
+pub(super) fn session_cookie_str(value: &str, max_age: i64) -> String {
     format!(
         "{SESSION_COOKIE}={value}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={max_age}"
     )
@@ -1256,6 +1374,7 @@ mod tests {
             role,
             last_used: None,
             disabled,
+            sources: None,
         };
         let creds = vec![
             cred("a", Role::Admin, false),

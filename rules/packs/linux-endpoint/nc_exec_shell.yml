@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Netcat with shell execution
+id: garmr-ep-nc-exec
+status: stable
+description: >
+    netcat invoked with -e or piping a shell - a listener or reverse shell,
+    never a legitimate service pattern.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    selection:
+        message|contains|all:
+            - 'nc '
+            - ' -e '
+    fallback:
+        message|contains|all:
+            - 'ncat'
+            - '--exec'
+    condition: selection or fallback
+falsepositives:
+    - None expected on production hosts.
+level: critical
+tags:
+    - attack.command_and_control
+    - attack.t1059

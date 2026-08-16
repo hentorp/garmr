@@ -44,6 +44,17 @@ struct GarmrServer {
 // ---- tool argument shapes (doc comments become the JSON-schema descriptions) --
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct CasesArgs {
+    /// Filter by case state (new, investigating, triaged, escalated, closed,
+    /// needs_human). Omit for all.
+    state: Option<String>,
+    /// Filter by owner. Use "(unassigned)" for the unowned queue.
+    assignee: Option<String>,
+    /// Filter by tag (e.g. "sla:ack" for ack-breached cases).
+    tag: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct SearchArgs {
     /// Full-text query over event messages (Tantivy syntax: terms, "phrases", AND/OR/NOT).
     query: String,
@@ -125,9 +136,18 @@ impl GarmrServer {
             .filter(|t| !t.is_empty());
         // `ask` can take up to ~180s server-side; keep the total above that, but
         // a short connect timeout so a black-hole host fails fast (not after 200s).
+        // Every request carries the client marker, so the API's read-audit
+        // records can say "this search arrived through the MCP surface" —
+        // an LLM-driven read is a different review question from a human one.
+        let mut marker = reqwest::header::HeaderMap::new();
+        marker.insert(
+            "x-garmr-client",
+            reqwest::header::HeaderValue::from_static("garmr-mcp"),
+        );
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(200))
             .connect_timeout(Duration::from_secs(5))
+            .default_headers(marker)
             .build()
             .expect("build reqwest client");
         Self {
@@ -214,10 +234,28 @@ impl GarmrServer {
     }
 
     #[tool(
-        description = "List all triage cases (newest first) with state, rule, host, and verdict."
+        description = "List triage cases (newest first) with state, rule, host, and verdict. \
+                       Optional filters: state, assignee (\"(unassigned)\" for the unowned \
+                       queue), tag (e.g. \"sla:ack\" for ack-breached cases)."
     )]
-    async fn cases(&self) -> Result<CallToolResult, McpError> {
-        ok_json(&self.get("/api/cases", &[]).await?)
+    async fn cases(
+        &self,
+        Parameters(a): Parameters<CasesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        // Server-side filters — the same ones the console queue uses, so an
+        // agent asking "what is unassigned and breached" gets one small answer
+        // instead of the whole queue to sift locally.
+        let mut q: Vec<(&str, String)> = Vec::new();
+        if let Some(st) = a.state {
+            q.push(("state", st));
+        }
+        if let Some(who) = a.assignee {
+            q.push(("assignee", who));
+        }
+        if let Some(t) = a.tag {
+            q.push(("tag", t));
+        }
+        ok_json(&self.get("/api/cases", &q).await?)
     }
 
     #[tool(

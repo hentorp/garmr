@@ -356,7 +356,10 @@ pub(super) async fn admin_action_approve(
             id,
             &[garmr_core::ActionState::Proposed],
             garmr_core::ActionState::Approved,
-            "human",
+            // The named principal, not the literal "human". "Who approved this
+            // containment action?" is an audit question the ledger could not
+            // answer while every approval was signed by the same word.
+            &who.user,
             "approved via API",
             None,
             chrono::Utc::now(),
@@ -403,7 +406,7 @@ pub(super) async fn admin_action_deny(
                 garmr_core::ActionState::Approved,
             ],
             garmr_core::ActionState::Denied,
-            "human",
+            &who.user,
             reason,
             None,
             chrono::Utc::now(),
@@ -520,6 +523,48 @@ pub(super) async fn audit_verify(
         "findings_truncated": truncated,
         "findings": findings,
     })))
+}
+
+/// POST /admin/rules/reload — hot-reload the Sigma rule set from `rules_dir`
+/// without restarting `serve`.
+///
+/// Audited BEFORE the swap (the appaudit_reload precedent): a change to what
+/// the SOC detects is a protected operational change, and the record must
+/// exist even if the process dies mid-swap. A reload whose PARSE fails is a
+/// 400 that leaves the previous set detecting — a SIEM whose detection plane
+/// vanishes on a fat-fingered YAML file is worse than one running yesterday's
+/// rules and saying so. Dedup/realert state lives in the store and is
+/// untouched: a reload never re-alerts already-suppressed detections.
+pub(super) async fn rules_reload(
+    State(st): State<ApiState>,
+    headers: axum::http::HeaderMap,
+) -> ApiResult {
+    let who = check_admin(&st, &headers)?;
+    let Some(live) = st.live_rules.clone() else {
+        return Err(bad("rule reload is only available on the writer"));
+    };
+    st.record_admin(
+        &who,
+        garmr_audit::action::CONFIG_RELOAD,
+        "sigma_rules",
+        None,
+        Some("hot-reload the rule set from rules_dir"),
+    )?;
+    let dir = st.cfg.detect.rules_dir.clone();
+    // Parsing 50+ YAML files is blocking work; keep it off the async workers.
+    let outcome = tokio::task::spawn_blocking(move || live.reload(&dir))
+        .await
+        .map_err(|e| oops(format!("reload task: {e}")))?;
+    match outcome {
+        Ok((before, after)) => Ok(Json(serde_json::json!({
+            "reloaded": true,
+            "rules_before": before,
+            "rules_after": after,
+        }))),
+        Err(e) => Err(bad(format!(
+            "reload failed — the PREVIOUS rule set is still active: {e}"
+        ))),
+    }
 }
 
 #[cfg(test)]

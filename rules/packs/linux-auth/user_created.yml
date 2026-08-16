@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Local user account created
+id: garmr-auth-user-created
+status: stable
+description: >
+    useradd created an account. Persistence via a fresh local account is one
+    of the oldest moves; on servers, account creation is rare and reviewable.
+author: garmr
+logsource:
+    product: linux
+detection:
+    selection:
+        service: useradd
+        message|contains: 'new user'
+    condition: selection
+falsepositives:
+    - Provisioning runs; config management creating service accounts.
+level: medium
+tags:
+    - attack.persistence
+    - attack.t1136.001

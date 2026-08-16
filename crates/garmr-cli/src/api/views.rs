@@ -15,7 +15,44 @@ pub(super) async fn cases(
     State(st): State<ApiState>,
     Query(p): Query<HashMap<String, String>>,
 ) -> ApiResult {
-    let cases = st.store.state.list_cases().map_err(oops)?;
+    let mut cases = st.store.state.list_cases().map_err(oops)?;
+    // Queue filters (2.9): exact matches, applied server-side so a two-analyst
+    // queue ("mine", "unassigned", "tagged escalation") is one request, not a
+    // client-side scan of everything.
+    if let Some(a) = p.get("assignee") {
+        match a.as_str() {
+            // The queue's third lane: nobody's yet.
+            "" | "(unassigned)" => cases.retain(|c| c.assignee.is_none()),
+            a => cases.retain(|c| c.assignee.as_deref() == Some(a)),
+        }
+    }
+    if let Some(t) = p.get("tag") {
+        let t = t.to_lowercase();
+        cases.retain(|c| c.tags.contains(&t));
+    }
+    if let Some(s) = p.get("state") {
+        cases.retain(|c| format!("{:?}", c.state).eq_ignore_ascii_case(s));
+    }
+    // With SLAs configured, each case carries its computed clock position —
+    // computed at read time, never stored, so the numbers cannot go stale.
+    let sla_cfg = &st.cfg.cases.sla;
+    if sla_cfg.ack_minutes > 0 || sla_cfg.resolve_minutes > 0 {
+        let now = chrono::Utc::now();
+        let rows: Vec<serde_json::Value> = cases
+            .iter()
+            .map(|c| {
+                let mut v = serde_json::to_value(c).unwrap_or_default();
+                if let (Some(obj), Some(sla)) = (
+                    v.as_object_mut(),
+                    garmr_core::sla::sla_status(c, sla_cfg, now),
+                ) {
+                    obj.insert("sla".into(), serde_json::to_value(sla).unwrap_or_default());
+                }
+                v
+            })
+            .collect();
+        return Ok(Json(Page::from_query(&p).envelope("cases", rows)));
+    }
     Ok(Json(Page::from_query(&p).envelope("cases", cases)))
 }
 
@@ -87,6 +124,36 @@ pub(super) async fn attack_coverage(State(st): State<ApiState>) -> ApiResult {
             level: r.severity,
             source: "correlation",
             techniques,
+            tactics: Vec::new(),
+        });
+    }
+
+    // Builtin (synthetic) detectors: the insider/app-audit plane and the
+    // environment-drift plane. These are code, not rule files, so without them
+    // the matrix reported zero coverage exactly where garmr is differentiated —
+    // a buyer asking "what does it detect on day one" got the most misleading
+    // possible answer. Each crate derives its inventory from the same constants
+    // its detectors fire on, so this cannot drift from real behaviour.
+    for (id, title, level, techniques) in garmr_appdetect::detector_inventory() {
+        rules.push(R {
+            id: id.to_string(),
+            title: title.to_string(),
+            level: level.to_string(),
+            source: "builtin",
+            techniques,
+            // No tactic tags: these declare techniques only, and inferring a
+            // tactic from a technique would be this endpoint inventing coverage
+            // its inputs never claimed.
+            tactics: Vec::new(),
+        });
+    }
+    for (id, title, level, techniques) in garmr_analytics::envdetect::ENV_DETECTORS {
+        rules.push(R {
+            id: (*id).to_string(),
+            title: (*title).to_string(),
+            level: (*level).to_string(),
+            source: "builtin",
+            techniques: techniques.iter().map(|t| (*t).to_string()).collect(),
             tactics: Vec::new(),
         });
     }
@@ -255,12 +322,13 @@ pub(super) async fn graph_full(
 ) -> ApiResult {
     const NODE_CAP: usize = 400;
     const EDGE_CAP: usize = 4000;
-    // Time window (all bypass the fixed-window cache with a fresh build):
+    // Time window (explicit windows go through the bounded windowed cache —
+    // issue #23 — so distinct windows queue on one build lock instead of
+    // fanning out concurrent lake scans):
     //   ?from=&to=  epoch-millis absolute [from, to) — scopes hosts AND edges;
     //   ?hours=N    last-N-hours relative — edges to that span, hosts keep the
     //               ≥14d floor so the node set stays monotonic (clamped (0,1yr]);
     //   neither     → the cached default graph.
-    let excl = &st.cfg.store.fulltext_exclude_sources;
     let range = p
         .get("from")
         .and_then(|s| s.parse::<i64>().ok())
@@ -276,27 +344,23 @@ pub(super) async fn graph_full(
             from: rfc(from_ms),
             to: rfc(to_ms),
         };
-        std::sync::Arc::new(
-            garmr_graph::build(&st.store, win.clone(), win, 50_000, excl)
-                .await
-                .map_err(oops)?,
-        )
+        st.graph_cache
+            .get_window(&st.store, win.clone(), win)
+            .await
+            .map_err(oops)?
     } else if let Some(hours) = p
         .get("hours")
         .and_then(|s| s.parse::<u64>().ok())
         .map(|h| h.clamp(1, 8760))
     {
-        std::sync::Arc::new(
-            garmr_graph::build(
+        st.graph_cache
+            .get_window(
                 &st.store,
                 garmr_graph::TimeWindow::LastHours(hours),
                 garmr_graph::TimeWindow::LastHours(hours.max(336)),
-                50_000,
-                excl,
             )
             .await
-            .map_err(oops)?,
-        )
+            .map_err(oops)?
     } else {
         st.graph_cache.get(&st.store).await.map_err(oops)?
     };

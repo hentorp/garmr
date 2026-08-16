@@ -15,8 +15,10 @@
 //! entry returns at once, a stale one returns immediately and kicks a
 //! single-flight background rebuild, and only the first-ever build blocks —
 //! warmed at startup so pivots and the topology map never wait on the
-//! multi-second wide-window scan. [`TimeWindow`] is the relative/absolute
-//! `event_ts` span the scans cover.
+//! multi-second wide-window scan. Explicit `?from/&to` / `?hours` windows go
+//! through [`GraphCache::get_window`], a bounded per-window cache whose builds
+//! are serialized on one lock (issue #23). [`TimeWindow`] is the
+//! relative/absolute `event_ts` span the scans cover.
 
 use std::time::Duration;
 
@@ -34,7 +36,7 @@ const EVENT_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 /// or an absolute `[from, to)` range. `Range` bounds are RFC3339 strings the
 /// caller generates from parsed integers, never raw user input, so inlining them
 /// into SQL is injection-safe.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TimeWindow {
     LastHours(u64),
     Range { from: String, to: String },
@@ -241,6 +243,20 @@ pub async fn build(
 type GraphSlot =
     std::sync::Arc<tokio::sync::Mutex<Option<(std::time::Instant, std::sync::Arc<Graph>)>>>;
 
+/// One windowed-cache entry: the `(event_window, host_window)` pair that keyed
+/// the build, when it was built, and the shared graph.
+type WindowEntry = (
+    TimeWindow,
+    TimeWindow,
+    std::time::Instant,
+    std::sync::Arc<Graph>,
+);
+
+/// How many distinct explicit windows [`GraphCache::get_window`] keeps. Small on
+/// purpose: the map UI offers a handful of presets, so anything past this is an
+/// abusive or one-off caller and can pay the rebuild.
+const MAX_WINDOW_ENTRIES: usize = 8;
+
 /// A time-bounded cache so rapid successive pivots (an agent pivots several
 /// times per triage; a UI user clicks around) reuse one build instead of
 /// re-running the event scan each time.
@@ -253,6 +269,14 @@ pub struct GraphCache {
     /// Single-flight guard for the background refresh — only one rebuild runs at
     /// a time (a rebuild over a wide window is seconds of full-table scan).
     refreshing: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Explicit-window cache (issue #23): TTL-bounded entries keyed by the two
+    /// scan windows, capped at [`MAX_WINDOW_ENTRIES`].
+    windowed: tokio::sync::Mutex<Vec<WindowEntry>>,
+    /// Serializes explicit-window builds: held across the lake scan so distinct
+    /// user-supplied windows queue instead of running expensive scans
+    /// concurrently, and identical windows coalesce on the double-checked
+    /// lookup in [`get_window`](Self::get_window).
+    window_build: tokio::sync::Mutex<()>,
 }
 
 impl GraphCache {
@@ -264,6 +288,8 @@ impl GraphCache {
             exclude_sources,
             inner: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             refreshing: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            windowed: tokio::sync::Mutex::new(Vec::new()),
+            window_build: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -292,6 +318,59 @@ impl GraphCache {
     /// (never blocks a user's first map open on the cold build).
     pub fn warm(&self, store: &Store) {
         self.spawn_refresh(store);
+    }
+
+    /// A cached graph for an explicit time window (issue #23). Before this,
+    /// every `?from=&to=` / `?hours=` request ran its own uncached lake scan, so
+    /// a caller spamming distinct windows could pile up concurrent multi-second
+    /// full-table scans. Now a hit returns the cached graph, a miss builds under
+    /// a global build lock (one windowed scan at a time), and identical windows
+    /// that queued behind the first builder pick up its result from the
+    /// double-checked lookup instead of re-scanning. Unlike [`get`](Self::get)
+    /// there is no stale-while-revalidate: the caller asked for a specific
+    /// window, so a cold miss legitimately waits for its build.
+    pub async fn get_window(
+        &self,
+        store: &Store,
+        event_window: TimeWindow,
+        host_window: TimeWindow,
+    ) -> Result<std::sync::Arc<Graph>> {
+        let lookup = |slots: &[WindowEntry]| {
+            window_lookup(
+                slots,
+                self.ttl,
+                &event_window,
+                &host_window,
+                std::time::Instant::now(),
+            )
+        };
+        if let Some(g) = lookup(&self.windowed.lock().await) {
+            return Ok(g);
+        }
+        let _build_permit = self.window_build.lock().await;
+        if let Some(g) = lookup(&self.windowed.lock().await) {
+            return Ok(g);
+        }
+        let g = std::sync::Arc::new(
+            build(
+                store,
+                event_window.clone(),
+                host_window.clone(),
+                self.cap,
+                &self.exclude_sources,
+            )
+            .await?,
+        );
+        window_insert(
+            &mut *self.windowed.lock().await,
+            self.ttl,
+            MAX_WINDOW_ENTRIES,
+            event_window,
+            host_window,
+            g.clone(),
+            std::time::Instant::now(),
+        );
+        Ok(g)
     }
 
     async fn build_now(&self, store: &Store) -> Result<Graph> {
@@ -339,6 +418,45 @@ impl GraphCache {
     }
 }
 
+/// Find a live windowed-cache entry for the exact `(event, host)` window pair.
+/// `now` is passed in (rather than read) so the TTL logic is unit-testable.
+fn window_lookup(
+    slots: &[WindowEntry],
+    ttl: Duration,
+    event_window: &TimeWindow,
+    host_window: &TimeWindow,
+    now: std::time::Instant,
+) -> Option<std::sync::Arc<Graph>> {
+    slots
+        .iter()
+        .find(|(ew, hw, built_at, _)| {
+            ew == event_window && hw == host_window && now.duration_since(*built_at) < ttl
+        })
+        .map(|(_, _, _, g)| g.clone())
+}
+
+/// Insert a windowed-cache entry, keeping the vec bounded: expired entries and
+/// any stale entry for the same key go first, then the oldest (front) entries
+/// until `max` holds. Insertion order is age order, so FIFO eviction suffices —
+/// entries expire on the TTL long before recency ordering would matter.
+fn window_insert(
+    slots: &mut Vec<WindowEntry>,
+    ttl: Duration,
+    max: usize,
+    event_window: TimeWindow,
+    host_window: TimeWindow,
+    graph: std::sync::Arc<Graph>,
+    now: std::time::Instant,
+) {
+    slots.retain(|(ew, hw, built_at, _)| {
+        now.duration_since(*built_at) < ttl && !(ew == &event_window && hw == &host_window)
+    });
+    while slots.len() >= max {
+        slots.remove(0);
+    }
+    slots.push((event_window, host_window, now, graph));
+}
+
 fn val(a: &StringArray, i: usize) -> String {
     if a.is_valid(i) {
         a.value(i).to_string()
@@ -350,3 +468,96 @@ fn val(a: &StringArray, i: usize) -> String {
 // The host-role heuristic lives once in garmr_core::domain (heuristic_role);
 // build() resolves a device type via garmr_core::resolve_asset_role, which
 // prefers a Trusted environment-model role fact and falls back to that heuristic.
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use super::{window_insert, window_lookup, TimeWindow, WindowEntry};
+    use crate::Graph;
+
+    const TTL: Duration = Duration::from_secs(300);
+
+    fn win(h: u64) -> TimeWindow {
+        TimeWindow::LastHours(h)
+    }
+
+    fn entry(ev_h: u64, host_h: u64, built_at: Instant) -> WindowEntry {
+        (win(ev_h), win(host_h), built_at, Arc::new(Graph::default()))
+    }
+
+    #[test]
+    fn lookup_hits_only_the_exact_live_key() {
+        let now = Instant::now();
+        let slots = vec![entry(24, 336, now)];
+        // Exact pair hits; either window differing misses.
+        assert!(window_lookup(&slots, TTL, &win(24), &win(336), now).is_some());
+        assert!(window_lookup(&slots, TTL, &win(48), &win(336), now).is_none());
+        assert!(window_lookup(&slots, TTL, &win(24), &win(400), now).is_none());
+        // Range windows key on their exact bounds.
+        let range = TimeWindow::Range {
+            from: "2026-08-01T00:00:00Z".into(),
+            to: "2026-08-02T00:00:00Z".into(),
+        };
+        let slots = vec![(
+            range.clone(),
+            range.clone(),
+            now,
+            Arc::new(Graph::default()),
+        )];
+        assert!(window_lookup(&slots, TTL, &range, &range, now).is_some());
+    }
+
+    #[test]
+    fn lookup_misses_an_expired_entry() {
+        let now = Instant::now();
+        let slots = vec![entry(24, 336, now)];
+        assert!(window_lookup(&slots, TTL, &win(24), &win(336), now + TTL).is_none());
+        // Just inside the TTL still hits.
+        let almost = now + TTL - Duration::from_secs(1);
+        assert!(window_lookup(&slots, TTL, &win(24), &win(336), almost).is_some());
+    }
+
+    #[test]
+    fn insert_replaces_the_same_key_and_drops_expired_entries() {
+        // `base` is the oldest instant used, so no Instant subtraction is needed.
+        let base = Instant::now();
+        let now = base + TTL;
+        let mut slots = vec![entry(24, 336, now), entry(48, 336, base)];
+        // Re-inserting the (24, 336) key replaces its entry; the expired
+        // (48, 336) entry is dropped in the same pass.
+        window_insert(
+            &mut slots,
+            TTL,
+            8,
+            win(24),
+            win(336),
+            Arc::new(Graph::default()),
+            now,
+        );
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].0, win(24));
+    }
+
+    #[test]
+    fn insert_evicts_the_oldest_at_the_bound() {
+        let now = Instant::now();
+        let mut slots: Vec<WindowEntry> = (0..8)
+            .map(|i| entry(i + 1, 336, now + Duration::from_secs(i)))
+            .collect();
+        window_insert(
+            &mut slots,
+            TTL,
+            8,
+            win(100),
+            win(336),
+            Arc::new(Graph::default()),
+            now + Duration::from_secs(8),
+        );
+        assert_eq!(slots.len(), 8);
+        // The oldest (event window 1h) went; the newest is the inserted key.
+        assert!(!slots.iter().any(|(ew, ..)| ew == &win(1)));
+        assert_eq!(slots.last().unwrap().0, win(100));
+    }
+}

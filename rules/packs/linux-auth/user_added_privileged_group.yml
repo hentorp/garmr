@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: User added to a privileged group
+id: garmr-auth-priv-group
+status: stable
+description: >
+    An account was added to sudo, wheel, admin or docker - each grants root or
+    a road to it. Group membership changes on servers deserve review.
+author: garmr
+logsource:
+    product: linux
+detection:
+    selection:
+        service:
+            - usermod
+            - gpasswd
+        message|contains:
+            - "to group 'sudo'"
+            - "to group 'wheel'"
+            - "to group 'admin'"
+            - "to group 'docker'"
+    condition: selection
+falsepositives:
+    - Legitimate onboarding via config management.
+level: high
+tags:
+    - attack.privilege_escalation
+    - attack.t1098

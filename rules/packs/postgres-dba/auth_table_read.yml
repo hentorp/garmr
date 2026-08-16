@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Credential table read
+id: garmr-pg-shadow-read
+status: stable
+description: >
+    SELECT against pg_shadow or pg_authid - the password-hash tables. Only
+    backup tooling has any business there.
+author: garmr
+logsource:
+    product: linux
+    service: postgres
+detection:
+    audit:
+        service: postgres
+        message|contains: 'AUDIT:'
+    stmt:
+        message|contains:
+            - 'pg_shadow'
+            - 'pg_authid'
+    condition: audit and stmt
+falsepositives:
+    - pg_dump of the postgres database itself.
+level: critical
+tags:
+    - attack.credential_access
+    - attack.t1552

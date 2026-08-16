@@ -2564,7 +2564,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3006,6 +3006,7 @@ dependencies = [
  "ring",
  "rmcp",
  "rotaryengine",
+ "rsigma-parser",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -3029,6 +3030,7 @@ dependencies = [
  "blake3",
  "chrono",
  "figment",
+ "nornir-testmatrix",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -3097,9 +3099,10 @@ name = "garmr-graph"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "cozo",
  "garmr-core",
  "garmr-store",
+ "nornir-graph",
+ "rotaryengine",
  "serde",
  "serde_json",
  "skade",
@@ -3211,6 +3214,7 @@ dependencies = [
  "garmr-core",
  "garmr-store",
  "object_store",
+ "redb",
  "serde",
  "serde_json",
  "skade",
@@ -4091,7 +4095,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4695,6 +4699,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nornir-graph"
+version = "0.1.0"
+dependencies = [
+ "cozo",
+]
+
+[[package]]
+name = "nornir-testmatrix"
+version = "0.2.9"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ntapi"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4709,7 +4729,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5577,7 +5597,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6108,7 +6128,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7076,7 +7096,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7988,7 +8008,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

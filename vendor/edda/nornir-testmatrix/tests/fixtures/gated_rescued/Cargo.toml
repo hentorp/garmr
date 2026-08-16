@@ -1,0 +1,17 @@
+# Test fixture: a repo with the SAME dark gate as `gated_dark`, but which
+# DECLARES the matrix arm that re-invokes it (`.nornir/testmatrix-arms.json`) —
+# holger's `cargo test -p X --features Y --test Z` rescue pattern. The guard must
+# classify it `Rescued` and report GREEN.
+[package]
+name = "gated_rescued"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[features]
+default = ["light"]
+light = []
+heavy = []
+bundle = ["heavy"]
+
+[workspace]

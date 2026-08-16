@@ -267,20 +267,19 @@ impl Nav {
     /// another area means to stay in that window. Dropping it silently widened
     /// the investigation back out — and left the URL unshareable.
     pub fn go(&self, view: View) {
-        let carried = param_of(&self.query.get_untracked(), crate::timerange::PARAM)
-            .map(|v| format!("{}={v}", crate::timerange::PARAM))
-            .unwrap_or_default();
-        self.go_query(view, carried);
+        self.go_query(view, String::new());
     }
 
     /// Navigate to a view carrying a query string (already `key=val&…`, no `?`).
+    ///
+    /// The range is carried from the URL being left unless `query` names its
+    /// own. Every navigation here is a pivot, and a pivot that lands on a URL
+    /// without the window leaves a link that reproduces different events than
+    /// the ones it was opened from. Callers that carry explicitly are harmless:
+    /// the query they hand over already names the range, which wins.
     pub fn go_query(&self, view: View, query: impl Into<String>) {
-        let q = query.into();
-        let url = if q.is_empty() {
-            view.to_path()
-        } else {
-            format!("{}?{q}", view.to_path())
-        };
+        let q = crate::timerange::carry(&self.query.get_untracked(), &query.into());
+        let url = url_for(&view, &q);
         self.push(&url, view, q);
     }
 
@@ -290,6 +289,61 @@ impl Nav {
         let q = query.into();
         let view = self.view.get_untracked();
         self.go_query(view, q);
+    }
+
+    /// Publish a new query string *without navigating*: the URL, the reactive
+    /// query and the re-render all happen, but the focus move and scroll-to-top
+    /// that [`Nav::push`] performs do not.
+    ///
+    /// This is what submitting a search needs. The URL is the only place a search
+    /// survives — any other query write re-renders the view, and whatever lived
+    /// only in a view-local signal is gone — and it is what makes the link
+    /// genuinely reproduce the search it claims to. But routing a submission
+    /// through `push` would yank focus out of the search box to `<main>` on every
+    /// Enter press: right when arriving on a new screen, wrong when staying on
+    /// this one.
+    ///
+    /// See [`Nav::record_query`] for the variant that skips the rebuild, and
+    /// [`Nav::write_query`] for the History behaviour they share.
+    pub fn set_query_quiet(&self, query: impl Into<String>) {
+        // Query first, then the view: a view is built from the query it is
+        // rendered under, so republishing the view is what re-runs it — with the
+        // new query already in place.
+        self.write_query(query.into());
+        self.view.set(self.view.get_untracked());
+    }
+
+    /// Record a query change in the URL *without* rebuilding the view.
+    ///
+    /// For state the screen is already showing: a list that filters its own rows
+    /// as you type has nothing to re-run, and rebuilding it would throw away the
+    /// rows it holds and fetch them again — a loading flash for a filter that was
+    /// applied instantly. The URL still has to carry it, because the next rebuild
+    /// (a time-range chip) reads the filters back out of it, and because a
+    /// filtered list is worth sharing.
+    ///
+    /// Reactive readers of [`Nav::query`] — a chip's active state, a list body
+    /// that filters on it — still update; only the view's own construction is
+    /// skipped.
+    pub fn record_query(&self, query: impl Into<String>) {
+        self.write_query(query.into());
+    }
+
+    /// Write the URL and publish the query signal. A History entry is added only
+    /// when the URL actually changes, so committing the same filter twice does
+    /// not bury the previous page under identical entries.
+    fn write_query(&self, q: String) {
+        let url = url_for(&self.view.get_untracked(), &q);
+        let changed = q != self.query.get_untracked();
+        if let Some(h) = web_sys::window().and_then(|w| w.history().ok()) {
+            let state = wasm_bindgen::JsValue::NULL;
+            let _ = if changed {
+                h.push_state_with_url(&state, "", Some(&url))
+            } else {
+                h.replace_state_with_url(&state, "", Some(&url))
+            };
+        }
+        self.query.set(q);
     }
 
     /// Read one query parameter from the current (reactive) query string.
@@ -305,8 +359,11 @@ impl Nav {
         if let Some(h) = web_sys::window().and_then(|w| w.history().ok()) {
             let _ = h.push_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(url));
         }
-        self.view.set(view);
+        // Query before view — a view reads its filters, tab and search out of the
+        // query string as it is built, so publishing the view second is what makes
+        // it see the destination's query rather than the one it is leaving.
         self.query.set(query);
+        self.view.set(view);
         // Return focus AND scroll to the top of the main region on navigation.
         // Without the focus move, a keyboard user who activates a nav link stays
         // parked in the sidebar and a screen reader never announces the new page.
@@ -324,8 +381,20 @@ impl Nav {
     pub fn sync_from_location(&self) {
         let (path, query) = current_location();
         let (path, query) = normalize_legacy(&path, query);
-        self.view.set(View::from_path(&path));
+        // Same ordering as [`Nav::push`]: the query the view is about to be built
+        // under has to be in place before the view is republished, or Back lands on
+        // the right screen showing the query it was leaving.
         self.query.set(query);
+        self.view.set(View::from_path(&path));
+    }
+}
+
+/// The full URL — path plus query when there is one — a `(view, query)` addresses.
+fn url_for(view: &View, query: &str) -> String {
+    if query.is_empty() {
+        view.to_path()
+    } else {
+        format!("{}?{query}", view.to_path())
     }
 }
 
@@ -493,6 +562,17 @@ mod tests {
             );
             assert_eq!(View::from_path(&path), v, "{raw} did not round-trip");
         }
+    }
+
+    #[test]
+    fn a_view_and_its_query_are_one_url() {
+        assert_eq!(url_for(&View::Audit, ""), "/audit");
+        assert_eq!(
+            url_for(&View::Audit, "mode=text&q=pvefw&t=24h"),
+            "/audit?mode=text&q=pvefw&t=24h"
+        );
+        // No trailing `?` when there is nothing to carry.
+        assert!(!url_for(&View::CommandCenter, "").contains('?'));
     }
 
     #[test]

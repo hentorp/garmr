@@ -12,6 +12,7 @@ use super::*;
 
 mod agent;
 mod appbaseline;
+mod collectors;
 mod env;
 mod learn;
 mod ops;
@@ -20,10 +21,12 @@ mod pipeline;
 mod read;
 mod reflect;
 mod registry;
+pub(crate) mod rules_import;
 mod synth;
 
 pub(crate) use agent::*;
 pub(crate) use appbaseline::*;
+pub(crate) use collectors::*;
 pub(crate) use env::*;
 pub(crate) use learn::*;
 pub(crate) use ops::*;
@@ -32,6 +35,7 @@ pub(crate) use pipeline::*;
 pub(crate) use read::*;
 pub(crate) use reflect::*;
 pub(crate) use registry::*;
+pub(crate) use rules_import::*;
 pub(crate) use synth::*;
 
 /// Refuse a direct-store WRITE on a node restored from a backup but not yet

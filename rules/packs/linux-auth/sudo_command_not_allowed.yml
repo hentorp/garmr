@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: sudo command by unauthorized user
+id: garmr-auth-sudo-not-allowed
+status: stable
+description: >
+    sudo refused a command because the user is not in sudoers, or the command
+    is not permitted. Someone is probing what their account can do.
+author: garmr
+logsource:
+    product: linux
+detection:
+    selection:
+        service: sudo
+        message|contains:
+            - 'user NOT in sudoers'
+            - 'command not allowed'
+    condition: selection
+falsepositives:
+    - A new admin who has not been added to sudoers yet.
+level: high
+tags:
+    - attack.privilege_escalation
+    - attack.t1548.003

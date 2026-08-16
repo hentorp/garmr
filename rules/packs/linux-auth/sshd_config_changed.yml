@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: sshd configuration reloaded
+id: garmr-auth-sshd-reload
+status: stable
+description: >
+    sshd reloaded or re-executed its configuration. Off-change-window reloads
+    can indicate someone weakening authentication settings.
+author: garmr
+logsource:
+    product: linux
+    service: sshd
+detection:
+    selection:
+        service: sshd
+        message|contains:
+            - 'Received SIGHUP'
+            - 'rexec'
+    condition: selection
+falsepositives:
+    - Package upgrades restarting sshd; deliberate config deploys.
+level: low
+tags:
+    - attack.defense_evasion
+    - attack.t1562

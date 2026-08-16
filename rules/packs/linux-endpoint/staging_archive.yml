@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Bulk archive of sensitive directories
+id: garmr-ep-staging
+status: stable
+description: >
+    tar/zip over /etc, /home or /var/lib - collection staging before
+    exfiltration.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    selection:
+        message|contains|all:
+            - 'tar'
+            - 'czf'
+    paths:
+        message|contains:
+            - '/etc'
+            - '/home'
+            - '/var/lib'
+    condition: selection and paths
+falsepositives:
+    - Backup scripts (which should run as known services, not ad hoc).
+level: medium
+tags:
+    - attack.collection
+    - attack.t1560.001

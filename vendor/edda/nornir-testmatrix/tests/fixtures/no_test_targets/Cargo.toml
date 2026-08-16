@@ -1,0 +1,19 @@
+# Test fixture: a workspace that resolves fine and has NO test targets at all.
+#
+# This is the vacuous green. `audit_repo` on it succeeds, finds zero `tests/*.rs`,
+# and therefore reports zero silenced files — an "all clear" produced by looking
+# at nothing. A stale root path, an over-`exclude`d member list or a degraded
+# `cargo metadata` all present with exactly this shape, and all three used to read
+# as a pass.
+#
+# `assert_no_silenced_tests` must REFUSE it (LAW 2: check output, not exit code).
+#
+# Standalone `[workspace]` + zero dependencies so the parent never builds it and
+# `cargo metadata --no-deps` resolves offline.
+[package]
+name = "no_test_targets"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]

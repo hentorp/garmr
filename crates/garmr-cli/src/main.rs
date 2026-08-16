@@ -12,6 +12,8 @@ mod api;
 mod appaudit;
 mod audit;
 mod backup;
+mod backup_loop;
+mod backup_window;
 mod bundle;
 mod cli;
 mod cmd;
@@ -26,7 +28,9 @@ mod secrets;
 mod serve;
 mod shadow;
 
-use cli::{ActionCmd, CasesCmd, Cli, Cmd, RecoverCmd, RetentionCmd, RulesCmd, SilenceCmd};
+use cli::{
+    ActionCmd, CasesCmd, Cli, Cmd, CollectorCmd, RecoverCmd, RetentionCmd, RulesCmd, SilenceCmd,
+};
 use cmd::*;
 pub(crate) use cmd::{parse_case_state, parse_rfc3339, parse_time, Bound};
 use ioc::{configured_ioc_feeds, ioc_refresh_loop};
@@ -232,7 +236,47 @@ async fn dispatch(cli: Cli) -> Result<()> {
         Cmd::EmbedVerify => embed_verify(&cli).await,
         #[cfg(feature = "semantic")]
         Cmd::Semantic { query, top } => semantic_cmd(&cli, query, *top).await,
+        Cmd::Collector { what } => {
+            let cfg = crate::load_config(&cli)?;
+            let Some(reg) = cfg.ingest.collectors_file.as_deref() else {
+                anyhow::bail!(
+                    "ingest.collectors_file is not set — point it at the registry file this \
+                     command should manage (e.g. ./data/collectors.json)"
+                );
+            };
+            match what {
+                CollectorCmd::Add {
+                    id,
+                    sources,
+                    expires_days,
+                } => collectors_add(reg, id, sources, *expires_days),
+                CollectorCmd::Rotate { id } => collectors_rotate(reg, id),
+                CollectorCmd::Revoke { id } => collectors_revoke(reg, id),
+                CollectorCmd::List => collectors_list(reg),
+            }
+        }
         Cmd::Retention { what } => retention(&cli, what).await,
+        Cmd::Erase {
+            field,
+            value,
+            from,
+            to,
+            reason,
+            apply,
+            out,
+        } => {
+            erase(
+                &cli,
+                field,
+                value,
+                from.as_deref(),
+                to.as_deref(),
+                reason,
+                *apply,
+                out,
+            )
+            .await
+        }
         Cmd::ColdQuery { sql, from, to } => {
             cold_query(&cli, sql, from.as_deref(), to.as_deref()).await
         }
@@ -258,5 +302,55 @@ async fn dispatch(cli: Cli) -> Result<()> {
         Cmd::Bundle { what } => bundle::bundle_cmd(&cli, what).await,
         Cmd::IngestHealth => ingest_seq::ingest_health_cmd(&cli),
         Cmd::Backup { what } => backup::backup_cmd(&cli, what).await,
+        Cmd::Ha { what } => ha_cmd(&cli, what).await,
     }
+}
+
+/// `garmr ha` — the writer lease.
+async fn ha_cmd(cli: &Cli, what: &cli::HaCmd) -> Result<()> {
+    let cfg = load_config(cli)?;
+    let _ = &cfg;
+    let ha = garmr_retention::HaSync::from_env()?.context(
+        "HA needs the object store (GARMR_S3_*) — the lease lives in the bucket, because a \
+         fence both nodes cannot see is not a fence",
+    )?;
+    match what {
+        cli::HaCmd::Lease => match ha.lease().await? {
+            Some(l) => println!(
+                "epoch={} holder={} acquired={}",
+                l.epoch,
+                l.holder,
+                chrono::DateTime::from_timestamp_micros(l.acquired_at_us)
+                    .map(|t| t.to_rfc3339())
+                    .unwrap_or_else(|| "-".into())
+            ),
+            None => println!("(no writer lease — nothing has been promoted)"),
+        },
+        cli::HaCmd::Promote { reason, holder } => {
+            let (reason, holder) = (reason.clone(), holder.clone());
+            let holder = holder.unwrap_or_else(|| {
+                std::fs::read_to_string("/etc/hostname")
+                    .map(|h| h.trim().to_string())
+                    .unwrap_or_else(|_| "unknown".into())
+            });
+            // Audited fail-closed BEFORE the lease moves: a promotion nobody can
+            // account for afterwards is exactly what an incident review needs
+            // and cannot reconstruct. If the ledger refuses, so do we.
+            crate::audit::record_admin_local(
+                garmr_audit::action::HA_PROMOTE,
+                "ha_lease",
+                Some(&holder),
+                Some(&reason),
+            )?;
+            let l = ha
+                .acquire_lease(&holder, chrono::Utc::now().timestamp_micros())
+                .await?;
+            println!("promoted: epoch={} holder={}", l.epoch, l.holder);
+            println!(
+                "Snapshots shipped under an epoch below {} are now refused by followers.",
+                l.epoch
+            );
+        }
+    }
+    Ok(())
 }

@@ -54,6 +54,9 @@ impl IngestSeqObserver for ChannelSeqObserver {
             seq,
         };
         if self.tx.try_send(mark).is_err() {
+            garmr_core::metrics::registry()
+                .ingest_seq_marks_dropped_total
+                .inc(&[("observer", "ingest")]);
             tracing::debug!(
                 collector = collector_id,
                 "ingest seq mark dropped (observer channel full)"

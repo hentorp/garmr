@@ -324,6 +324,7 @@ mod tests {
         use garmr_core::{AgentConfig, DetectConfig, IngestConfig, LlmBackend, StoreConfig};
         Config {
             audit: Default::default(),
+            backup: Default::default(),
             store: StoreConfig {
                 warehouse_dir: base.join("wh"),
                 state_db: base.join("state.redb"),
@@ -342,6 +343,7 @@ mod tests {
                 ui_dir: None,
                 dedup_recent: 0,
                 flight_bind: None,
+                collectors_file: None,
             },
             detect: DetectConfig {
                 rules_dir: base.join("rules"),
@@ -365,6 +367,7 @@ mod tests {
                 freq_min_count: 20,
                 prediction_discount: 0.5,
             },
+            cases: Default::default(),
             agent: AgentConfig {
                 backend: LlmBackend::Anthropic,
                 model: "claude-opus-4-8".into(),
@@ -377,6 +380,7 @@ mod tests {
                 geoip_dir: None,
                 ioc_feeds: vec![],
                 mcp_servers: vec![],
+                pricing: Default::default(),
             },
             retention: Default::default(),
             route: Default::default(),

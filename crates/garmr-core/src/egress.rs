@@ -46,6 +46,12 @@ pub enum EgressClass {
     ModelDownload,
     /// An update/version check (reserved — no site yet).
     UpdateCheck,
+    /// An identity provider: the OIDC discovery, JWKS and token endpoints.
+    ///
+    /// Its own class because an air-gapped deployment has no external IdP by
+    /// definition, and folding this into a general allowance would let an
+    /// operator open the SSO path and unrelated egress in one move.
+    Idp,
 }
 
 impl EgressClass {
@@ -57,6 +63,7 @@ impl EgressClass {
             EgressClass::Notify => "notify",
             EgressClass::ObjectStore => "object_store",
             EgressClass::McpRemote => "mcp_remote",
+            EgressClass::Idp => "idp",
             EgressClass::Telemetry => "telemetry",
             EgressClass::ModelDownload => "model_download",
             EgressClass::UpdateCheck => "update_check",

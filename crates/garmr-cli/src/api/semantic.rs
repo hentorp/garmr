@@ -15,7 +15,7 @@ const SEMANTIC_WINDOW_HOURS: u64 = 168;
 
 /// Index cap, config-driven via `GARMR_SEMANTIC_MAX` (default [`SEMANTIC_MAX`]).
 #[cfg(feature = "semantic")]
-fn semantic_max() -> usize {
+pub(super) fn semantic_max() -> usize {
     std::env::var("GARMR_SEMANTIC_MAX")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -63,6 +63,7 @@ impl garmr_query::SemanticSearch for LiveSemantic {
                     ts_micros: r.ts_micros,
                     host: r.host,
                     service: r.service,
+                    source: r.source,
                     message: r.message,
                     score,
                 })
@@ -219,10 +220,10 @@ async fn semantic_rebuild(
     // wins", not arbitrary).
     let (win, max) = (semantic_window_hours(), semantic_max());
     let sql = format!(
-        "SELECT max(event_ts) AS ts, host, service, message FROM events \
+        "SELECT max(event_ts) AS ts, host, service, source, message FROM events \
          WHERE event_ts >= now() - INTERVAL '{win} hours' \
            AND log_type NOT IN ('anomaly', 'risk', 'baseline'){excl} \
-         GROUP BY host, service, message ORDER BY ts DESC LIMIT {max}"
+         GROUP BY host, service, source, message ORDER BY ts DESC LIMIT {max}"
     );
     let batches = store.events.sql(sql).await?; // async, concurrent read lane
     let embedder = handle.embedder.clone();
@@ -248,7 +249,7 @@ async fn semantic_rebuild(
     let fresh = tokio::task::spawn_blocking(move || -> anyhow::Result<garmr_embed::VectorStore> {
         use skade::arrow_array::{Array, StringArray, TimestampMicrosecondArray};
         // 1. Extract the rows (order preserved: newest-first from the query).
-        let mut rows: Vec<(i64, String, String, String)> = Vec::new();
+        let mut rows: Vec<(i64, String, String, String, String)> = Vec::new();
         for b in &batches {
             let ts = b
                 .column(0)
@@ -256,8 +257,11 @@ async fn semantic_rebuild(
                 .downcast_ref::<TimestampMicrosecondArray>();
             let host = b.column(1).as_any().downcast_ref::<StringArray>();
             let svc = b.column(2).as_any().downcast_ref::<StringArray>();
-            let msg = b.column(3).as_any().downcast_ref::<StringArray>();
-            let (Some(ts), Some(host), Some(svc), Some(msg)) = (ts, host, svc, msg) else {
+            let src = b.column(3).as_any().downcast_ref::<StringArray>();
+            let msg = b.column(4).as_any().downcast_ref::<StringArray>();
+            let (Some(ts), Some(host), Some(svc), Some(src), Some(msg)) =
+                (ts, host, svc, src, msg)
+            else {
                 continue;
             };
             for i in 0..b.num_rows() {
@@ -274,6 +278,15 @@ async fn semantic_rebuild(
                     if svc.is_valid(i) {
                         svc.value(i).into()
                     } else {
+                        String::new()
+                    },
+                    if src.is_valid(i) {
+                        src.value(i).into()
+                    } else {
+                        // Left empty deliberately: `Record::allowed_by` treats an
+                        // empty source as readable by no scope, so an
+                        // unattributable row is withheld from confined
+                        // credentials rather than guessed at.
                         String::new()
                     },
                     msg.value(i).to_string(),
@@ -320,7 +333,7 @@ async fn semantic_rebuild(
         // 3. Assemble the fresh store (cache hit or freshly-embedded vector),
         //    stamped with the same model digest so a restart can trust the file.
         let mut fresh = garmr_embed::VectorStore::new(&path, semantic_max(), &model_digest);
-        for (ts_micros, host, service, message) in rows {
+        for (ts_micros, host, service, source, message) in rows {
             let Some(vec) = cache
                 .get(&message)
                 .cloned()
@@ -332,6 +345,7 @@ async fn semantic_rebuild(
                 ts_micros,
                 host,
                 service,
+                source,
                 message,
                 vec,
             });
@@ -359,9 +373,23 @@ async fn semantic_rebuild(
 #[cfg(feature = "semantic")]
 pub(super) async fn semantic(
     State(st): State<ApiState>,
+    headers: axum::http::HeaderMap,
+    scope_ext: Option<axum::Extension<garmr_core::DataScope>>,
     Query(p): Query<HashMap<String, String>>,
 ) -> ApiResult {
+    let scope = super::query::scope_or_unrestricted(scope_ext);
     let q = p.get("q").ok_or_else(|| bad("missing ?q="))?;
+    // Semantic search reaches the same events by meaning rather than by literal
+    // match, so leaving it unaudited would leave an obvious way to look someone
+    // up without appearing in the trail.
+    super::query::record_read(
+        &st,
+        &headers,
+        garmr_audit::action::QUERY,
+        q,
+        "event_semantic",
+    );
+    super::query::record_scope_constrained(&st, &headers, &scope, "event_semantic");
     let limit = p
         .get("limit")
         .and_then(|s| s.parse().ok())
@@ -376,10 +404,27 @@ pub(super) async fn semantic(
     // Embedding + the HNSW scan (+ exact rerank) are CPU-bound; run them on the blocking
     // pool (blocking_read the index there) so they don't stall an async worker.
     let (embedder, index, q) = (sem.embedder.clone(), sem.index.clone(), q.clone());
+    let allowed: Option<Vec<String>> = scope.allowed().map(|s| s.to_vec());
     let (hits, indexed) = tokio::task::spawn_blocking(move || {
         let qv = embedder.embed(&q).map_err(oops)?;
         let idx = index.blocking_read();
-        Ok::<_, (StatusCode, String)>((idx.search(&qv, limit), idx.len()))
+        let hits = match &allowed {
+            // Unrestricted: the exact call as before.
+            None => idx.search(&qv, limit),
+            Some(list) => {
+                // Over-fetch, then filter, then cut to the caller's limit. The
+                // nearest `limit` vectors could all belong to other sources, so
+                // filtering a plain top-`limit` would return far fewer rows than
+                // asked for and let the caller read that thinness as "little
+                // matched" — when most of what matched was simply not theirs.
+                const SCOPE_OVERFETCH: usize = 8;
+                let mut wide = idx.search(&qv, limit.saturating_mul(SCOPE_OVERFETCH).max(limit));
+                wide.retain(|(_, r)| r.allowed_by(Some(list)));
+                wide.truncate(limit);
+                wide
+            }
+        };
+        Ok::<_, (StatusCode, String)>((hits, idx.len()))
     })
     .await
     .map_err(oops)??;

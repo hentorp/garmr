@@ -7,9 +7,30 @@
 
 use chrono::{DateTime, Utc};
 use garmr_core::Event;
-use syslog_loose::{parse_message, ProcId, Protocol, Variant};
+use syslog_loose::{parse_message, ProcId, Protocol, SyslogSeverity, Variant};
 
 use crate::fields;
+
+/// The lower-cased Debug name of a syslog severity, as a `&'static str`.
+///
+/// This reproduces exactly what `format!("{s:?}").to_lowercase()` used to
+/// produce (the `SyslogSeverity` variants are `SEV_EMERG`, `SEV_WARNING`, …, so
+/// the stored value has always been `sev_emerg`/`sev_warning`/…) — byte-identical
+/// to the old path, but without the per-line `format!` + `to_lowercase` heap
+/// allocations. `None` keeps the historical `"info"` default.
+fn severity_str(sev: Option<SyslogSeverity>) -> &'static str {
+    match sev {
+        Some(SyslogSeverity::SEV_EMERG) => "sev_emerg",
+        Some(SyslogSeverity::SEV_ALERT) => "sev_alert",
+        Some(SyslogSeverity::SEV_CRIT) => "sev_crit",
+        Some(SyslogSeverity::SEV_ERR) => "sev_err",
+        Some(SyslogSeverity::SEV_WARNING) => "sev_warning",
+        Some(SyslogSeverity::SEV_NOTICE) => "sev_notice",
+        Some(SyslogSeverity::SEV_INFO) => "sev_info",
+        Some(SyslogSeverity::SEV_DEBUG) => "sev_debug",
+        None => "info",
+    }
+}
 
 /// Parse one syslog line into a normalised event. Never fails: an unparseable
 /// line still lands as an event with the raw text as the message.
@@ -17,15 +38,14 @@ pub fn parse_line(line: &str, default_environment: &str) -> Event {
     // `Either`: try RFC5424 first, fall back to RFC3164 — the tolerant default.
     let msg = parse_message(line, Variant::Either);
 
-    let host = msg
-        .hostname
-        .map(str::to_string)
-        .unwrap_or_else(|| "unknown".to_string());
-    let service = msg.appname.map(str::to_string).unwrap_or_default();
-    let severity = msg
-        .severity
-        .map(|s| format!("{s:?}").to_lowercase())
-        .unwrap_or_else(|| "info".to_string());
+    // Intern the low-cardinality labels straight from the parser's borrowed
+    // slices — no intermediate `String` per line. `host`/`service`/`severity`
+    // repeat heavily across a syslog firehose, so `Label::from(&str)` collapses to
+    // an atomic refcount bump after first sight (the allocator-ceiling win the
+    // bulk-replay path was measured against).
+    let host: garmr_core::Label = msg.hostname.unwrap_or("unknown").into();
+    let service: garmr_core::Label = msg.appname.unwrap_or("").into();
+    let severity: garmr_core::Label = severity_str(msg.severity).into();
     let log_type = match msg.protocol {
         Protocol::RFC5424(_) => "app",
         Protocol::RFC3164 => "system",
@@ -43,11 +63,11 @@ pub fn parse_line(line: &str, default_environment: &str) -> Event {
 
     Event {
         ts,
-        host: host.into(),
-        service: service.into(),
+        host,
+        service,
         source: "syslog".into(),
         environment: default_environment.into(),
-        severity: severity.into(),
+        severity,
         log_type: log_type.into(),
         message: text,
         fields,

@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Database extension created
+id: garmr-pg-create-extension
+status: stable
+description: >
+    CREATE EXTENSION via pgaudit. Most extensions are benign; the ones that
+    read files or reach the network (file_fdw, postgres_fdw, dblink) widen the
+    database's blast radius and deserve review on production.
+author: garmr
+logsource:
+    product: linux
+    service: postgres
+detection:
+    audit:
+        service: postgres
+        message|contains: 'AUDIT:'
+    stmt:
+        message|contains: 'CREATE EXTENSION'
+    condition: audit and stmt
+falsepositives:
+    - Provisioning and migrations installing vetted extensions.
+level: medium
+tags:
+    - attack.persistence
+    - attack.t1505.001

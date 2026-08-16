@@ -55,6 +55,12 @@ const ALLOW: &[&str] = &[
     "garmr-cli/src/ioc.rs",
     "garmr-retention/src/s3.rs",
     "garmr-retention/src/ha.rs",
+    // The OIDC relying party: every fetch calls egress::check(EgressClass::Idp,
+    // url) on the SPECIFIC destination immediately before it, and the client
+    // refuses redirects — so a relocated endpoint cannot land somewhere the
+    // check never saw (a followed redirect to a link-local metadata address
+    // would turn a login into an SSRF).
+    "garmr-cli/src/api/oidc.rs",
     // OUT-OF-SCOPE residuals (documented in model-routing.md): the SOAR executor
     // (a human-approved subprocess, not garmr's autonomous egress) and the
     // control-plane clients to the loopback daemon / the separate garmr-ui process.

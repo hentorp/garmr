@@ -227,6 +227,39 @@ fn write_hex(dst: &mut [u8], digest: &[u8; 32]) {
 /// Re-derive it, do not re-guess it, when moving to a different box.
 const PARALLEL_ROW_THRESHOLD: usize = 2048;
 
+/// The number of v1 payload **string** columns folded per-worker — `host`,
+/// `service`, `source`, `environment`, `severity`, `log_type`, `message`, in
+/// `events_schema` positions 1..=7. (`event_ts`, position 0, is a cheap `i64`
+/// primitive built serially.) These used to be seven serial `from_iter` passes
+/// *after* the fold — the encode path's Amdahl serial tail (root-cause §5); they
+/// now ride the SAME `gatling_reduce` as the provenance columns.
+/// The `v1` array is stored in `events_schema` column order — `v1[0]`→host (pos
+/// 1), `v1[1]`→service (2), source (3), environment (4), severity (5),
+/// log_type (6), `v1[6]`→message (7) — matching the fold in [`ProvSeg::absorb`]
+/// and the destructure in [`build_batch`].
+const V1_STR: usize = 7;
+
+/// One worker's private slice of ONE variable-width, **non-null** string column:
+/// every row's UTF-8 concatenated (`vals`) with its per-row byte length (`lens`).
+/// No validity vector — an `Event`'s payload strings are never null, so the
+/// assembled column carries no null buffer, byte-identical to the old
+/// `rows.iter().map(|(e,_)| Some(..)).collect()`.
+#[derive(Default)]
+struct StrCol {
+    vals: Vec<u8>,
+    lens: Vec<u32>,
+}
+
+impl StrCol {
+    /// Append `s`'s bytes to the reused value buffer and record its length — the
+    /// per-row work that used to live in a serial `StringArray::from_iter`.
+    #[inline]
+    fn push(&mut self, s: &str) {
+        self.vals.extend_from_slice(s.as_bytes());
+        self.lens.push(s.len() as u32);
+    }
+}
+
 /// One worker's private slice of the provenance columns — the "one buffer per
 /// worker, concat `n_workers` not `n_rows`" shape (the vendored `parwrite` /
 /// lbzip2 pattern). A worker folds its whole contiguous row-partition into a
@@ -248,6 +281,10 @@ struct ProvSeg {
     id_hex: Vec<u8>,
     /// Fixed 64-byte lowercase hex of each row's `raw_payload_hash`, concatenated.
     ph_hex: Vec<u8>,
+    /// The seven v1 payload string columns for this partition (see [`V1_STR`]),
+    /// each concatenated with per-row lengths — folded here so the string column
+    /// build joins the parallel region instead of trailing it serially.
+    v1: [StrCol; V1_STR],
 }
 
 impl ProvSeg {
@@ -283,6 +320,16 @@ impl ProvSeg {
         let mut ph_slot = [0u8; HEX_LEN];
         write_hex(&mut ph_slot, blake3::hash(e.message.as_bytes()).as_bytes());
         self.ph_hex.extend_from_slice(&ph_slot);
+
+        // The v1 payload string columns — same partition, `events_schema` order
+        // (see [`V1_STR`]). Folded here rather than in a serial `from_iter` tail.
+        self.v1[0].push(e.host.as_str());
+        self.v1[1].push(e.service.as_str());
+        self.v1[2].push(e.source.as_str());
+        self.v1[3].push(e.environment.as_str());
+        self.v1[4].push(e.severity.as_str());
+        self.v1[5].push(e.log_type.as_str());
+        self.v1[6].push(e.message.as_str());
     }
 }
 
@@ -347,20 +394,54 @@ fn fields_column(segs: &[ProvSeg], n: usize) -> StringArray {
     StringArray::new(offsets, Buffer::from_vec(values), nulls)
 }
 
-/// Build the three per-row provenance columns — `fields`, `event_id`,
-/// `raw_payload_hash` — in ONE pass with ZERO per-row allocation. Above the
+/// Assemble a **non-null** variable-width string column (the v1 payload columns:
+/// `host`, `service`, `source`, `environment`, `severity`, `log_type`,
+/// `message`) from the fold's per-worker seg buffers with ONE bulk copy into a
+/// preallocated value buffer — the same shape as [`fields_column`], minus the
+/// validity vector (payload strings are never null). `pick(seg)` is that seg's
+/// [`StrCol`] for this column, so the blocks are memcpy'd end-to-end
+/// (`~n_workers` copies, not `n`), the offsets come from the per-row lengths, and
+/// `StringArray::new` validates the whole buffer as UTF-8 in one simd pass. The
+/// output is byte-identical to the old
+/// `rows.iter().map(|(e,_)| Some(..)).collect::<StringArray>()`.
+fn str_column(segs: &[ProvSeg], n: usize, pick: impl Fn(&ProvSeg) -> &StrCol) -> StringArray {
+    let total: usize = segs.iter().map(|s| pick(s).vals.len()).sum();
+    let mut values = Vec::with_capacity(total);
+    let mut lens: Vec<usize> = Vec::with_capacity(n);
+    for s in segs {
+        let c = pick(s);
+        values.extend_from_slice(&c.vals);
+        lens.extend(c.lens.iter().map(|&l| l as usize));
+    }
+    let offsets = OffsetBuffer::from_lengths(lens);
+    StringArray::new(offsets, Buffer::from_vec(values), None)
+}
+
+/// Every per-row **string** column of the native `Event` build, assembled from
+/// one parallel fold: the three provenance columns plus the seven v1 payload
+/// strings (see [`V1_STR`]). Column order in `v1` matches [`V1_STR_POS`].
+struct FoldedCols {
+    fields: StringArray,
+    event_id: StringArray,
+    raw_payload_hash: StringArray,
+    v1: [StringArray; V1_STR],
+}
+
+/// Build every per-row **string** column — the three provenance columns
+/// (`fields`, `event_id`, `raw_payload_hash`) AND the seven v1 payload strings
+/// (`host` … `message`) — in ONE pass with ZERO per-row allocation. Above the
 /// threshold the rows are split into contiguous partitions folded across every
 /// core via `gatling_reduce` (private per-worker `ProvSeg`, no rayon — ROOT LAW
 /// #0); below it a single serial seg.
 ///
 /// The Arrow arrays are then assembled directly from the fold's per-worker byte
 /// buffers with one bulk copy per column (`~n_workers` `extend_from_slice` calls,
-/// not `n`) plus a single simd UTF-8 validation — replacing the per-row
-/// `from_iter_values` / `collect` tail that used to run after the fold (the encode
-/// path's Amdahl serial fraction — root-cause §5). Measured ~1.2× encode
-/// throughput on oden, `amdahl_serial_frac` 0.36 → 0.33, with no rise in
-/// `encode_cores_busy` (the copy is memory-bound; see `hex_column`).
-fn build_provenance(rows: &[(&Event, Option<&str>)]) -> (StringArray, StringArray, StringArray) {
+/// not `n`) plus a single simd UTF-8 validation. Folding the v1 strings in here
+/// (instead of the seven serial `from_iter` passes `build_batch` used to run
+/// after the fold) removes the encode path's Amdahl serial tail — the #1 open
+/// lever in `.nornir/uber-garm-one-core-root-cause-2026-07-27.md` §5/§7.2 — so
+/// the fan-out reaches the string-column work as well as the hashing.
+fn fold_string_columns(rows: &[(&Event, Option<&str>)]) -> FoldedCols {
     let n = rows.len();
     let workers = if n >= PARALLEL_ROW_THRESHOLD { 0 } else { 1 };
     let segs: Vec<ProvSeg> = gatling::gatling_forkjoin::gatling_reduce(
@@ -376,11 +457,12 @@ fn build_provenance(rows: &[(&Event, Option<&str>)]) -> (StringArray, StringArra
         |acc, mut part| acc.append(&mut part),
     );
 
-    let event_id = hex_column(&segs, n, |s| &s.id_hex);
-    let raw_payload_hash = hex_column(&segs, n, |s| &s.ph_hex);
-    let fields = fields_column(&segs, n);
-
-    (fields, event_id, raw_payload_hash)
+    FoldedCols {
+        fields: fields_column(&segs, n),
+        event_id: hex_column(&segs, n, |s| &s.id_hex),
+        raw_payload_hash: hex_column(&segs, n, |s| &s.ph_hex),
+        v1: std::array::from_fn(|c| str_column(&segs, n, |s| &s.v1[c])),
+    }
 }
 
 #[cfg(test)]
@@ -614,41 +696,34 @@ pub fn build_wire_batch(events: &[Event]) -> anyhow::Result<RecordBatch> {
 /// The shared column builder — refs only, no `Event` clone. Column order matches
 /// [`events_schema`] exactly.
 fn build_batch(rows: &[(&Event, Option<&str>)]) -> anyhow::Result<RecordBatch> {
+    // `event_ts` is a cheap `i64`-micros primitive — built serially. Every per-row
+    // STRING column (the seven v1 payload strings AND the three provenance columns)
+    // is built inside ONE gatling fold below, so the seven serial `from_iter`
+    // string passes that used to trail the fold — the encode Amdahl serial tail
+    // (root-cause §5) — are gone.
     let ts: TimestampMicrosecondArray = rows
         .iter()
         .map(|(e, _)| Some(e.ts.timestamp_micros()))
         .collect();
-    let host: StringArray = rows.iter().map(|(e, _)| Some(e.host.as_str())).collect();
-    let service: StringArray = rows.iter().map(|(e, _)| Some(e.service.as_str())).collect();
-    let source: StringArray = rows.iter().map(|(e, _)| Some(e.source.as_str())).collect();
-    let environment: StringArray = rows
-        .iter()
-        .map(|(e, _)| Some(e.environment.as_str()))
-        .collect();
-    let severity: StringArray = rows
-        .iter()
-        .map(|(e, _)| Some(e.severity.as_str()))
-        .collect();
-    let log_type: StringArray = rows
-        .iter()
-        .map(|(e, _)| Some(e.log_type.as_str()))
-        .collect();
-    let message: StringArray = rows.iter().map(|(e, _)| Some(e.message.as_str())).collect();
 
-    // ---- the CPU floor of a batch build: `fields` JSON + two BLAKE3 hashes ----
-    // Every column above is a borrowed `&str` (pointer+len copy, no allocation);
-    // these three do the real per-row work. Built in ONE zero-per-row-alloc pass,
-    // fanned across cores via `gatling_reduce` (see `build_provenance`): `fields`
-    // is serialized once into a reused per-worker buffer and those bytes feed the
-    // `event_id` hash, so nothing is serialized twice and the 32-worker allocator
-    // contention that inflated `cores_busy` with malloc-spin is gone.
-    let (fields, event_id, raw_payload_hash) = build_provenance(rows);
+    // ---- every per-row string column, fanned across cores via `gatling_reduce` ----
+    // The real per-row work: `fields` JSON (serialized once into a reused per-worker
+    // buffer, feeding the `event_id` hash — no double serialize), two BLAKE3 hashes,
+    // and the seven v1 payload strings, all folded in one no-barrier pass.
+    let FoldedCols {
+        fields,
+        event_id,
+        raw_payload_hash,
+        v1: [host, service, source, environment, severity, log_type, message],
+    } = fold_string_columns(rows);
+    // `parser_name` is byte-for-byte the `source` column; share the immutable Arrow
+    // Arc rather than rebuild it (one fewer string column, identical output).
+    let source_col: ArrayRef = Arc::new(source);
 
-    // --- v2 provenance columns (computed; same order as events_schema) ---
+    // --- trailing v2 columns: cheap constants + the per-row collector Option ---
     let now_us = Utc::now().timestamp_micros();
     let schema_version: Int32Array = rows.iter().map(|_| Some(EVENT_SCHEMA_VERSION)).collect();
     let ingest_time: TimestampMicrosecondArray = rows.iter().map(|_| Some(now_us)).collect();
-    let parser_name: StringArray = rows.iter().map(|(e, _)| Some(e.source.as_str())).collect();
     // source_trust reflects the collector attribution.
     let source_trust: StringArray = rows
         .iter()
@@ -666,7 +741,7 @@ fn build_batch(rows: &[(&Event, Option<&str>)]) -> anyhow::Result<RecordBatch> {
         Arc::new(ts),
         Arc::new(host),
         Arc::new(service),
-        Arc::new(source),
+        source_col.clone(), // source
         Arc::new(environment),
         Arc::new(severity),
         Arc::new(log_type),
@@ -676,7 +751,7 @@ fn build_batch(rows: &[(&Event, Option<&str>)]) -> anyhow::Result<RecordBatch> {
         Arc::new(event_id),
         Arc::new(ingest_time),
         Arc::new(raw_payload_hash),
-        Arc::new(parser_name),
+        source_col, // parser_name == source
         Arc::new(source_trust),
         Arc::new(collector_id),
     ];
@@ -817,6 +892,19 @@ mod tests {
         let id_col = col(&batch, "event_id");
         let hash_col = col(&batch, "raw_payload_hash");
         let fields_col = col(&batch, "fields");
+        // The v1 payload string columns are now built in the SAME gatling fold as
+        // the provenance columns, so a misaligned partition or a leaked worker
+        // order would corrupt them too. Check every one against the source event —
+        // `host`/`message` are distinct per row, so a cross-partition shuffle is
+        // caught, and `parser_name` must mirror `source` byte-for-byte.
+        let host_col = col(&batch, "host");
+        let service_col = col(&batch, "service");
+        let source_col = col(&batch, "source");
+        let env_col = col(&batch, "environment");
+        let sev_col = col(&batch, "severity");
+        let lt_col = col(&batch, "log_type");
+        let msg_col = col(&batch, "message");
+        let parser_col = col(&batch, "parser_name");
         for (i, e) in events.iter().enumerate() {
             assert_eq!(id_col.value(i), event_id_for(e), "event_id row {i}");
             assert_eq!(
@@ -828,6 +916,22 @@ mod tests {
                 fields_col.value(i),
                 serde_json::to_string(&e.fields).unwrap(),
                 "fields json row {i}"
+            );
+            assert_eq!(host_col.value(i), e.host.as_str(), "host row {i}");
+            assert_eq!(service_col.value(i), e.service.as_str(), "service row {i}");
+            assert_eq!(source_col.value(i), e.source.as_str(), "source row {i}");
+            assert_eq!(
+                env_col.value(i),
+                e.environment.as_str(),
+                "environment row {i}"
+            );
+            assert_eq!(sev_col.value(i), e.severity.as_str(), "severity row {i}");
+            assert_eq!(lt_col.value(i), e.log_type.as_str(), "log_type row {i}");
+            assert_eq!(msg_col.value(i), e.message.as_str(), "message row {i}");
+            assert_eq!(
+                parser_col.value(i),
+                e.source.as_str(),
+                "parser_name row {i}"
             );
         }
     }

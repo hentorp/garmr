@@ -32,7 +32,7 @@ members = [
 # NOT be absorbed as members — they're consumed as external path dependencies
 # (see [workspace.dependencies]). Excluding them also keeps their warnings out
 # of garmr's own clippy.
-exclude = ["vendor/skade", "vendor/znippy", "vendor/facett", "vendor/znippy-zoomies"]
+exclude = ["vendor/skade", "vendor/znippy", "vendor/facett", "vendor/znippy-zoomies", "vendor/edda"]
 
 [workspace.package]
 version = "0.1.0"

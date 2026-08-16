@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Local group created
+id: garmr-auth-group-created
+status: stable
+description: >
+    groupadd created a group. Rare on servers outside provisioning; combined
+    with a follow-up membership change it is the quiet half of a privilege
+    grant.
+author: garmr
+logsource:
+    product: linux
+detection:
+    selection:
+        service: groupadd
+        message|contains: 'new group'
+    condition: selection
+falsepositives:
+    - Package post-install scripts creating service groups.
+level: low
+tags:
+    - attack.persistence
+    - attack.t1136.001

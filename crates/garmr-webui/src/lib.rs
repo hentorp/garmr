@@ -60,6 +60,35 @@ impl TimeRange {
             TimeRange::Absolute(from, to) => format!("?from={from}&to={to}"),
         }
     }
+    /// Extra `/api/search` parameters carrying this range (appended after
+    /// `?q=`). Empty for Live: an unbounded full-text search, the endpoint's
+    /// default — not a filter the picker would then have to claim.
+    pub fn search_params(self) -> String {
+        match self {
+            TimeRange::Live => String::new(),
+            TimeRange::Last(h) => format!("&hours={h}"),
+            TimeRange::Absolute(from, to) => format!("&from={from}&to={to}"),
+        }
+    }
+    /// This range as the hybrid Query-IR's `filter.time` (`POST /api/hsearch`),
+    /// or `None` for Live — an unbounded hybrid query, the IR's default. The IR
+    /// counts in MICROS while the picker (and `/map`, `/api/search`) count in
+    /// millis, so an absolute range is converted here, once.
+    ///
+    /// A `t=` slug wild enough to overflow the conversion saturates to an empty
+    /// window and finds nothing — the fail-closed direction. Silently dropping
+    /// the bound would run an unbounded search under a picker still claiming the
+    /// range, which is exactly the dishonesty this parameter exists to remove.
+    pub fn hsearch_time(self) -> Option<serde_json::Value> {
+        match self {
+            TimeRange::Live => None,
+            TimeRange::Last(h) => Some(serde_json::json!({ "last_hours": h })),
+            TimeRange::Absolute(from, to) => Some(serde_json::json!({
+                "from_micros": from.saturating_mul(1000),
+                "to_micros": to.saturating_mul(1000),
+            })),
+        }
+    }
     pub fn label(self) -> String {
         match self {
             TimeRange::Live => "Live".to_string(),
@@ -135,6 +164,15 @@ pub struct Store {
     /// Whether the off-canvas navigation drawer is open. Only meaningful below the
     /// layout breakpoint, where the sidebar is not permanently on screen.
     pub nav_open: RwSignal<bool>,
+    /// The last natural-language answer, with the question it answers.
+    ///
+    /// It lives on the Store rather than in the Audit view because every
+    /// query-string write REBUILDS that view: with no home that outlives the
+    /// rebuild, clicking a time-range chip would re-ask the model and pay again
+    /// for the answer already on screen. `/api/ask` takes no range — the
+    /// assistant plans its own window from the question — so the answer to the
+    /// same question cannot have changed.
+    pub nl_answer: RwSignal<Option<(String, serde_json::Value)>>,
     /// Whether first-run setup is complete. `None` until `/api/setup/status`
     /// answers — deliberately not defaulted, so the console neither nags before it
     /// knows nor claims readiness it has not confirmed.
@@ -154,6 +192,7 @@ impl Store {
             activity: RwSignal::new(Vec::new()),
             operator: RwSignal::new(false),
             nav_open: RwSignal::new(false),
+            nl_answer: RwSignal::new(None),
             setup_complete: RwSignal::new(None),
         }
     }

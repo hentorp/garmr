@@ -9,6 +9,7 @@ mod action;
 pub mod app_audit;
 mod auth;
 pub mod backup;
+pub mod backup_retention;
 mod bundle;
 mod case;
 mod collector;
@@ -26,29 +27,36 @@ mod hunt;
 mod injection;
 mod label;
 mod lesson;
+pub mod metrics;
+pub mod oidc;
 mod proposal;
 mod registry;
 mod retention;
 mod router;
 mod silence;
+pub mod sla;
 
 pub use action::{ActionEvent, ActionKind, ActionProposal, ActionState};
 pub use app_audit::{
     ActorType, AuditAction, AuditActor, AuditClassification, AuditContext, AuditJustification,
     AuditRecord, Outcome, QueryType, AUDIT_LOG_TYPE,
 };
-pub use auth::{AuthRegistry, Principal, Role, UserToken};
+pub use auth::{AuthRegistry, DataScope, Principal, Role, UserToken};
 pub use bundle::{
     canonical_manifest_body, diff_entries, is_safe_relative_path, manifest_digest, release_digest,
     verify_manifest_digest, verify_release_binding, BundleEntry, BundleEntryKind, BundleFinding,
     BundleManifest, ModelNote, SignedBundle, BUNDLE_FORMAT,
 };
 pub use case::{Case, CaseState, Disposition, TranscriptEntry, Verdict};
-pub use collector::{Collector, CollectorRegistry};
+pub use collector::{
+    mint as mint_collector, Collector, CollectorFile, CollectorRecord, CollectorRegistry, Minted,
+    SharedCollectors, COLLECTOR_FILE_VERSION,
+};
 pub use config::{
-    AgentConfig, AuditConfig, ColdArchiverKind, Config, DetectConfig, EnvDetectConfig,
-    EnvironmentConfig, ExecutorConfig, HaConfig, HaRole, IngestConfig, LlmBackend, MatrixConfig,
-    McpServerConfig, RetentionConfig, RouteConfig, StoreConfig,
+    AgentConfig, AuditConfig, BackupConfig, CasesConfig, ColdArchiverKind, Config, DetectConfig,
+    EnvDetectConfig, EnvironmentConfig, ExecutorConfig, HaConfig, HaRole, IngestConfig, LlmBackend,
+    MatrixConfig, McpServerConfig, RetentionClass, RetentionConfig, RouteConfig, SlaConfig,
+    StoreConfig,
 };
 pub use dataset::*;
 pub use decision::*;
@@ -70,7 +78,7 @@ pub use lesson::{
 };
 pub use proposal::{Backtest, BacktestHealth, ProposalKind, ProposalStatus, RuleProposal};
 pub use registry::*;
-pub use retention::ColdArchive;
+pub use retention::{expired_archives, ColdArchive, ColdDeletion, EraseField, Tombstone};
 pub use router::{
     classify_event, decide, model_descriptor, model_descriptor_digest, DataClassification,
     ModelEntry, RouteDecision, RouteInput, RouterConfig, EXTERNAL_CEILING,

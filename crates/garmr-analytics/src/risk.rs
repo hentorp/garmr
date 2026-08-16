@@ -92,6 +92,11 @@ pub struct Contributor {
     /// Where the disposition that weighted this case came from (trusted outcome,
     /// analyst decision, discounted prediction, or unresolved) — explainability.
     pub trust: TrustSource,
+    /// ATT&CK tags carried by the case that contributed. Kept so the raised risk
+    /// incident can report the UNION of what actually fed it rather than a
+    /// hardcoded technique: RBA is an aggregation, so its coverage claim must be
+    /// whatever its inputs claimed, or the matrix stops describing reality.
+    pub attack: Vec<String>,
 }
 
 /// A risk subject and its accumulated risk. The subject is a host by default;
@@ -328,6 +333,7 @@ fn score_by(
             level: c.trigger.level.clone(),
             contribution,
             trust: judgement.source,
+            attack: c.trigger.attack.clone(),
         });
     }
 
@@ -489,11 +495,27 @@ pub fn risk_detection(obj: &RiskObject, params: &RiskParams, now: DateTime<Utc>)
         )
     };
 
+    // The union of what actually fed this score, deduped and ordered. Never a
+    // hardcoded technique: a risk incident is an aggregation, so claiming a
+    // technique of its own would put a signal in the coverage matrix that no
+    // detector produced. An empty union (contributors that were themselves
+    // untagged) correctly yields an untagged incident.
+    let attack = {
+        let mut a: Vec<String> = obj
+            .contributors
+            .iter()
+            .flat_map(|c| c.attack.iter().cloned())
+            .collect();
+        a.sort();
+        a.dedup();
+        a
+    };
+
     Detection {
         rule_id,
         rule_title: rule_title.to_string(),
         level: level.to_string(),
-        attack: vec![],
+        attack,
         event: Event {
             ts: now,
             host: event_host.into(),
@@ -962,5 +984,71 @@ mod tests {
             proposed_action: None,
         });
         assert!(score_staff(&[risk_case], Utc::now(), &params()).is_empty());
+    }
+
+    #[test]
+    fn risk_incident_reports_the_union_of_contributor_techniques() {
+        // RBA is an aggregation, so its ATT&CK claim must be exactly what fed
+        // it. A hardcoded technique here would put a signal in the coverage
+        // matrix that no detector actually produced.
+        let obj = RiskObject {
+            kind: "host".into(),
+            host: "pve".into(),
+            score: 42.0,
+            contributors: vec![
+                Contributor {
+                    case_id: "c1".into(),
+                    rule_id: "r1".into(),
+                    level: "high".into(),
+                    contribution: 20.0,
+                    trust: TrustSource::Unresolved,
+                    attack: vec!["T1110".into(), "T1078".into()],
+                },
+                Contributor {
+                    case_id: "c2".into(),
+                    rule_id: "r2".into(),
+                    level: "medium".into(),
+                    // Overlaps c1 — the union must dedupe rather than double-count.
+                    contribution: 12.0,
+                    trust: TrustSource::Unresolved,
+                    attack: vec!["T1078".into()],
+                },
+                Contributor {
+                    case_id: "c3".into(),
+                    rule_id: "r3".into(),
+                    level: "low".into(),
+                    // An untagged contributor (e.g. the frequency baseline) must
+                    // not cause a technique to be invented.
+                    contribution: 10.0,
+                    trust: TrustSource::Unresolved,
+                    attack: vec![],
+                },
+            ],
+        };
+        let d = risk_detection(&obj, &params(), Utc::now());
+        assert_eq!(d.attack, vec!["T1078".to_string(), "T1110".to_string()]);
+    }
+
+    #[test]
+    fn risk_incident_from_untagged_contributors_stays_untagged() {
+        let obj = RiskObject {
+            kind: "host".into(),
+            host: "pve".into(),
+            score: 30.0,
+            contributors: vec![Contributor {
+                case_id: "c1".into(),
+                rule_id: "garmr-freq-pve-sshd".into(),
+                level: "medium".into(),
+                contribution: 30.0,
+                trust: TrustSource::Unresolved,
+                attack: vec![],
+            }],
+        };
+        let d = risk_detection(&obj, &params(), Utc::now());
+        assert!(
+            d.attack.is_empty(),
+            "an aggregation of untagged signals claims nothing: {:?}",
+            d.attack
+        );
     }
 }

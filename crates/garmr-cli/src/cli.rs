@@ -164,8 +164,11 @@ pub(crate) enum Cmd {
     EmbedVerify,
     /// Rebuild the full-text (Tantivy) index from the warehouse events — the
     /// recovery path after `restore` (which leaves search COLD) or an index
-    /// loss/corruption. A corrupt index is moved aside and rebuilt, so recovery
-    /// is a single command. Run with `serve` stopped (opens the store writable).
+    /// loss/corruption, and the migration after a full-text schema change. A
+    /// corrupt index, and one that opens but carries an outdated schema (e.g.
+    /// from before time-range filtered search), are moved aside and rebuilt, so
+    /// recovery and migration are a single command. Run with `serve` stopped
+    /// (opens the store writable).
     Reindex {
         /// Rebuild only the last N hours of events; omit to rebuild everything.
         #[arg(long)]
@@ -201,10 +204,46 @@ pub(crate) enum Cmd {
         #[arg(long, default_value_t = 10)]
         top: usize,
     },
+    /// Collector-credential lifecycle over the registry file
+    /// (`ingest.collectors_file`). Tokens are shown ONCE at mint and stored
+    /// only as keyed digests; `list` never prints a secret.
+    Collector {
+        #[command(subcommand)]
+        what: CollectorCmd,
+    },
     /// Cold-storage / retention.
     Retention {
         #[command(subcommand)]
         what: RetentionCmd,
+    },
+    /// Targeted erasure (GDPR-style): place a persistent tombstone and remove
+    /// every matching row from the hot store and the full-text index. OFFLINE —
+    /// run with `serve` stopped. DRY RUN unless `--apply`: this destroys data,
+    /// so the default is to show the plan. Cold archives are NOT rewritten yet;
+    /// overlapping ones are named in the certificate as pending.
+    Erase {
+        /// Which attribute to erase by: "host", "src_ip" or "user".
+        #[arg(long)]
+        field: String,
+        /// The exact value to erase. Never a pattern.
+        #[arg(long)]
+        value: String,
+        /// Optional lower time bound (RFC3339, inclusive).
+        #[arg(long)]
+        from: Option<String>,
+        /// Optional upper time bound (RFC3339, exclusive).
+        #[arg(long)]
+        to: Option<String>,
+        /// Why (e.g. the erasure-request reference). Recorded in the audit
+        /// ledger and the certificate.
+        #[arg(long)]
+        reason: String,
+        /// Actually erase. Without this the command prints the plan only.
+        #[arg(long)]
+        apply: bool,
+        /// Where to write the deletion certificate (JSON).
+        #[arg(long, default_value = "./erasure-certificate.json")]
+        out: std::path::PathBuf,
     },
     /// Query the cold tier (thaws aged archives and runs read-only SQL over the
     /// `events` table). Use `--from`/`--to` to only thaw archives overlapping
@@ -365,6 +404,32 @@ pub(crate) enum Cmd {
         #[command(subcommand)]
         what: BackupCmd,
     },
+    /// High availability: the writer lease that fences a failed-over node out.
+    Ha {
+        #[command(subcommand)]
+        what: HaCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum HaCmd {
+    /// Show the current writer lease (epoch + holder), if any.
+    Lease,
+    /// Take the writer lease, moving the epoch forward.
+    ///
+    /// Run this on the node you are promoting, AFTER the old writer is known to
+    /// be stopped. The write is conditional, so if two nodes promote at once
+    /// exactly one succeeds and the other is told it lost. A snapshot shipped
+    /// under a superseded epoch is refused by followers.
+    Promote {
+        /// Why — recorded in the audit ledger. Promotion is a decision someone
+        /// has to account for later, so it is not optional.
+        #[arg(long)]
+        reason: String,
+        /// Name recorded as the lease holder (default: this machine's hostname).
+        #[arg(long)]
+        holder: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -436,6 +501,12 @@ pub(crate) enum BundleCmd {
         /// The ed25519 signing key seed (default: the audit signing key).
         #[arg(long)]
         signing_key: Option<std::path::PathBuf>,
+        /// Build a CONTENT-ONLY bundle (rules/correlations/hunts — no binary):
+        /// the signed content-update channel. Registers as `garmr-content` so
+        /// it never shadows a release, and `import` installs its content into
+        /// the configured detection dirs after the same fail-closed verify.
+        #[arg(long)]
+        content_only: bool,
     },
     /// Verify a bundle OFFLINE, fail-closed (non-zero on any tamper/foreign key).
     /// `--key <hex>` is the out-of-band trusted key; without it the local audit
@@ -472,6 +543,10 @@ pub(crate) enum BundleCmd {
         to_version: String,
         #[arg(long, default_value = "production")]
         channel: String,
+        /// Which registered name to re-point (`garmr` for releases,
+        /// `garmr-content` for content bundles).
+        #[arg(long, default_value = "garmr")]
+        name: String,
         #[arg(long, default_value = "air-gap bundle rollback")]
         reason: String,
     },
@@ -776,6 +851,22 @@ pub(crate) enum RulesCmd {
     /// Draft a rule for a pattern ("catch repeated sudo failures per host").
     /// Model-priced + budget-capped; the draft is validated and backtested.
     Propose { request: String },
+    /// Import community Sigma rules (a file or a directory, recursively).
+    /// DRY RUN by default: prints a lint report checking every referenced field
+    /// against garmr's event projection — the silent-never-match class becomes
+    /// a printed rejection. No LLM anywhere on this path.
+    Import {
+        /// A .yml file or a directory of rules (searched recursively).
+        path: std::path::PathBuf,
+        /// Install the clean rules (verbatim YAML + provenance header) into
+        /// rules_dir/imported/ and register each in the registry.
+        #[arg(long)]
+        write: bool,
+        /// Also accept rules referencing fields outside garmr's projection.
+        /// They match only if your collectors ship those fields verbatim.
+        #[arg(long)]
+        allow_unknown: bool,
+    },
     /// List rule proposals, newest first.
     Proposals,
     /// Show one proposal (id prefix ok) with its full rule body + backtest.
@@ -849,9 +940,59 @@ pub(crate) enum SilenceCmd {
 }
 
 #[derive(Subcommand)]
+pub(crate) enum CollectorCmd {
+    /// Mint a credential for a new collector id. Refused if the id already has
+    /// an active credential — `rotate` is the verb for replacement.
+    Add {
+        /// Collector id (the trusted source identity stamped on its events).
+        id: String,
+        /// `event.source` values this collector may assert (comma-separated).
+        /// Empty = any (the collector id remains the trust anchor).
+        #[arg(long, value_delimiter = ',')]
+        sources: Vec<String>,
+        /// Days until the credential expires. Omit for no expiry — a deliberate
+        /// choice, not a default.
+        #[arg(long)]
+        expires_days: Option<i64>,
+    },
+    /// Mint a replacement credential and revoke the old one (kept in the file,
+    /// revoked, so an incident review can trace the history).
+    Rotate { id: String },
+    /// Revoke every active credential for the id.
+    Revoke { id: String },
+    /// Show the registry: status, fingerprints, bindings. Never a secret.
+    List,
+}
+
+#[derive(Subcommand)]
 pub(crate) enum RetentionCmd {
     /// Run one retention pass now: seal every aged window into the cold tier.
     Run,
     /// List the sealed cold archives (the manifest).
     List,
+    /// Delete cold archives whose window is entirely older than `--older-than`
+    /// days. DRY RUN unless `--apply` is given: deleting evidence is the one
+    /// operation here a retry cannot undo, so the default is to show the plan.
+    /// Archives under legal hold are always skipped and always reported.
+    Expire {
+        /// Age cutoff in days. An archive expires only when its whole window
+        /// is older — a window straddling the cutoff still holds retained data.
+        #[arg(long)]
+        older_than: u32,
+        /// Actually delete. Without this the command only prints what it would
+        /// do, which is how it should be run first, every time.
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Show the deletion ledger: what expiry has removed, and whether every
+    /// copy actually went. This is the evidence for "prove what you deleted".
+    Deletions,
+    /// Place or clear a legal hold on one archive, exempting it from expiry.
+    Hold {
+        /// Archive id (the window key shown by `retention list`).
+        id: String,
+        /// Clear the hold instead of placing it.
+        #[arg(long)]
+        clear: bool,
+    },
 }

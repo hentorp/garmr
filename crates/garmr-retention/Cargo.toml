@@ -20,12 +20,13 @@ znippy = ["dep:znippy-common"]
 garmr-core.workspace = true
 garmr-store.workspace = true
 skade.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 blake3.workspace = true
+redb.workspace = true
 uuid.workspace = true
 futures = "0.3"
 # S3 cold tier (optional; upload sealed archives to object storage). Already in

@@ -54,6 +54,13 @@ pub struct TranscriptEntry {
     pub actor: String,
     /// Tool input or model text, serialised.
     pub detail: String,
+    /// Stable id for entries that must survive a merge — analyst notes. Agent
+    /// entries carry "" (the pre-existing rows decode to it), which is fine:
+    /// they are only ever appended by the one writer that owns the loop, while
+    /// human notes arrive concurrently with agent snapshots and need an
+    /// identity to be merged by rather than lost.
+    #[serde(default)]
+    pub entry_id: String,
 }
 
 /// The agent's conclusion for a case.
@@ -86,6 +93,21 @@ pub struct Case {
     pub updated_at: DateTime<Utc>,
     pub transcript: Vec<TranscriptEntry>,
     pub verdict: Option<Verdict>,
+    /// The analyst who owns this case. `None` = unassigned. All ownership
+    /// fields are `serde(default)`: every case row written before they existed
+    /// must decode unchanged.
+    #[serde(default)]
+    pub assignee: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Ids of related cases (bidirectional — linking writes both sides).
+    #[serde(default)]
+    pub linked_cases: Vec<String>,
+    /// When `state` last changed — the SLA clocks' anchor. Stamped centrally in
+    /// the store's `put_case` (the one chokepoint every write passes), because
+    /// a wrong SLA start time is worse than no SLA at all.
+    #[serde(default)]
+    pub state_changed_at: Option<DateTime<Utc>>,
 }
 
 impl Case {
@@ -102,6 +124,10 @@ impl Case {
             updated_at: now,
             transcript: Vec::new(),
             verdict: None,
+            assignee: None,
+            tags: Vec::new(),
+            linked_cases: Vec::new(),
+            state_changed_at: Some(now),
         }
     }
 
@@ -122,6 +148,7 @@ impl Case {
             at,
             actor: actor.into(),
             detail: detail.into(),
+            entry_id: String::new(),
         });
         self.updated_at = at;
     }

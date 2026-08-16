@@ -73,7 +73,10 @@ async fn flight_do_put_cannot_spoof_collector_identity() {
     let addr = listener.local_addr().unwrap();
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
     let events = store.events.clone();
-    let collectors = Arc::new(garmr_core::CollectorRegistry::new());
+    // The receiver takes the swappable handle (hot rotate/revoke), not a fixed
+    // registry — an empty one here, so the test's spoofing attempt is judged by
+    // the same gate production uses.
+    let collectors = garmr_core::SharedCollectors::new(garmr_core::CollectorRegistry::new());
     tokio::spawn(async move {
         tonic::transport::Server::builder()
             .add_service(FlightIngest::new(events, collectors).into_server())
@@ -125,5 +128,97 @@ async fn flight_do_put_cannot_spoof_collector_identity() {
         .await,
         4,
         "self-declared collector metadata is not trusted"
+    );
+}
+
+/// Revoking a collector must bound how much longer it can write, even mid-stream.
+///
+/// A `do_put` stream is ONE request that may carry millions of rows over a long
+/// life. Resolving the credential once at the head — as this receiver used to —
+/// means "hot revoke" is not hot on the one transport built for volume: a
+/// revoked shipper keeps writing until it chooses to hang up. The receiver
+/// re-resolves per batch, so this test sends one batch, revokes, and asserts the
+/// next batch on the SAME stream is refused.
+#[tokio::test]
+async fn revoking_a_collector_stops_an_already_open_flight_stream() {
+    let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../garmr.example.toml");
+    let mut cfg = Config::load(&example).expect("load garmr.example.toml");
+    let tmp = tempfile::tempdir().unwrap();
+    cfg.store.warehouse_dir = tmp.path().join("wh");
+    cfg.store.state_db = tmp.path().join("state.redb");
+    cfg.store.search_dir = tmp.path().join("search");
+    cfg.store.compact_snapshot_threshold = 0;
+    let store = Store::open_writable(&cfg).await.expect("open store");
+
+    // A registry holding one plaintext credential, behind the swappable handle.
+    let mut reg = garmr_core::CollectorRegistry::new();
+    reg.add_json(r#"[{"id":"e2e-rev","token":"s3cret-token"}]"#)
+        .expect("seed the registry");
+    let collectors = garmr_core::SharedCollectors::new(reg);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+    let events = store.events.clone();
+    let serving = collectors.clone();
+    tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(FlightIngest::new(events, serving).into_server())
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+
+    let channel = tonic::transport::Channel::from_shared(format!("http://{addr}"))
+        .unwrap()
+        .connect()
+        .await
+        .expect("connect to receiver");
+    let mut client = FlightClient::new(channel);
+    client
+        .add_header("authorization", "Bearer s3cret-token")
+        .unwrap();
+
+    // Batch 1 goes out; then the operator revokes (an empty registry is the
+    // "this credential no longer exists" end state of `garmr collectors revoke`)
+    // while the stream is still open; then batch 2 goes out on the SAME stream.
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<RecordBatch, FlightError>>();
+    let batch = wire_batch(4);
+    let schema = batch.schema();
+    tx.send(Ok(batch)).unwrap();
+    let revoked = collectors.clone();
+    let sender = tokio::spawn(async move {
+        // Give the receiver time to swallow batch 1 before revoking, so the
+        // refusal below is unambiguously the re-check and not a race.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        revoked.swap(garmr_core::CollectorRegistry::new());
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tx.send(Ok(wire_batch(4))).unwrap();
+        drop(tx);
+    });
+
+    let stream = FlightDataEncoderBuilder::new()
+        .with_schema(schema)
+        .build(tokio_stream::wrappers::UnboundedReceiverStream::new(rx));
+    let result: Result<Vec<_>, _> = match client.do_put(stream).await {
+        Ok(s) => s.try_collect().await,
+        Err(e) => Err(e),
+    };
+    sender.await.unwrap();
+
+    let err = result.expect_err("the stream must be refused after revocation");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("no longer valid")
+            || msg.contains("Unauthenticated")
+            || msg.contains("unauthenticated"),
+        "the refusal names the credential state: {msg}"
+    );
+    // The pre-revocation batch was legitimately stored; only the post-revocation
+    // one is refused. Revocation bounds the exposure, it does not rewrite history.
+    assert_eq!(
+        count(&store, "SELECT count(*) AS n FROM events").await,
+        4,
+        "batch 1 (authorized) landed; batch 2 (revoked) did not"
     );
 }

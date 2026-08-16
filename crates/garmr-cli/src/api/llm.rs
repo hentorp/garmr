@@ -31,11 +31,18 @@ pub(super) async fn ask(
         check_admin(&st, &headers)?;
     }
     let q = p.get("q").ok_or_else(|| bad("missing ?q="))?;
+    // Who is asking. Falls back to "unauthenticated" for the open loopback/
+    // no-token stance, matching `record_read` on the rest of the read surface —
+    // one deployment must not report two different names for the same anonymous
+    // caller, or a reviewer cannot correlate the trail.
+    let asker = super::auth::attributed_principal(&st, &headers)
+        .map(|p| p.user)
+        .unwrap_or_else(|| "unauthenticated".to_string());
     // Audit the query best-effort (digest-only: the question text is not stored,
     // only its digest). This is a budget-spending query surface.
     crate::audit::record_best_effort(
         garmr_audit::AuditRecord::new(garmr_audit::action::QUERY, "ask")
-            .actor(garmr_audit::ActorType::Human, "api", None)
+            .actor(garmr_audit::ActorType::Human, &asker, None)
             .auth_method("api_session")
             .classification(garmr_audit::DataClassification::Confidential)
             .input_digest(garmr_audit::digest_of(q.as_bytes()))
@@ -84,7 +91,7 @@ pub(super) async fn ask(
                     // just from the live response. Best-effort, like the pre-call line.
                     crate::audit::record_best_effort(
                         garmr_audit::AuditRecord::new(garmr_audit::action::QUERY, "ask")
-                            .actor(garmr_audit::ActorType::Human, "api", None)
+                            .actor(garmr_audit::ActorType::Human, &asker, None)
                             .auth_method("api_session")
                             .query(query_id.as_str())
                             .reason("ask plan persisted for deterministic reproduce"),

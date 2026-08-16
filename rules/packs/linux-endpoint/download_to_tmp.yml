@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Download written into a temp path
+id: garmr-ep-download-tmp
+status: stable
+description: >
+    curl -o / wget -O writing into /tmp, /var/tmp or /dev/shm - staging a
+    payload in the same world-writable paths the execution rules watch.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    curl:
+        message|contains|all:
+            - 'curl'
+            - '-o /tmp/'
+    curl_var:
+        message|contains|all:
+            - 'curl'
+            - '-o /var/tmp/'
+    wget:
+        message|contains|all:
+            - 'wget'
+            - '-O /tmp/'
+    shm:
+        message|contains: '/dev/shm/'
+    condition: curl or curl_var or wget or shm
+falsepositives:
+    - Provisioning that stages installers in /tmp.
+level: medium
+tags:
+    - attack.command_and_control
+    - attack.t1105

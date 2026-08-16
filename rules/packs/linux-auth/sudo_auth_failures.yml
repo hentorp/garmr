@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: sudo authentication failure
+id: garmr-auth-sudo-failure
+status: stable
+description: >
+    A sudo password failure. Repeated failures for one user on one host are a
+    local privilege-escalation attempt or a stuffed credential being tried.
+author: garmr
+logsource:
+    product: linux
+detection:
+    selection:
+        service: sudo
+        message|contains: 'authentication failure'
+    condition: selection
+falsepositives:
+    - Typos; fat-fingered passwords after rotation.
+level: medium
+tags:
+    - attack.privilege_escalation
+    - attack.t1548.003

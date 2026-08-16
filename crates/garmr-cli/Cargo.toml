@@ -49,6 +49,7 @@ garmr-store.workspace = true
 garmr-query = { workspace = true, features = ["store"] }
 garmr-ingest.workspace = true
 garmr-detect.workspace = true
+rsigma-parser.workspace = true
 garmr-llm.workspace = true
 garmr-agent.workspace = true
 garmr-analytics.workspace = true

@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: TRUNCATE on a production table
+id: garmr-pg-truncate
+status: stable
+description: >
+    TRUNCATE removes every row without row-level logging - destructive impact
+    or evidence removal.
+author: garmr
+logsource:
+    product: linux
+    service: postgres
+detection:
+    audit:
+        service: postgres
+        message|contains: 'AUDIT:'
+    stmt:
+        message|contains: 'TRUNCATE'
+    condition: audit and stmt
+falsepositives:
+    - ETL staging tables truncated per run (silence those specifically).
+level: medium
+tags:
+    - attack.impact
+    - attack.t1485

@@ -33,7 +33,17 @@ pub fn list_view(store: Store) -> impl IntoView {
         risk.load("/api/risk".into());
     };
     reload();
-    let text = RwSignal::new(String::new());
+    // The text filter lives in the URL: it still narrows the list as you type,
+    // but committing it — Enter, or moving focus away — publishes, so the next
+    // query write (a time-range chip) cannot quietly erase it, and a filtered
+    // list is a link worth sharing.
+    let text = RwSignal::new(store.nav.param_untracked("q").unwrap_or_default());
+    let commit_text = move || {
+        store.nav.record_query(super::publish_query(
+            &[("q", text.get_untracked())],
+            &store.nav.query.get_untracked(),
+        ));
+    };
 
     view! {
         <div class="page">
@@ -48,7 +58,8 @@ pub fn list_view(store: Store) -> impl IntoView {
             })}
             <div class="filterbar">
                 <input type="search" class="grow" placeholder="filter by name…"
-                    prop:value=move || text.get() on:input=move |ev| text.set(event_target_value(&ev))/>
+                    prop:value=move || text.get() on:input=move |ev| text.set(event_target_value(&ev))
+                    on:change=move |_| commit_text()/>
             </div>
             {move || {
                 if let Some(e) = baselines.err.get() {

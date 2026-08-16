@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Shell history cleared or disabled
+id: garmr-ep-history-clear
+status: stable
+description: >
+    history -c, unset HISTFILE, or truncating .bash_history - covering tracks.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    selection:
+        message|contains:
+            - 'history -c'
+            - 'unset HISTFILE'
+            - 'HISTSIZE=0'
+    truncate:
+        message|contains: '> .bash_history'
+    condition: selection or truncate
+falsepositives:
+    - Privacy-minded users on personal machines.
+level: high
+tags:
+    - attack.defense_evasion
+    - attack.t1070.003

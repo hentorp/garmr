@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
 title: sudo authentication failure
 id: garmr-sudo-auth-failure
 status: experimental

@@ -31,7 +31,7 @@ pub use author::{approve_proposal, propose_rule};
 pub use eval::{run_eval, EvalReport, GoldenSet};
 pub use executor::{Executor, Outcome};
 pub use hunt::{findings_to_detections, load_hunts, run_hunt, HuntDef};
-pub use mcp_client::McpClients;
+pub use mcp_client::{McpAudit, McpClients};
 pub use notify::Matrix;
 pub use sink::{AlertSink, Notification, Notifier};
 pub use tools::{format_batches, reject_non_readonly};

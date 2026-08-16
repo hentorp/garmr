@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Untrusted procedural language or C function
+id: garmr-pg-untrusted-lang
+status: stable
+description: >
+    CREATE FUNCTION ... LANGUAGE c (or plpython/plperlu) - loading native code
+    into the server process.
+author: garmr
+logsource:
+    product: linux
+    service: postgres
+detection:
+    audit:
+        service: postgres
+        message|contains: 'AUDIT:'
+    stmt:
+        message|contains:
+            - 'LANGUAGE c'
+            - 'LANGUAGE C'
+            - 'plpythonu'
+            - 'plperlu'
+    condition: audit and stmt
+falsepositives:
+    - Extensions installed during provisioning.
+level: critical
+tags:
+    - attack.execution
+    - attack.t1059

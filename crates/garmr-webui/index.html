@@ -254,6 +254,16 @@
       /* ---- investigation ---- */
       .case-head { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 6px; }
       .case-meta { margin: 10px 0; } .case-actions { margin-top: 10px; }
+      /* Ownership + collaboration panel (assignee / tags / links). */
+      .collab { display: flex; flex-direction: column; gap: 8px; margin: 10px 0;
+        background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 12px; }
+      .collab-row { flex-wrap: wrap; }
+      .collab-row > .dimtext:first-child { min-width: 48px; font-size: 12px; }
+      .collab select, .assignbox, .linkbox { max-width: 220px; }
+      .tagbox { width: 140px; }
+      .tag .linkish { margin-left: 4px; font-size: 10px; }
+      .note-composer { margin-top: 10px; }
+      .note-composer label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-dim); }
       .timeline { display: flex; flex-direction: column; gap: 0; padding-left: 6px; }
       .tl-item { display: flex; gap: 12px; padding: 8px 0; position: relative; }
       .tl-item::before { content: ""; position: absolute; left: 4px; top: 18px; bottom: -8px; width: 1px; background: var(--line); }
@@ -261,6 +271,12 @@
       .tl-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; z-index: 1; border: 2px solid var(--bg); }
       .tl-dot.bad { background: var(--bad); } .tl-dot.warn { background: var(--warn); } .tl-dot.pass { background: var(--point); } .tl-dot.dim { background: var(--ink-mute); }
       .tl-body { flex: 1; min-width: 0; }
+      /* Analyst-written transcript entries: the human fence, mirroring the
+         AI card vs human card split. A person's words never read as a tool's. */
+      .tl-dot.human { background: var(--point); box-shadow: 0 0 0 2px color-mix(in srgb, var(--point) 35%, transparent); }
+      .tl-item.human .tl-body { background: color-mix(in srgb, var(--point) 7%, var(--panel));
+        border: 1px solid color-mix(in srgb, var(--point) 25%, var(--line));
+        border-radius: var(--radius-sm); padding: 6px 10px; }
       .evidence { background: var(--bg-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; margin-top: 4px; font-size: 12px; word-break: break-word; }
       .ai-tag { font-size: 9px; background: var(--violet); color: #100a1e; padding: 1px 6px; border-radius: 999px; letter-spacing: 0.5px; }
       .human-tag { font-size: 9px; background: var(--point); color: #032018; padding: 1px 6px; border-radius: 999px; letter-spacing: 0.5px; }

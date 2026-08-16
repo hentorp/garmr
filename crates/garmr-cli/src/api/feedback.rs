@@ -41,6 +41,11 @@ pub(super) struct DecisionReq {
     rejected_evidence: Vec<EvidenceRef>,
     #[serde(default)]
     prediction_correct: Option<bool>,
+    /// Close the case with this decision. The analyst's disposition becomes the
+    /// case's resolution — the one-step "triage, decide, done" flow a queue
+    /// needs, instead of a decision that leaves the case dangling open.
+    #[serde(default)]
+    resolve: bool,
     #[serde(default)]
     important_evidence_missed: Option<bool>,
     #[serde(default)]
@@ -83,6 +88,26 @@ pub(super) async fn submit_decision(
         audit_id,
     };
     st.store.state.append_decision(&d).map_err(oops)?;
+    if req.resolve {
+        let actor = d.principal.clone();
+        let disposition = d.disposition;
+        st.store
+            .state
+            .mutate_case(&d.case_id, move |c| {
+                c.state = garmr_core::CaseState::Closed;
+                // Stamped here as well as in put_case's chokepoint: mutate_case
+                // writes directly, and a Closed case's SLA clocks stop at this
+                // instant.
+                c.state_changed_at = Some(chrono::Utc::now());
+                c.record(
+                    format!("analyst:{actor}"),
+                    format!("closed by analyst decision ({disposition:?})"),
+                    chrono::Utc::now(),
+                );
+                true
+            })
+            .map_err(oops)?;
+    }
     Ok(Json(json!({ "decision": d })))
 }
 
@@ -324,4 +349,210 @@ pub(super) async fn false_negatives(
         .list_false_negatives_limited(budget)
         .map_err(oops)?;
     Ok(Json(page.envelope("false_negatives", list)))
+}
+
+// ---- Case ownership + collaboration (2.9 M2) --------------------------------
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AssignReq {
+    /// The principal to assign, or `null` to unassign. Validated against
+    /// /api/principals' directory when possible; unknown names are accepted on
+    /// open-loopback deployments (no directory exists to validate against).
+    pub assignee: Option<String>,
+}
+
+/// POST /api/cases/{id}/assign — set or clear the case owner. Analyst-gated,
+/// audited. Goes through the atomic mutator, never through put_case: clearing
+/// an owner must be an explicit act a stale snapshot cannot replay.
+pub(super) async fn assign_case(
+    State(st): State<ApiState>,
+    headers: axum::http::HeaderMap,
+    Path(case_id): Path<String>,
+    Json(req): Json<AssignReq>,
+) -> ApiResult {
+    let who = check_analyst(&st, &headers)?;
+    // Validate against the known principals when a directory exists: assigning
+    // to a typo would file the case with nobody, silently. Open-loopback (no
+    // configured identities) accepts any name — there is nothing to check
+    // against, and blocking assignment there would break the dev posture.
+    if let Some(name) = req.assignee.as_deref() {
+        let known = !st.auth.is_empty();
+        if known
+            && !st.auth.principals().iter().any(|p| p.user == name)
+            && !st.webauthn.as_ref().is_some_and(|_w| {
+                super::passkey::passkey_principals(&st.store)
+                    .iter()
+                    .any(|p| p.user == name)
+            })
+        {
+            return Err(bad(format!(
+                "unknown assignee {name:?} — see /api/principals for who can own a case"
+            )));
+        }
+    }
+    st.record_decision(
+        &who,
+        garmr_audit::action::CASE_ASSIGN,
+        "case",
+        Some(&case_id),
+        Some(&format!(
+            "assignee={}",
+            req.assignee.as_deref().unwrap_or("(unassigned)")
+        )),
+    )?;
+    let assignee = req.assignee.clone();
+    let actor = who.user.clone();
+    let updated = st
+        .store
+        .state
+        .mutate_case(&case_id, move |c| {
+            let detail = match &assignee {
+                Some(a) => format!("assigned to {a} by {actor}"),
+                None => format!("unassigned by {actor}"),
+            };
+            c.assignee = assignee.clone();
+            c.record(format!("analyst:{actor}"), detail, chrono::Utc::now());
+            true
+        })
+        .map_err(oops)?
+        .ok_or_else(|| not_found("no such case"))?;
+    Ok(Json(json!({ "case": updated })))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CommentReq {
+    pub text: String,
+}
+
+/// POST /api/cases/{id}/comment — an analyst note in the transcript, with an
+/// entry_id so it survives a concurrent agent snapshot's put_case merge.
+pub(super) async fn comment_case(
+    State(st): State<ApiState>,
+    headers: axum::http::HeaderMap,
+    Path(case_id): Path<String>,
+    Json(req): Json<CommentReq>,
+) -> ApiResult {
+    let who = check_analyst(&st, &headers)?;
+    let text = req.text.trim().to_string();
+    if text.is_empty() {
+        return Err(bad("an empty comment says nothing"));
+    }
+    if text.len() > 8_192 {
+        return Err(bad("comment too long (> 8 KiB)"));
+    }
+    st.record_decision(
+        &who,
+        garmr_audit::action::CASE_COMMENT,
+        "case",
+        Some(&case_id),
+        // The audit record carries a digest-sized fact, not the note text —
+        // the transcript holds the content, the ledger holds who and when.
+        Some(&format!("comment ({} chars)", text.len())),
+    )?;
+    let actor = who.user.clone();
+    let updated = st
+        .store
+        .state
+        .mutate_case(&case_id, move |c| {
+            c.transcript.push(garmr_core::TranscriptEntry {
+                at: chrono::Utc::now(),
+                actor: format!("analyst:{actor}"),
+                detail: text.clone(),
+                entry_id: uuid::Uuid::new_v4().to_string(),
+            });
+            true
+        })
+        .map_err(oops)?
+        .ok_or_else(|| not_found("no such case"))?;
+    Ok(Json(json!({ "case": updated })))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TagsReq {
+    #[serde(default)]
+    pub add: Vec<String>,
+    #[serde(default)]
+    pub remove: Vec<String>,
+}
+
+/// POST /api/cases/{id}/tags — add/remove tags atomically.
+pub(super) async fn tag_case(
+    State(st): State<ApiState>,
+    headers: axum::http::HeaderMap,
+    Path(case_id): Path<String>,
+    Json(req): Json<TagsReq>,
+) -> ApiResult {
+    let who = check_analyst(&st, &headers)?;
+    let add: Vec<String> = req
+        .add
+        .iter()
+        .map(|t| t.trim().to_lowercase())
+        .filter(|t| !t.is_empty() && t.len() <= 64)
+        .collect();
+    let remove: Vec<String> = req.remove.iter().map(|t| t.trim().to_lowercase()).collect();
+    if add.is_empty() && remove.is_empty() {
+        return Err(bad("nothing to do"));
+    }
+    st.record_decision(
+        &who,
+        garmr_audit::action::CASE_TAG,
+        "case",
+        Some(&case_id),
+        Some(&format!("add={add:?} remove={remove:?}")),
+    )?;
+    let updated = st
+        .store
+        .state
+        .mutate_case(&case_id, move |c| {
+            let mut changed = false;
+            for t in &add {
+                if !c.tags.contains(t) {
+                    c.tags.push(t.clone());
+                    changed = true;
+                }
+            }
+            let before = c.tags.len();
+            c.tags.retain(|t| !remove.contains(t));
+            changed || c.tags.len() != before
+        })
+        .map_err(oops)?
+        .ok_or_else(|| not_found("no such case"))?;
+    Ok(Json(json!({ "case": updated })))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LinkReq {
+    pub other: String,
+}
+
+/// POST /api/cases/{id}/link — link two cases, both directions, atomically.
+pub(super) async fn link_case(
+    State(st): State<ApiState>,
+    headers: axum::http::HeaderMap,
+    Path(case_id): Path<String>,
+    Json(req): Json<LinkReq>,
+) -> ApiResult {
+    let who = check_analyst(&st, &headers)?;
+    st.record_decision(
+        &who,
+        garmr_audit::action::CASE_LINK,
+        "case",
+        Some(&case_id),
+        Some(&format!("other={}", req.other)),
+    )?;
+    let linked = st
+        .store
+        .state
+        .link_cases(&case_id, &req.other)
+        .map_err(oops)?;
+    if !linked {
+        return Err(bad(
+            "cases not linked — both must exist, be distinct, and not already be linked",
+        ));
+    }
+    Ok(Json(json!({ "linked": true })))
 }

@@ -1,0 +1,80 @@
+# nornir-graph — the constellation's ONE graph seam: two traits (BULK + QUERY),
+# the pure graph math, and every graph-database backend that answers them.
+#
+# LEAF DISCIPLINE. The DEFAULT build has NO dependencies at all — std only — so a
+# consumer that only wants the trait does not inherit a stack. (Contrast
+# nornir-warehouse-trait, which despite its name pulls arrow 58 + iceberg + skade
+# + uuid + chrono; every consumer of that seam inherits all of it. This crate must
+# never become that.) Every backend that drags a dependency is behind an
+# OFF-by-default feature, and `cargo tree` on the default feature set is the guard
+# (tests/leaf_law.rs makes it mechanical).
+[package]
+name = "nornir-graph"
+version = "0.1.0"
+edition = "2021"
+description = "The backend-neutral graph seam: a BULK trait (nodes/edges with pure SCC, topological order and reachability closure defaults) and a QUERY trait (contains/node/neighbours/pivot/shortest-path), domain-neutral over opaque string ids and a consumer-owned edge label, with in-memory, petgraph and embedded-Datalog (Cozo) backends behind features."
+license = "MIT OR Apache-2.0"
+repository = "https://codeberg.org/nordisk/nornir"
+keywords = ["graph", "trait", "datalog", "topological-sort", "pathfinding"]
+categories = ["data-structures", "algorithms"]
+
+[features]
+# The default build is a TRUE LEAF: std only, zero dependencies.
+default = []
+# Derives on the plain-data types (Edge).
+serde = ["dep:serde"]
+# `PetGraph`: a petgraph-backed BulkGraph whose `scc` is petgraph's OWN Tarjan —
+# an independent second implementation, which is what makes the cross-check test
+# able to go red.
+petgraph = ["dep:petgraph"]
+# `CozoGraph`: an embedded-Datalog GraphQuery/GraphStore, generic over the node
+# payload and the edge label. OFF BY DEFAULT — see the rayon note below, which is
+# the reason it must stay off.
+cozo = ["dep:cozo"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+petgraph = { version = "0.6", optional = true }
+# Embedded Datalog graph database.
+#
+# `default-features = false` drops cozo's `default` (= `compact` -> `minimal`),
+# which bundles the SQLite C source. Without it cozo builds pure-Rust with its
+# built-in `mem` engine plus the Datalog core, which is all this backend needs.
+#
+# ⚠ RAYON — ROOT LAW #0 EXCEPTION, MEASURED, NOT CHOSEN.
+# `graph-algo` is the ONLY cozo feature that turns on its optional `rayon`
+# dependency, so on paper `default-features = false` with no features is
+# rayon-free — and `cargo tree -i rayon` on that configuration does indeed report
+# "package ID specification `rayon` did not match any packages".
+#
+# It does not BUILD, though. cozo 0.7.6's own source uses rayon UNCONDITIONALLY
+# while declaring the dependency optional — an upstream bug:
+#
+#   error[E0433]: cannot find module or crate `rayon`
+#     --> cozo-0.7.6/src/lib.rs:511:9
+#      |  rayon::spawn(move || db.run_multi_transaction(...))
+#   error[E0599]: no method named `par_iter` found for reference
+#                 `&BTreeMap<MagicSymbol, CompiledRuleSet>`
+#     --> cozo-0.7.6/src/query/eval.rs:200:26  (and :275:26)
+#
+# So there is no rayon-free CozoDB 0.7 to have. `graph-algo` is therefore taken
+# purely to satisfy cozo's own compile, and the consequence is that ENABLING THIS
+# FEATURE PUTS RAYON IN THE TREE (rayon 1.12 via cozo, graph, graph_builder).
+#
+# What that does and does not mean:
+#   * The feature is OFF BY DEFAULT and no crate in this workspace turns it on, so
+#     no default build of anything gains rayon. `cargo tree -e normal` on this
+#     crate's default features is a single line.
+#   * None of OUR code calls rayon; nothing here hand-rolls a pool. The exposure is
+#     entirely cozo's internal rule evaluation.
+#   * This is a RELOCATION, not new exposure: the detection product this backend
+#     was ported from shipped exactly this dependency line, `graph-algo` included.
+#   * `CozoGraph::shortest_path` still does NOT use `graph-algo`'s `ShortestPathBFS`
+#     fixed rule — it is written out, both because that makes it agree tie-for-tie
+#     with the in-memory backend and so that this feature line can drop to no
+#     features the day cozo gates its rayon use properly.
+cozo = { version = "0.7", optional = true, default-features = false, features = ["graph-algo"] }
+
+[dev-dependencies]
+# The cross-backend identity tests need BOTH database backends present.
+nornir-graph = { path = ".", features = ["petgraph", "cozo", "serde"] }

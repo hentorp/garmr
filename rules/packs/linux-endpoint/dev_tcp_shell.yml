@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Bash /dev/tcp network connection
+id: garmr-ep-dev-tcp
+status: stable
+description: >
+    A shell using /dev/tcp - bash's built-in networking, and the classic
+    fileless reverse-shell primitive.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    selection:
+        message|contains: '/dev/tcp/'
+    condition: selection
+falsepositives:
+    - Ad-hoc port checks by admins (rare; usually nc or curl instead).
+level: critical
+tags:
+    - attack.command_and_control
+    - attack.t1071

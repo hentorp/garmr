@@ -137,6 +137,40 @@ pub(crate) fn record_system(
     Ok(Some(receipt.audit_id))
 }
 
+/// Best-effort ledger sink for external-MCP lifecycle events, injected into
+/// [`garmr_agent::McpClients`] at serve startup (the agent crate cannot depend
+/// on the ledger, so the wiring lives here). Register once per connected
+/// server; one call record per external tool invocation, LLM-paced — low
+/// enough frequency that no dedupe is needed.
+pub(crate) struct McpLedgerAudit;
+
+impl garmr_agent::McpAudit for McpLedgerAudit {
+    fn register(&self, server: &str, tools: usize) {
+        record_best_effort(
+            AuditRecord::new(garmr_audit::action::MCP_REGISTER, "mcp")
+                .actor(ActorType::System, "serve", Some("agent"))
+                .auth_method("system")
+                .outcome(Outcome::Success)
+                .object_id(server)
+                .reason(format!("{tools} external tools offered to the agent")),
+        );
+    }
+
+    fn call(&self, tool: &str, is_error: bool) {
+        record_best_effort(
+            AuditRecord::new(garmr_audit::action::MCP_CALL, "mcp")
+                .actor(ActorType::System, "agent", Some("triage"))
+                .auth_method("system")
+                .outcome(if is_error {
+                    Outcome::Failure
+                } else {
+                    Outcome::Success
+                })
+                .object_id(tool),
+        );
+    }
+}
+
 /// Best-effort audit of an ingest security event (Phase 12): a denied collector
 /// auth or a sequence anomaly. System-tier, Denied outcome; a lost line must not
 /// break ingest. The auditor already rate-limits, so this is called at most once
@@ -362,5 +396,105 @@ fn checkpoint(audit: &AuditConfig) -> Result<()> {
             Ok(())
         }
         None => bail!("audit ledger disabled in config"),
+    }
+}
+
+#[cfg(test)]
+mod coverage_doc_drift {
+    /// Drift guard for `docs/enterprise/audit-coverage.md`.
+    ///
+    /// That table is written as a grep-verifiable contract — an auditor is
+    /// invited to check any row against the source. A row that drifts is worse
+    /// than a missing row: it is a documented compliance claim the code does
+    /// not honour, which is precisely the doc/code contradiction the audit
+    /// work exists to eliminate. (It has already happened once: the table
+    /// shipped claiming subject pages emit `data.search_sensitive`
+    /// fail-closed, when they emit nothing at all.)
+    ///
+    /// For every table row this asserts: the action string names a real
+    /// constant in `garmr-audit`, and that constant is referenced by at least
+    /// one of the source files the row's "Emitted at" cell names.
+    ///
+    /// Deliberately limited, and worth knowing where it stops: this proves
+    /// FILE-level attribution, not the finer claim in the parenthetical (which
+    /// handler) or the contract column (fail-closed vs best-effort). It would
+    /// have caught a renamed constant or a moved emitter; it would NOT have
+    /// caught the original defect, where the row named the right file but the
+    /// wrong handler. Those two claims stay human-reviewed.
+    #[test]
+    fn every_documented_action_is_emitted_where_the_table_says() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let doc = std::fs::read_to_string(root.join("../../docs/enterprise/audit-coverage.md"))
+            .expect("the coverage doc ships with the repo");
+        let events = std::fs::read_to_string(root.join("../garmr-audit/src/event.rs"))
+            .expect("the action constants ship with the repo");
+
+        // action string -> constant name, from the single source of truth.
+        let mut consts: Vec<(String, String)> = Vec::new();
+        for line in events.lines() {
+            let Some((lhs, rhs)) = line.split_once("&str = ") else {
+                continue;
+            };
+            let Some(name) = lhs
+                .split_whitespace()
+                .last()
+                .map(|n| n.trim_end_matches(':'))
+            else {
+                continue;
+            };
+            let value = rhs.trim().trim_end_matches(';').trim_matches('"');
+            if !value.is_empty() {
+                consts.push((value.to_string(), name.to_string()));
+            }
+        }
+        assert!(consts.len() > 20, "parsed the action constants");
+
+        let mut checked = 0usize;
+        for line in doc.lines() {
+            // Table rows only: | `action` | `file` … | contract |
+            if !line.starts_with("| `") {
+                continue;
+            }
+            let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+            let (Some(action_cell), Some(where_cell)) = (cells.get(1), cells.get(2)) else {
+                continue;
+            };
+            // The first cell may hold two actions ("`a` / `b`").
+            for action in action_cell.split('/').map(|a| a.trim().trim_matches('`')) {
+                if action.is_empty() || !action.contains('.') {
+                    continue;
+                }
+                let (_, const_name) =
+                    consts.iter().find(|(v, _)| v == action).unwrap_or_else(|| {
+                        panic!(
+                            "the doc names `{action}`, which is not a garmr-audit action constant"
+                        )
+                    });
+
+                let files: Vec<&str> = where_cell
+                    .split('`')
+                    .filter(|t| t.ends_with(".rs"))
+                    .collect();
+                assert!(
+                    !files.is_empty(),
+                    "the row for `{action}` names no source file"
+                );
+                let emitted = files.iter().any(|rel| {
+                    std::fs::read_to_string(root.join("src").join(rel))
+                        .map(|src| src.contains(const_name))
+                        .unwrap_or(false)
+                });
+                assert!(
+                    emitted,
+                    "the doc says `{action}` ({const_name}) is emitted at {files:?}, but no such \
+                     file references it — the table is lying to an auditor"
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 15,
+            "walked the whole table (checked {checked} rows)"
+        );
     }
 }

@@ -292,6 +292,13 @@ pub(crate) async fn execute_cmd(cli: &Cli) -> Result<()> {
 pub(crate) async fn rules_cmd(cli: &Cli, what: &RulesCmd) -> Result<()> {
     let cfg = load_config(cli)?;
     match what {
+        RulesCmd::Import {
+            path,
+            write,
+            allow_unknown,
+        } => {
+            return crate::cmd::rules_import(cli, path, *write, *allow_unknown).await;
+        }
         RulesCmd::Propose { request } => {
             let v = match try_daemon(
                 &cfg,

@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Base64 decode piped into a shell
+id: garmr-ep-base64-shell
+status: stable
+description: >
+    base64 -d output piped into a shell: obfuscated payload execution.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    selection:
+        message|contains|all:
+            - 'base64'
+            - '-d'
+            - '| sh'
+    fallback:
+        message|contains|all:
+            - 'base64'
+            - '--decode'
+            - '| bash'
+    condition: selection or fallback
+falsepositives:
+    - Build tooling decoding embedded blobs (should be reviewable).
+level: high
+tags:
+    - attack.defense_evasion
+    - attack.t1140

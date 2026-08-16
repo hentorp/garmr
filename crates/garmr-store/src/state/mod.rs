@@ -38,6 +38,7 @@ mod cases;
 mod cold;
 mod datasets;
 mod detection_memory;
+pub mod dump;
 mod environment;
 mod findings;
 mod hunts;
@@ -52,6 +53,50 @@ pub use budget::BudgetReservation;
 pub use datasets::DatasetPutOutcome;
 pub use ingest_seq::{SeqHealth, SeqVerdict};
 pub use registry::RegisterOutcome;
+
+/// Every redb table this state store defines, by name.
+///
+/// It exists so a whole-store operation — a logical backup, a migration, an
+/// integrity sweep — can enumerate the schema instead of carrying its own copy
+/// of the list. A second, hand-maintained list is how a table added later gets
+/// silently omitted from every backup taken afterwards, and that omission is
+/// only discovered when someone restores.
+///
+/// [`table_registry_is_complete`] fails the build if a `TableDefinition` is
+/// added without appearing here, so the two cannot drift.
+pub const ALL_TABLES: &[&str] = &[
+    "actions",
+    "app_baselines",
+    "app_shadow",
+    "app_stateful",
+    "auth",
+    "budget",
+    "cases",
+    "cold_archives",
+    "cold_deletions",
+    "cold_meta",
+    "datasets",
+    "decisions",
+    "env_observations",
+    "env_sightings",
+    "env_transitions",
+    "false_negatives",
+    "feedback",
+    "findings",
+    "hunts",
+    "incident_outcomes",
+    "ingest_seq",
+    "mistakes",
+    "predictions",
+    "proposals",
+    "query_plans",
+    "registry",
+    "registry_promotions",
+    "silences",
+    "suppression",
+    "templates",
+    "tombstones",
+];
 
 const CASES: TableDefinition<&str, &[u8]> = TableDefinition::new("cases");
 /// dedup_key -> unix seconds of the last case opened for it (realert window).
@@ -70,6 +115,13 @@ const ACTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("actions");
 const TEMPLATES: TableDefinition<&str, i64> = TableDefinition::new("templates");
 /// Single-key scalars for the retention job (e.g. "watermark_us" -> i64).
 const COLD_META: TableDefinition<&str, i64> = TableDefinition::new("cold_meta");
+/// Tombstones for archives expiry has removed. Outlives the manifest row on
+/// purpose: it is the only surviving proof of WHAT was deleted.
+const COLD_DELETIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("cold_deletions");
+/// Targeted-erasure predicates. Persistent so late-arriving rows matching an
+/// erased subject are removed at the next compaction — the store converges to
+/// erased rather than passing through it once.
+const TOMBSTONES: TableDefinition<&str, &[u8]> = TableDefinition::new("tombstones");
 /// rule id -> JSON `Silence` (human-approved notification silences; one per rule).
 const SILENCES: TableDefinition<&str, &[u8]> = TableDefinition::new("silences");
 /// Small auth KV: the session-cookie MAC key + the registered passkeys blob
@@ -155,6 +207,8 @@ impl StateStore {
             wtx.open_table(BUDGET).map_err(Error::store)?;
             wtx.open_table(COLD_ARCHIVES).map_err(Error::store)?;
             wtx.open_table(COLD_META).map_err(Error::store)?;
+            wtx.open_table(COLD_DELETIONS).map_err(Error::store)?;
+            wtx.open_table(TOMBSTONES).map_err(Error::store)?;
             wtx.open_table(SILENCES).map_err(Error::store)?;
             wtx.open_table(AUTH).map_err(Error::store)?;
             wtx.open_table(HUNTS).map_err(Error::store)?;
@@ -836,5 +890,354 @@ mod tests {
         assert_eq!(survivors, expected);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    fn arc_at(id: &str, start_us: i64, end_us: i64) -> garmr_core::ColdArchive {
+        garmr_core::ColdArchive {
+            id: id.into(),
+            kind: "plain".into(),
+            file: format!("{id}.parquet"),
+            start_us,
+            end_us,
+            rows: 42,
+            bytes_in: 1000,
+            bytes_out: 300,
+            checksum: "abc123def456".into(),
+            hot_pruned: false,
+            sealed_at: chrono::Utc::now(),
+            legal_hold: false,
+        }
+    }
+
+    #[test]
+    fn deleting_an_archive_leaves_a_tombstone_carrying_its_checksum() {
+        // The manifest row is the only place the checksum lives. Removing it
+        // without a tombstone means an operator can say THAT something was
+        // deleted but never WHICH bytes — which is the whole of "prove what you
+        // removed" a year later.
+        let (s, p) = tmp_state();
+        s.put_cold_archive(&arc_at("2026-01-01", 1_000, 2_000))
+            .unwrap();
+        assert_eq!(s.list_cold_archives().unwrap().len(), 1);
+
+        let del = garmr_core::ColdDeletion {
+            id: "2026-01-01".into(),
+            checksum: "abc123def456".into(),
+            rows: 42,
+            bytes_out: 300,
+            start_us: 1_000,
+            end_us: 2_000,
+            deleted_at: chrono::Utc::now(),
+            reason: "retention expiry, cutoff 400 days".into(),
+            local_removed: true,
+            remote_removed: None,
+        };
+        assert!(s.delete_cold_archive_recorded(&del).unwrap());
+
+        // Gone from the manifest, present in the ledger, checksum intact.
+        assert!(s.list_cold_archives().unwrap().is_empty());
+        let ledger = s.list_cold_deletions().unwrap();
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0].checksum, "abc123def456");
+        assert_eq!(ledger[0].rows, 42);
+        assert!(ledger[0].is_complete());
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn a_deletion_that_left_a_remote_copy_is_not_complete() {
+        // The distinction that keeps a report honest: a local unlink means
+        // nothing when the object store holds the only copy.
+        let base = garmr_core::ColdDeletion {
+            id: "w".into(),
+            checksum: "c".into(),
+            rows: 1,
+            bytes_out: 1,
+            start_us: 0,
+            end_us: 1,
+            deleted_at: chrono::Utc::now(),
+            reason: "r".into(),
+            local_removed: false,
+            remote_removed: Some(false),
+        };
+        assert!(!base.is_complete(), "remote copy survived — not deleted");
+
+        // Local-only deployment: no remote ever existed.
+        let local_only = garmr_core::ColdDeletion {
+            local_removed: true,
+            remote_removed: None,
+            ..base.clone()
+        };
+        assert!(local_only.is_complete());
+
+        // S3 deployment: the local copy was already dropped at seal time, so the
+        // remote delete is the one that counts.
+        let s3 = garmr_core::ColdDeletion {
+            local_removed: false,
+            remote_removed: Some(true),
+            ..base.clone()
+        };
+        assert!(
+            s3.is_complete(),
+            "the archive lived only in the bucket, and the bucket copy went"
+        );
+    }
+
+    #[test]
+    fn the_tombstone_survives_re_sealing_the_same_window() {
+        // Window ids are reused: sealing 2026-01-01 again after an expiry must
+        // not erase the record that the FIRST archive was deleted.
+        let (s, p) = tmp_state();
+        s.put_cold_archive(&arc_at("2026-01-01", 1_000, 2_000))
+            .unwrap();
+        let del = garmr_core::ColdDeletion {
+            id: "2026-01-01".into(),
+            checksum: "first".into(),
+            rows: 42,
+            bytes_out: 300,
+            start_us: 1_000,
+            end_us: 2_000,
+            deleted_at: chrono::Utc::now(),
+            reason: "expiry".into(),
+            local_removed: true,
+            remote_removed: None,
+        };
+        s.delete_cold_archive_recorded(&del).unwrap();
+        s.put_cold_archive(&arc_at("2026-01-01", 1_000, 2_000))
+            .unwrap();
+
+        assert_eq!(s.list_cold_archives().unwrap().len(), 1, "re-sealed");
+        let ledger = s.list_cold_deletions().unwrap();
+        assert_eq!(ledger.len(), 1, "the earlier deletion is still recorded");
+        assert_eq!(ledger[0].checksum, "first");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn deleting_a_case_cascades_its_records_and_spares_prefix_siblings() {
+        // The append-only record tables were never cleaned: pruning a case kept
+        // its predictions/decisions as unreachable bytes forever. The cascade
+        // must remove exactly the case's own range — c10 shares c1's prefix and
+        // must survive c1's deletion.
+        let (st, _p) = tmp_state();
+        st.append_prediction(&mk_pred("c1", "p1", 100)).unwrap();
+        st.append_prediction(&mk_pred("c1", "p2", 200)).unwrap();
+        st.append_prediction(&mk_pred("c10", "x0", 500)).unwrap();
+
+        st.delete_cases(&["c1".to_string()]).unwrap();
+
+        let c1: Vec<garmr_core::AgentPrediction> = st
+            .scan_case_limited(PREDICTIONS, "c1", 100, "prediction")
+            .unwrap();
+        assert!(c1.is_empty(), "c1's records cascade away");
+        let c10: Vec<garmr_core::AgentPrediction> = st
+            .scan_case_limited(PREDICTIONS, "c10", 100, "prediction")
+            .unwrap();
+        assert_eq!(c10.len(), 1, "the prefix sibling is untouched");
+    }
+
+    fn mk_case(id: &str) -> Case {
+        let mut c = Case::open(det("garmr-test-rule", "src"));
+        c.id = id.to_string();
+        c
+    }
+
+    #[test]
+    fn a_stale_agent_snapshot_cannot_clobber_analyst_state() {
+        // THE 2.9 M2 design risk. The agent's triage loop holds a case clone
+        // for minutes; an analyst assigns/tags/comments meanwhile. The loop's
+        // final put_case must MERGE, not overwrite — or a two-analyst queue is
+        // unusable because ownership evaporates whenever triage finishes.
+        let (st, _p) = tmp_state();
+        let case = mk_case("c-race");
+        st.put_case(&case).unwrap();
+
+        // The agent takes its snapshot NOW (pre-assignment).
+        let stale_snapshot = case.clone();
+
+        // Analyst work lands while the agent is looping.
+        st.mutate_case("c-race", |c| {
+            c.assignee = Some("alice".into());
+            c.tags.push("escalation".into());
+            c.transcript.push(garmr_core::TranscriptEntry {
+                at: chrono::Utc::now(),
+                actor: "analyst:alice".into(),
+                detail: "looking into this".into(),
+                entry_id: "note-1".into(),
+            });
+            true
+        })
+        .unwrap()
+        .expect("case exists");
+
+        // The agent finishes and writes its STALE snapshot (with its own new
+        // agent transcript entries, as the real loop does).
+        let mut finished = stale_snapshot;
+        finished.record("assistant", "triage verdict text", chrono::Utc::now());
+        st.put_case(&finished).unwrap();
+
+        let after = st
+            .list_cases()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == "c-race")
+            .unwrap();
+        assert_eq!(
+            after.assignee.as_deref(),
+            Some("alice"),
+            "assignment survives"
+        );
+        assert!(
+            after.tags.contains(&"escalation".to_string()),
+            "tag survives"
+        );
+        assert!(
+            after.transcript.iter().any(|e| e.entry_id == "note-1"),
+            "the analyst note survives the merge"
+        );
+        assert!(
+            after.transcript.iter().any(|e| e.actor == "assistant"),
+            "the agent's own entries land too — merge, not rejection"
+        );
+
+        // And an explicit unassign through the mutator DOES clear — put_case
+        // never unassigns, the mutator is the one place that can.
+        st.mutate_case("c-race", |c| {
+            c.assignee = None;
+            true
+        })
+        .unwrap();
+        let cleared = st
+            .list_cases()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == "c-race")
+            .unwrap();
+        assert_eq!(cleared.assignee, None, "explicit unassign works");
+    }
+
+    #[test]
+    fn state_changed_at_moves_only_when_the_state_actually_changes() {
+        // The SLA anchor: stamped centrally in put_case. A rewrite in the SAME
+        // state must not reset the clock (that would forgive every breach), and
+        // a real transition must.
+        let (st, _p) = tmp_state();
+        let mut case = mk_case("c-sla");
+        st.put_case(&case).unwrap();
+        let t0 = st
+            .list_cases()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == "c-sla")
+            .unwrap()
+            .state_changed_at
+            .expect("anchored on first write");
+
+        // Same state, new write: anchor unchanged.
+        case.event_count += 1;
+        st.put_case(&case).unwrap();
+        let t1 = st
+            .list_cases()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == "c-sla")
+            .unwrap()
+            .state_changed_at
+            .unwrap();
+        assert_eq!(t0, t1, "a same-state rewrite must not reset the SLA clock");
+
+        // Real transition: anchor moves.
+        case.state = garmr_core::CaseState::Investigating;
+        st.put_case(&case).unwrap();
+        let t2 = st
+            .list_cases()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == "c-sla")
+            .unwrap()
+            .state_changed_at
+            .unwrap();
+        assert!(t2 > t1, "a state change moves the anchor");
+    }
+
+    #[test]
+    fn linking_is_bidirectional_and_atomic() {
+        let (st, _p) = tmp_state();
+        st.put_case(&mk_case("c-a")).unwrap();
+        st.put_case(&mk_case("c-b")).unwrap();
+        assert!(st.link_cases("c-a", "c-b").unwrap());
+        let get = |id: &str| {
+            st.list_cases()
+                .unwrap()
+                .into_iter()
+                .find(|c| c.id == id)
+                .unwrap()
+        };
+        assert!(get("c-a").linked_cases.contains(&"c-b".to_string()));
+        assert!(get("c-b").linked_cases.contains(&"c-a".to_string()));
+        // Idempotent; self-links and dangling links refused.
+        assert!(!st.link_cases("c-a", "c-b").unwrap());
+        assert!(!st.link_cases("c-a", "c-a").unwrap());
+        assert!(!st.link_cases("c-a", "c-missing").unwrap());
+    }
+
+    #[test]
+    fn one_tick_marks_a_breach_exactly_once_and_the_next_adds_nothing() {
+        // The M3 acceptance: one tick = one breach entry + marker; a second
+        // tick is silence. Once-only rides the tags, which survive merges.
+        let (st, _p) = tmp_state();
+        let mut c = mk_case("c-sla-tick");
+        c.state = garmr_core::CaseState::NeedsHuman;
+        c.opened_at = chrono::Utc::now() - chrono::Duration::minutes(500);
+        c.state_changed_at = Some(chrono::Utc::now() - chrono::Duration::minutes(500));
+        st.put_case(&c).unwrap();
+
+        let cfg = garmr_core::SlaConfig {
+            ack_minutes: 60,
+            resolve_minutes: 240,
+        };
+        let now = chrono::Utc::now();
+
+        let first = st.apply_sla_breaches(&cfg, now).unwrap();
+        assert_eq!(first.len(), 1, "one newly-breached case");
+        assert!(first[0].1.ack_breached && first[0].1.resolve_breached);
+
+        let after = st
+            .list_cases()
+            .unwrap()
+            .into_iter()
+            .find(|x| x.id == "c-sla-tick")
+            .unwrap();
+        assert!(after.tags.contains(&"sla:ack".to_string()));
+        assert!(after.tags.contains(&"sla:resolve".to_string()));
+        assert_eq!(
+            after.transcript.iter().filter(|e| e.actor == "sla").count(),
+            2,
+            "one entry per clock"
+        );
+
+        // Tick two: nothing new, nothing added.
+        let second = st.apply_sla_breaches(&cfg, now).unwrap();
+        assert!(second.is_empty(), "the second tick is silence");
+        let unchanged = st
+            .list_cases()
+            .unwrap()
+            .into_iter()
+            .find(|x| x.id == "c-sla-tick")
+            .unwrap();
+        assert_eq!(
+            unchanged
+                .transcript
+                .iter()
+                .filter(|e| e.actor == "sla")
+                .count(),
+            2
+        );
+
+        // And the all-zero config never marks anything, however old the queue.
+        let silent = st
+            .apply_sla_breaches(&garmr_core::SlaConfig::default(), now)
+            .unwrap();
+        assert!(silent.is_empty());
     }
 }

@@ -116,6 +116,32 @@ fn deny_analyst(user: &str) -> (StatusCode, String) {
 /// `Bearer <token>` (API clients / curl) and `Basic <base64(user:pass)>` (a
 /// browser's native login prompt — the username is ignored, the password is
 /// the token). Returns "" for anything else.
+/// Who is calling, when that is only needed for attribution rather than for an
+/// authorization decision — the caller has already passed `require_auth`.
+///
+/// Returns `None` for the open loopback/no-token stance, where there is no
+/// identity to attribute. Never used to GRANT anything: the role checks above
+/// are the gates, and this must not become a second, weaker one.
+pub(super) fn attributed_principal(
+    st: &ApiState,
+    headers: &axum::http::HeaderMap,
+) -> Option<garmr_core::Principal> {
+    let presented = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(presented_secret)
+        .unwrap_or_default();
+    if let Some(who) = st.auth.resolve(&presented) {
+        return Some(who);
+    }
+    if let (Some(w), Some(cookie)) = (st.webauthn.as_ref(), session_cookie(headers)) {
+        if let Some((user, role)) = w.verify_cookie(&cookie) {
+            return Some(garmr_core::Principal { user, role });
+        }
+    }
+    super::credentials::system_admin_principal(st, headers)
+}
+
 fn presented_secret(header: &str) -> String {
     if let Some(t) = header.strip_prefix("Bearer ") {
         return t.to_string();
@@ -147,9 +173,16 @@ fn is_public(path: &str) -> bool {
     matches!(
         path,
         "/health"
+            // Readiness: a load balancer or kubelet probe cannot carry a
+            // credential. /metrics is deliberately NOT here — it leaks posture.
+            | "/ready"
             | "/login"
             | "/auth/status"
             | "/auth/logout"
+            // The SSO entry points, like the passkey ones: reachable before a
+            // session exists, by definition.
+            | "/auth/oidc/start"
+            | "/auth/oidc/callback"
             | "/auth/passkey/login/start"
             | "/auth/passkey/login/finish"
     )
@@ -222,6 +255,49 @@ fn scoped_credential_allows_path(scopes: &[String], path: &str) -> bool {
 /// is authenticated by the API/admin bearer token OR (when passkey is enabled) a
 /// valid session cookie. On a miss: browsers are redirected to `/login` when
 /// passkey is on, otherwise get a `Basic` challenge (unchanged legacy behaviour).
+/// The lanes a source-restricted credential may reach.
+///
+/// This is an ALLOW-LIST on purpose. A deny-list would have to be extended in
+/// lockstep with every endpoint ever added, and the failure mode of forgetting
+/// one is a silent cross-source data leak — the exact thing scoping exists to
+/// prevent. With an allow-list, forgetting an endpoint means a scoped credential
+/// gets a 403 it did not expect: visible, reported, and fixed in an hour.
+///
+/// A lane belongs here only once it ACTUALLY enforces the scope — not once it is
+/// planned to. The SQL lanes below pipe through `constrain_sources`; the
+/// full-text, hybrid, semantic and tail lanes do not yet (that is M3/M4), so
+/// they are absent and a restricted credential gets a 403 there rather than
+/// unfiltered rows. `/api/entity`, `/api/graph` and `/api/ask` are absent for
+/// the same reason: they answer from the full corpus.
+///
+/// The two non-data entries carry no event rows at all — `/api/capabilities`
+/// reports what this build can do and `/api/principals` lists names and roles —
+/// so scoping them would confine nothing while breaking a console that cannot
+/// render without them.
+pub(super) const ENFORCED_LANES: &[&str] = &[
+    // Data lanes that apply the source constraint.
+    "/api/query",
+    "/api/query/cold",
+    "/api/cold-query",
+    "/api/search",
+    "/api/hsearch",
+    "/api/reproduce",
+    "/api/semantic",
+    // No event rows at all: what this build can do, and who can act. Scoping
+    // them would confine nothing while breaking a console that cannot render
+    // without them.
+    "/api/capabilities",
+    "/api/principals",
+    "/health",
+    "/ready",
+];
+
+fn scope_enforced_lane(path: &str) -> bool {
+    // Exact matches, never prefixes: a prefix match on "/api/query" would also
+    // admit a future "/api/query-anything" that nobody checked.
+    ENFORCED_LANES.contains(&path)
+}
+
 pub(super) async fn require_auth(
     auth: std::sync::Arc<garmr_core::AuthRegistry>,
     creds: super::credentials::CredentialStore,
@@ -247,6 +323,8 @@ pub(super) async fn require_auth(
     // Bearer/basic env token → named principal.
     if let Some(principal) = auth.resolve(&presented) {
         req.extensions_mut().insert(principal);
+        req.extensions_mut()
+            .insert(garmr_core::DataScope::Unrestricted);
         return next.run(req).await;
     }
     // Scoped machine credential (garmr_pat_…) → principal. The credential's ROLE
@@ -255,9 +333,25 @@ pub(super) async fn require_auth(
     // secrets:write). The `/api/*` read surface additionally requires an explicit
     // `api:read` (or `system:admin`) scope (PR #4) — non-/api/ paths fall through
     // to the existing handler checks unchanged.
-    if let Some((principal, scopes)) = creds.resolve(&presented, None) {
+    if let Some((principal, scopes, data_scope)) = creds.resolve(&presented, None) {
         if scoped_credential_allows_path(&scopes, req.uri().path()) {
+            // Deny-by-default for a source-restricted credential: it may reach
+            // only the lanes that have been taught to enforce a data scope.
+            // Every other handler would answer from the full corpus, so an
+            // allow-list is the only safe shape — a deny-list would have to be
+            // updated in lockstep with every new endpoint, and the failure mode
+            // of forgetting is a silent leak.
+            if !data_scope.is_unrestricted() && !scope_enforced_lane(req.uri().path()) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    "this credential is restricted to specific sources, and this endpoint \
+                     cannot yet enforce that restriction"
+                        .to_string(),
+                )
+                    .into_response();
+            }
             req.extensions_mut().insert(principal);
+            req.extensions_mut().insert(data_scope);
             return next.run(req).await;
         }
         // Resolved, but its scopes do not cover the /api/* read surface — a
@@ -274,8 +368,27 @@ pub(super) async fn require_auth(
     if let Some(w) = &webauthn {
         if let Some(cookie) = session_cookie(req.headers()) {
             if let Some((user, role)) = w.verify_cookie(&cookie) {
+                // Resolved from the STORE on every request, never carried in the
+                // cookie, so narrowing or revoking an identity's sources takes
+                // effect on the next request rather than whenever the holder's
+                // session happens to expire. A scope baked into the cookie would
+                // leave a window — up to the full session TTL — in which an
+                // identity an admin has just confined still reads everything,
+                // which is precisely the window that matters after a suspected
+                // compromise.
+                let scope = w.data_scope_for(&user);
+                if !scope.is_unrestricted() && !scope_enforced_lane(req.uri().path()) {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        "this identity is restricted to specific sources, and this endpoint \
+                         cannot yet enforce that restriction"
+                            .to_string(),
+                    )
+                        .into_response();
+                }
                 req.extensions_mut()
                     .insert(garmr_core::Principal { user, role });
+                req.extensions_mut().insert(scope);
                 return next.run(req).await;
             }
         }
@@ -308,7 +421,10 @@ pub(super) async fn require_auth(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_public, is_public_asset, scoped_credential_allows_path};
+    use super::{
+        is_public, is_public_asset, scope_enforced_lane, scoped_credential_allows_path,
+        ENFORCED_LANES,
+    };
     use axum::http::Method;
 
     fn scopes(list: &[&str]) -> Vec<String> {
@@ -423,5 +539,96 @@ mod tests {
         // method never qualifies (defence in depth).
         assert!(!is_public_asset(&Method::GET, "/data.json"));
         assert!(!is_public_asset(&Method::POST, "/garmr-webui-abc123.js"));
+    }
+
+    #[test]
+    fn a_restricted_credential_reaches_only_scope_enforcing_lanes() {
+        // These lanes apply the rewrite, so a restricted credential is safe on
+        // them.
+        for ok in [
+            "/api/query",
+            "/api/query/cold",
+            "/api/cold-query",
+            "/api/search",
+            "/api/hsearch",
+            "/api/reproduce",
+            "/api/semantic",
+        ] {
+            assert!(scope_enforced_lane(ok), "{ok} should be enforceable");
+        }
+        // Still NOT filtering by source. Admitting a lane before it enforces is
+        // admitting a leak, which is the precise thing the allow-list shape
+        // exists to prevent. `/api/tail` streams straight from the live pipeline
+        // with no source predicate.
+        assert!(
+            !scope_enforced_lane("/api/tail"),
+            "/api/tail streams from the live pipeline with no source predicate, so it \
+             does not filter by source yet and must not be reachable"
+        );
+        // These answer from the FULL corpus today. Admitting them would be
+        // admitting a cross-source leak, so they must stay out until they
+        // enforce the scope themselves.
+        for leaky in [
+            "/api/entity",
+            "/api/graph",
+            "/api/ask",
+            "/api/cases",
+            "/api/risk",
+            "/api/findings",
+        ] {
+            assert!(
+                !scope_enforced_lane(leaky),
+                "{leaky} does not enforce a data scope and must not be reachable"
+            );
+        }
+    }
+
+    #[test]
+    fn the_lane_list_matches_exactly_and_never_by_prefix() {
+        // A prefix match would admit any future sibling path nobody reviewed.
+        assert!(scope_enforced_lane("/api/query"));
+        assert!(!scope_enforced_lane("/api/query-anything"));
+        assert!(!scope_enforced_lane("/api/queryx"));
+        assert!(!scope_enforced_lane("/api/search/all"));
+    }
+
+    /// The documented lane list must BE the enforced one.
+    ///
+    /// A doc that drifts from the code is worse than no doc here: an operator
+    /// reads this page to decide whether a confined credential is safe to hand
+    /// out, and a stale list would tell them a lane is protected when it is not.
+    #[test]
+    fn the_documented_lanes_match_the_enforced_lanes() {
+        let doc = include_str!("../../../../docs/enterprise/data-authorization.md");
+        let block = doc
+            .split("<!-- ENFORCED_LANES:start -->")
+            .nth(1)
+            .and_then(|s| s.split("<!-- ENFORCED_LANES:end -->").next())
+            .expect("the doc must carry a delimited lane list");
+        let documented: Vec<&str> = block
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("- `"))
+            .filter_map(|l| l.strip_suffix('`'))
+            .collect();
+        assert_eq!(
+            documented,
+            ENFORCED_LANES.to_vec(),
+            "docs/enterprise/data-authorization.md is out of sync with ENFORCED_LANES"
+        );
+    }
+
+    #[test]
+    fn every_enforced_lane_is_an_absolute_exact_path() {
+        // A relative or wildcard entry would silently never match, leaving a
+        // lane the operator believes is reachable permanently 403 — or, if the
+        // matcher were ever loosened to prefixes, admit siblings nobody vetted.
+        for lane in ENFORCED_LANES {
+            assert!(lane.starts_with('/'), "{lane} must be an absolute path");
+            assert!(!lane.contains('*'), "{lane} must not be a pattern");
+            assert!(
+                !lane.ends_with('/'),
+                "{lane} must not have a trailing slash"
+            );
+        }
     }
 }

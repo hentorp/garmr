@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Crontab modified from the command line
+id: garmr-ep-crontab
+status: stable
+description: >
+    crontab -e or piping into crontab: scheduled-task persistence. Config
+    management writes cron.d files instead, so interactive edits stand out.
+author: garmr
+logsource:
+    product: linux
+    service: kunai
+detection:
+    selection:
+        message|contains:
+            - 'crontab -e'
+            - '| crontab'
+            - 'crontab -'
+    condition: selection
+falsepositives:
+    - Admins hand-editing cron on pet servers.
+level: medium
+tags:
+    - attack.persistence
+    - attack.t1053.003

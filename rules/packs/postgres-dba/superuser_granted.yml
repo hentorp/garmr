@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Role created or altered with SUPERUSER
+id: garmr-pg-superuser
+status: stable
+description: >
+    CREATE/ALTER ROLE ... SUPERUSER - database-level root. Every occurrence is
+    review-worthy; on most estates it happens once a year.
+author: garmr
+logsource:
+    product: linux
+    service: postgres
+detection:
+    audit:
+        service: postgres
+        message|contains: 'AUDIT:'
+    stmt:
+        message|contains: 'SUPERUSER'
+    condition: audit and stmt
+falsepositives:
+    - Initial provisioning; major-version migrations.
+level: critical
+tags:
+    - attack.privilege_escalation
+    - attack.t1078.001

@@ -541,3 +541,141 @@ fn loading_is_announced_and_distinct_from_empty() {
     // Loading and empty must not share a class, or a view cannot tell them apart.
     assert!(doc.query_selector(".state.empty").unwrap().is_none());
 }
+
+// ---- the re-render the Audit Explorer's search submission depends on -------
+
+/// Submitting a search publishes it to the URL, and publishing re-renders the
+/// view out of that URL — the only way a search survives the next query write
+/// (a time-range chip, a mode tab). That is only acceptable if the re-render
+/// leaves the analyst exactly where they were: focus still in the search box,
+/// with the text they typed.
+///
+/// This is the assumption behind publishing *quietly* (`Nav::set_query_quiet`)
+/// rather than navigating: the re-render itself patches the existing DOM and so
+/// keeps focus, and it is `Nav::push`'s deliberate move of focus to `<main>` —
+/// right when arriving on a new screen, wrong when staying on this one — that
+/// would take it away on every Enter press.
+#[wasm_bindgen_test]
+async fn a_re_render_keeps_focus_and_text_in_the_search_box() {
+    use leptos::prelude::*;
+
+    let doc = scratch(r#"<div id="mount"></div>"#);
+    let mount = doc
+        .get_element_by_id("mount")
+        .unwrap()
+        .dyn_into::<web_sys::HtmlElement>()
+        .unwrap();
+
+    // The console's shape: the shell renders the screen from one republished
+    // signal, and the screen builds its own state from what it is given — so a
+    // publish rebuilds the whole view, search box included.
+    let published = RwSignal::new(String::new());
+    let handle = leptos::mount::mount_to(mount, move || {
+        view! { <div class="page">{move || search_screen(published.get())}</div> }
+    });
+
+    let before = doc
+        .get_element_by_id("search")
+        .expect("the search box renders");
+    let typed = before.dyn_ref::<web_sys::HtmlInputElement>().unwrap();
+    typed.set_value("pvefw");
+    typed.focus().unwrap();
+    assert_eq!(
+        doc.active_element().map(|e| e.id()).as_deref(),
+        Some("search"),
+        "the fixture must start with focus in the box"
+    );
+
+    // Submit: publish, and nothing else.
+    published.set("pvefw".into());
+    gloo_timers::future::TimeoutFuture::new(0).await;
+
+    let after = doc
+        .get_element_by_id("search")
+        .expect("the search box survives the re-render");
+    assert!(
+        js_sys::Object::is(before.as_ref(), after.as_ref()),
+        "the re-render replaced the input element instead of patching it"
+    );
+    assert_eq!(
+        doc.active_element().map(|e| e.id()).as_deref(),
+        Some("search"),
+        "the re-render took focus out of the search box"
+    );
+    assert_eq!(
+        after
+            .dyn_ref::<web_sys::HtmlInputElement>()
+            .unwrap()
+            .value(),
+        "pvefw",
+        "the re-render cleared what was typed"
+    );
+    drop(handle);
+}
+
+/// One screen, built from the query it was handed — the shape of a view that
+/// keeps its state in the URL rather than in a signal that outlives nothing.
+fn search_screen(query: String) -> leptos::prelude::AnyView {
+    use leptos::prelude::*;
+    let text = RwSignal::new(query);
+    view! {
+        <input id="search" type="search"
+            prop:value=move || text.get()
+            on:input=move |ev| text.set(event_target_value(&ev))/>
+    }
+    .into_any()
+}
+
+/// One submission must produce one render — and therefore one request.
+///
+/// `Nav::set_query_quiet` writes two signals (`query`, then `view`), and the
+/// shell's render closure reads both: it renders `nav.view`, and views call
+/// `nav.param(…)` eagerly for their tab state, which subscribes it to
+/// `nav.query` as well. If those two writes re-rendered the screen twice, every
+/// Enter press would rebuild the view twice and fire its search twice over —
+/// twice the load for a full-text query, twice the spend for an "Ask".
+#[wasm_bindgen_test]
+async fn one_publish_renders_the_screen_once() {
+    use leptos::prelude::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    let doc = scratch(r#"<div id="mount2"></div>"#);
+    let mount = doc
+        .get_element_by_id("mount2")
+        .unwrap()
+        .dyn_into::<web_sys::HtmlElement>()
+        .unwrap();
+
+    let renders = Arc::new(AtomicU32::new(0));
+    let counted = renders.clone();
+    let query = RwSignal::new(String::new());
+    let view_gen = RwSignal::new(0u32);
+    let handle = leptos::mount::mount_to(mount, move || {
+        view! {
+            <div>{move || {
+                query.track();
+                view_gen.track();
+                counted.fetch_add(1, Ordering::Relaxed);
+                view! { <span id="screen"></span> }.into_any()
+            }}</div>
+        }
+    });
+    gloo_timers::future::TimeoutFuture::new(0).await;
+    let before = renders.load(Ordering::Relaxed);
+    assert_eq!(before, 1, "the fixture should have rendered once so far");
+
+    // Exactly what a publish does: the new query, then the same view republished.
+    query.set("mode=text&q=pvefw".into());
+    view_gen.update(|g| *g += 1);
+    gloo_timers::future::TimeoutFuture::new(0).await;
+
+    let after = renders.load(Ordering::Relaxed);
+    assert_eq!(
+        after,
+        before + 1,
+        "a publish re-rendered the screen {} times — each one re-issues the search",
+        after - before
+    );
+    drop(handle);
+}

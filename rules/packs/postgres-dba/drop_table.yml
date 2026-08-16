@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: Table or database dropped
+id: garmr-pg-drop
+status: stable
+description: >
+    DROP TABLE / DROP DATABASE via pgaudit - destructive DDL on production is
+    change-managed; anything else is an incident.
+author: garmr
+logsource:
+    product: linux
+    service: postgres
+detection:
+    audit:
+        service: postgres
+        message|contains: 'AUDIT:'
+    stmt:
+        message|contains:
+            - 'DROP TABLE'
+            - 'DROP DATABASE'
+    condition: audit and stmt
+falsepositives:
+    - Migrations that drop scratch tables.
+level: high
+tags:
+    - attack.impact
+    - attack.t1485

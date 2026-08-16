@@ -77,6 +77,9 @@ pub struct RetentionManager {
     retention_days: i64,
     /// zstd level for the parquet payload (clamped to parquet's 1..=22).
     parquet_level: i32,
+    /// Sources excluded from sealing (`[[retention.class]]`): their rows never
+    /// enter an archive, so class pruning of the hot copy is the end of them.
+    excluded_sources: Vec<String>,
     /// Optional S3 cold tier (from GARMR_S3_* env). `None` = local-only cold.
     s3: Option<crate::s3::S3Cold>,
 }
@@ -93,6 +96,12 @@ impl RetentionManager {
         Ok(Self {
             store,
             cold_dir: cfg.retention.cold_dir.clone(),
+            excluded_sources: cfg
+                .retention
+                .class
+                .iter()
+                .map(|c| c.source.clone())
+                .collect(),
             archiver,
             window_us,
             retention_days: cfg.store.retention_days as i64,
@@ -196,9 +205,25 @@ impl RetentionManager {
         // streaming seal and re-OOM on a multi-GB window (the very bug this
         // fixes). The archive doesn't need sorted rows: ColdQuery applies its own
         // ORDER BY on read. Keep it unordered so execute_stream truly streams.
+        // Class-excluded sources are filtered at the SEAL, not merely pruned
+        // later: an archive is immutable and outlives every policy change, so a
+        // class row sealed by mistake would sit in cold storage for the archive's
+        // whole life — the exact opposite of what the class asked for. Values are
+        // single-quoted with `'` doubled; they come from configuration, but an
+        // unescaped quote would still let a source name reshape the predicate.
+        let excl = if self.excluded_sources.is_empty() {
+            String::new()
+        } else {
+            let list: Vec<String> = self
+                .excluded_sources
+                .iter()
+                .map(|s| format!("'{}'", s.replace('\'', "''")))
+                .collect();
+            format!(" AND source NOT IN ({})", list.join(", "))
+        };
         let sql = format!(
             "SELECT event_ts, host, service, source, environment, severity, log_type, message, \
-             fields FROM events WHERE event_ts >= {lo} AND event_ts < {hi}",
+             fields FROM events WHERE event_ts >= {lo} AND event_ts < {hi}{excl}",
             lo = ts_literal(start_us),
             hi = ts_literal(end_us),
         );
@@ -292,6 +317,7 @@ impl RetentionManager {
             checksum: outcome.checksum,
             hot_pruned: false,
             sealed_at: now,
+            legal_hold: false,
         };
         let bytes_out = arc.bytes_out;
         self.store.state.put_cold_archive(&arc)?;

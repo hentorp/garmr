@@ -1,0 +1,20 @@
+{
+  "class_uid": 3002,
+  "class_name": "Authentication",
+  "category_name": "Identity & Access Management",
+  "activity_name": "Logon",
+  "time": "2026-08-14T06:15:02Z",
+  "severity": "High",
+  "status": "Failure",
+  "message": "user.authentication.auth_via_mfa FAILURE for henrik@vetra.se — DENY, factor push rejected",
+  "metadata": {
+    "product": { "name": "Okta", "vendor_name": "Okta" },
+    "version": "1.3.0"
+  },
+  "actor": { "user": { "name": "henrik@vetra.se", "uid": "00u1a2b3c4d5" } },
+  "src_endpoint": { "ip": "198.51.100.7", "hostname": "unknown" },
+  "unmapped": {
+    "eventType": "user.authentication.auth_via_mfa",
+    "outcome_reason": "FACTOR_RESULT_DENY"
+  }
+}

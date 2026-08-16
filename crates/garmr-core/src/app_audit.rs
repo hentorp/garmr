@@ -130,6 +130,20 @@ pub mod keys {
 /// correlation rules key on this, so the canonical model uses it too.
 pub const AUDIT_LOG_TYPE: &str = "audit";
 
+/// Case/separator-normalised match against a set of already-normalised
+/// candidates, WITHOUT allocating. The enum parsers below used to
+/// `to_ascii_lowercase()`/`to_ascii_uppercase()` (and `replace(...)`) the input
+/// just to compare it — a heap allocation per call, on a per-event hot path. This
+/// compares byte-by-byte through a mapping closure instead, so a repeated value
+/// costs nothing. `map` must reproduce the old transform exactly (each candidate
+/// is written in its post-transform form), and the byte-length gate matches the
+/// old `String` equality (both transforms are 1:1 on bytes).
+fn norm_match(input: &str, map: impl Fn(u8) -> u8, candidates: &[&str]) -> bool {
+    candidates
+        .iter()
+        .any(|c| c.len() == input.len() && input.bytes().zip(c.bytes()).all(|(a, b)| map(a) == b))
+}
+
 // --------------------------------------------------------------------------
 // enums
 // --------------------------------------------------------------------------
@@ -150,18 +164,35 @@ impl ActorType {
     /// Parse the `actor_type` field value (case-insensitive, tolerant of common
     /// spellings). Unrecognized → `Unknown`.
     pub fn parse(s: &str) -> ActorType {
-        match s
-            .trim()
-            .to_ascii_lowercase()
-            .replace(['-', ' '], "_")
-            .as_str()
-        {
-            "human" | "person" | "interactive" | "user" => ActorType::Human,
-            "service_account" | "service" | "svc" | "machine" | "robot" | "bot" => {
-                ActorType::ServiceAccount
+        // Transform reproduced without allocating: lowercase, then `-`/` ` → `_`.
+        let map = |a: u8| {
+            let a = a.to_ascii_lowercase();
+            if a == b'-' || a == b' ' {
+                b'_'
+            } else {
+                a
             }
-            "system" | "internal" | "daemon" => ActorType::System,
-            _ => ActorType::Unknown,
+        };
+        let t = s.trim();
+        if norm_match(t, map, &["human", "person", "interactive", "user"]) {
+            ActorType::Human
+        } else if norm_match(
+            t,
+            map,
+            &[
+                "service_account",
+                "service",
+                "svc",
+                "machine",
+                "robot",
+                "bot",
+            ],
+        ) {
+            ActorType::ServiceAccount
+        } else if norm_match(t, map, &["system", "internal", "daemon"]) {
+            ActorType::System
+        } else {
+            ActorType::Unknown
         }
     }
 
@@ -190,12 +221,27 @@ pub enum Outcome {
 
 impl Outcome {
     pub fn parse(s: &str) -> Outcome {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "success" | "ok" | "allowed" | "allow" | "granted" | "0" | "00000" => Outcome::Success,
-            "failure" | "fail" | "failed" => Outcome::Failure,
-            "denied" | "deny" | "permission_denied" | "forbidden" | "42501" => Outcome::Denied,
-            "error" | "err" => Outcome::Error,
-            _ => Outcome::Unknown,
+        // Transform reproduced without allocating: lowercase only.
+        let map = |a: u8| a.to_ascii_lowercase();
+        let t = s.trim();
+        if norm_match(
+            t,
+            map,
+            &["success", "ok", "allowed", "allow", "granted", "0", "00000"],
+        ) {
+            Outcome::Success
+        } else if norm_match(t, map, &["failure", "fail", "failed"]) {
+            Outcome::Failure
+        } else if norm_match(
+            t,
+            map,
+            &["denied", "deny", "permission_denied", "forbidden", "42501"],
+        ) {
+            Outcome::Denied
+        } else if norm_match(t, map, &["error", "err"]) {
+            Outcome::Error
+        } else {
+            Outcome::Unknown
         }
     }
 
@@ -241,26 +287,46 @@ pub enum QueryType {
 
 impl QueryType {
     pub fn parse(s: &str) -> QueryType {
-        match s
-            .trim()
-            .to_ascii_uppercase()
-            .replace(['-', '_'], " ")
-            .as_str()
-        {
-            "SELECT" | "READ" | "VIEW" => QueryType::Select,
-            "INSERT" | "WRITE" => QueryType::Insert,
-            "UPDATE" => QueryType::Update,
-            "DELETE" => QueryType::Delete,
-            "COPY" | "EXPORT" | "UNLOAD" => QueryType::Copy,
-            "CREATE" => QueryType::Create,
-            "ALTER" => QueryType::Alter,
-            "DROP" => QueryType::Drop,
-            "TRUNCATE" => QueryType::Truncate,
-            "GRANT" => QueryType::Grant,
-            "REVOKE" => QueryType::Revoke,
-            "SET ROLE" | "SETROLE" | "SET_ROLE" => QueryType::SetRole,
-            "CALL" | "EXECUTE" | "DO" => QueryType::Call,
-            _ => QueryType::Other,
+        // Transform reproduced without allocating: uppercase, then `-`/`_` → ` `.
+        // Candidates are written in their post-transform form (so `SET_ROLE` and
+        // `SET-ROLE` both normalise to `SET ROLE`).
+        let map = |a: u8| {
+            let a = a.to_ascii_uppercase();
+            if a == b'-' || a == b'_' {
+                b' '
+            } else {
+                a
+            }
+        };
+        let t = s.trim();
+        if norm_match(t, map, &["SELECT", "READ", "VIEW"]) {
+            QueryType::Select
+        } else if norm_match(t, map, &["INSERT", "WRITE"]) {
+            QueryType::Insert
+        } else if norm_match(t, map, &["UPDATE"]) {
+            QueryType::Update
+        } else if norm_match(t, map, &["DELETE"]) {
+            QueryType::Delete
+        } else if norm_match(t, map, &["COPY", "EXPORT", "UNLOAD"]) {
+            QueryType::Copy
+        } else if norm_match(t, map, &["CREATE"]) {
+            QueryType::Create
+        } else if norm_match(t, map, &["ALTER"]) {
+            QueryType::Alter
+        } else if norm_match(t, map, &["DROP"]) {
+            QueryType::Drop
+        } else if norm_match(t, map, &["TRUNCATE"]) {
+            QueryType::Truncate
+        } else if norm_match(t, map, &["GRANT"]) {
+            QueryType::Grant
+        } else if norm_match(t, map, &["REVOKE"]) {
+            QueryType::Revoke
+        } else if norm_match(t, map, &["SET ROLE", "SETROLE"]) {
+            QueryType::SetRole
+        } else if norm_match(t, map, &["CALL", "EXECUTE", "DO"]) {
+            QueryType::Call
+        } else {
+            QueryType::Other
         }
     }
 

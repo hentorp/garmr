@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 Vetra Automation AB
+# SPDX-License-Identifier: AGPL-3.0-only
+title: SSH login as root accepted
+id: garmr-auth-ssh-root-login
+status: stable
+description: >
+    A successful SSH login as root. Direct root logins bypass per-user
+    accountability and are a standard hardening violation; on most estates
+    every one deserves a look.
+author: garmr
+logsource:
+    product: linux
+    service: sshd
+detection:
+    accepted:
+        service: sshd
+        message|contains: 'Accepted'
+    as_root:
+        message|contains: ' for root '
+    condition: accepted and as_root
+falsepositives:
+    - Estates that deliberately allow root logins from management hosts.
+level: high
+tags:
+    - attack.initial_access
+    - attack.t1078

@@ -458,6 +458,7 @@ mod tests {
         use garmr_core::{AgentConfig, DetectConfig, IngestConfig, LlmBackend, StoreConfig};
         Config {
             audit: Default::default(),
+            backup: Default::default(),
             store: StoreConfig {
                 warehouse_dir: base.join("wh"),
                 state_db: base.join("state.redb"),
@@ -476,6 +477,7 @@ mod tests {
                 ui_dir: None,
                 dedup_recent: 0,
                 flight_bind: None,
+                collectors_file: None,
             },
             detect: DetectConfig {
                 rules_dir: base.join("rules"),
@@ -499,6 +501,7 @@ mod tests {
                 freq_min_count: 20,
                 prediction_discount: 0.5,
             },
+            cases: Default::default(),
             agent: AgentConfig {
                 backend: LlmBackend::Anthropic,
                 model: "claude-opus-4-8".into(),
@@ -511,6 +514,7 @@ mod tests {
                 geoip_dir: None,
                 ioc_feeds: vec![],
                 mcp_servers: vec![],
+                pricing: Default::default(),
             },
             retention: Default::default(),
             route: Default::default(),
@@ -565,6 +569,163 @@ mod tests {
         assert_eq!(a.semantic_status, "not_requested");
         assert!(a.cost_usd > 0.0, "both calls charged the ledger");
         assert_eq!(llm.calls.load(Ordering::SeqCst), 2);
+        drop(store);
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// End-to-end through the real lakehouse + Tantivy index: a planned window
+    /// bounds the answer's rows, and the in-window row is found by the TEXT leg
+    /// — not gated away by treating the window as a structured filter.
+    #[tokio::test]
+    async fn a_planned_window_bounds_the_rows_without_gating_the_text_leg() {
+        let base = tmp("window");
+        std::fs::create_dir_all(&base).unwrap();
+        let store = Store::open_writable(&test_cfg(&base)).await.unwrap();
+        let at = |hours_ago: i64, message: &str| Event {
+            ts: chrono::Utc::now() - chrono::Duration::hours(hours_ago),
+            host: "pve".into(),
+            service: "sshd".into(),
+            source: "journald".into(),
+            environment: "test".into(),
+            severity: "warning".into(),
+            log_type: "auth".into(),
+            message: message.into(),
+            fields: BTreeMap::new(),
+        };
+        // Same text inside and outside the planned 24h window. The in-window one
+        // is the OLDER of the two inside, so a gate over the newest rows would
+        // be visible as its absence if `candidate_cap` ever shrank to 1.
+        let events = vec![
+            at(2, "Failed password for root inside the window"),
+            at(48, "Failed password for root outside the window"),
+        ];
+        store.events.append(events.clone()).await.unwrap();
+        store.search.index(events).await.unwrap();
+
+        let cfg = test_cfg(&base);
+        let llm = MockLlm::new(&[
+            r#"{"filter":{"time":{"last_hours":24}},"text":{"query":"failed password"}}"#,
+            "One recent failure [0].",
+        ]);
+        let a = ask(&store, &llm, &cfg, "any brute force in the last day?", None)
+            .await
+            .unwrap();
+
+        let msgs: Vec<String> = a
+            .rows
+            .iter()
+            .map(|r| r["message"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("inside the window")),
+            "the in-window match must be returned: {msgs:?}"
+        );
+        assert!(
+            !msgs.iter().any(|m| m.contains("outside the window")),
+            "a 48h-old event is outside the planned 24h window: {msgs:?}"
+        );
+        // Provenance stays honest: the row matched full-text ('F'), and carries
+        // no structured 'S' claim — a time-only filter selects nothing.
+        let via = a.rows[0]["via"].as_str().unwrap_or_default();
+        assert!(via.contains('F'), "expected a full-text match, got {via:?}");
+        assert!(
+            !via.contains('S'),
+            "a time-only filter must not claim a structured match: {via:?}"
+        );
+        drop(store);
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// A semantic backend cannot bound itself: it ranks by meaning and its hits
+    /// name message GROUPS (stamped with the group's max timestamp), not events.
+    /// So the executor bounds it — end to end, a planned window must keep the
+    /// out-of-window group out of the answer while the in-window one stands.
+    #[tokio::test]
+    async fn a_planned_window_bounds_the_semantic_leg_too() {
+        /// A backend whose hits are fixed, so the test controls exactly which
+        /// groups the meaning leg offers and where in time they sit.
+        struct FixedSemantic(Vec<garmr_query::SemanticHit>);
+        impl SemanticSearch for FixedSemantic {
+            fn search(&self, _nl: &str, k: usize) -> Vec<garmr_query::SemanticHit> {
+                self.0.iter().take(k).cloned().collect()
+            }
+        }
+
+        let base = tmp("semwindow");
+        std::fs::create_dir_all(&base).unwrap();
+        let store = Store::open_writable(&test_cfg(&base)).await.unwrap();
+        let hours_ago = |h: i64| chrono::Utc::now() - chrono::Duration::hours(h);
+        let (recent, ancient) = (hours_ago(2), hours_ago(48));
+        let ev_at = |ts: chrono::DateTime<chrono::Utc>, message: &str| Event {
+            ts,
+            host: "pve".into(),
+            service: "sudo".into(),
+            source: "journald".into(),
+            environment: "test".into(),
+            severity: "warning".into(),
+            log_type: "auth".into(),
+            message: message.into(),
+            fields: BTreeMap::new(),
+        };
+        let events = vec![
+            ev_at(recent, "unusual privilege escalation inside the window"),
+            ev_at(ancient, "unusual privilege escalation outside the window"),
+        ];
+        store.events.append(events.clone()).await.unwrap();
+        store.search.index(events).await.unwrap();
+
+        // One hit per message group, each carrying its group's max timestamp.
+        let hit = |ts: chrono::DateTime<chrono::Utc>, message: &str, score: f32| {
+            garmr_query::SemanticHit {
+                ts_micros: ts.timestamp_micros(),
+                host: "pve".into(),
+                service: "sudo".into(),
+                source: "journald".into(),
+                message: message.into(),
+                score,
+            }
+        };
+        let sem = FixedSemantic(vec![
+            // Ranked FIRST, so its exclusion cannot be mistaken for low rank.
+            hit(
+                ancient,
+                "unusual privilege escalation outside the window",
+                0.95,
+            ),
+            hit(
+                recent,
+                "unusual privilege escalation inside the window",
+                0.80,
+            ),
+        ]);
+
+        let cfg = test_cfg(&base);
+        let llm = MockLlm::new(&[
+            r#"{"filter":{"time":{"last_hours":24}},"semantic":{"query":"privilege escalation"}}"#,
+            "One recent escalation [0].",
+        ]);
+        let a = ask(&store, &llm, &cfg, "anything odd today?", Some(&sem))
+            .await
+            .unwrap();
+
+        assert_eq!(a.semantic_status, "used");
+        let msgs: Vec<String> = a
+            .rows
+            .iter()
+            .map(|r| r["message"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("inside the window")),
+            "the in-window group must be returned: {msgs:?}"
+        );
+        assert!(
+            !msgs.iter().any(|m| m.contains("outside the window")),
+            "a group whose newest event is 48h old cannot reach a 24h window: {msgs:?}"
+        );
+        assert!(
+            a.rows[0]["via"].as_str().unwrap_or_default().contains('V'),
+            "the surviving row matched by meaning"
+        );
         drop(store);
         std::fs::remove_dir_all(&base).ok();
     }
