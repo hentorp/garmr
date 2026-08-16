@@ -11,9 +11,9 @@ garmr-core.workspace = true
 # The SAME vendored znippy-zoomies garmr already builds via skade — its `vann`
 # module gives the HNSW ANN engine that replaces the brute-force cosine scan.
 znippy-zoomies = { path = "../../vendor/znippy-zoomies" }
-candle-core = "0.9"
-candle-nn = "0.9"
-candle-transformers = "0.9"
+candle-core = "0.11"
+candle-nn = "0.11"
+candle-transformers = "0.11"
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 serde_json.workspace = true
 blake3.workspace = true
