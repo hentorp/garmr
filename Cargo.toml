@@ -124,7 +124,7 @@ clap = { version = "4", features = ["derive"] }
 # bin (exposes garmr AS tools); `client`+`transport-child-process` power the
 # triage agent's MCP-client direction (garmr calls external intel MCP servers,
 # spawned as child processes over stdio).
-rmcp = { version = "1", features = ["server", "client", "macros", "transport-io", "transport-child-process", "schemars"] }
+rmcp = { version = "3", features = ["server", "client", "macros", "transport-io", "transport-child-process", "schemars"] }
 schemars = "1"
 uuid = { version = "1", features = ["v4"] }
 regex = "1"
