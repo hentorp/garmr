@@ -74,7 +74,7 @@ reqwest.workspace = true
 hex.workspace = true
 tokio.workspace = true
 axum.workspace = true
-tower-http = { version = "0.6", features = ["fs", "trace"] }
+tower-http = { version = "0.7", features = ["fs", "trace"] }
 base64 = "0.23"
 # Raise the process open-file limit at startup so a lakehouse scan/compaction
 # (opens every parquet + manifest at once) never trips the 1024 soft default.
