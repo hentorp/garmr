@@ -137,7 +137,7 @@ blake3 = "1"
 # Audit-ledger signing (garmr-audit). Pure-Rust ed25519 (no OpenSSL), air-gap
 # friendly. `hex` for hash/signature text encoding; `getrandom` for key seeds.
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
-getrandom = "0.2"
+getrandom = "0.4"
 hex = "0.4"
 
 [profile.release]

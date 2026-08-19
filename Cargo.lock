@@ -2935,7 +2935,7 @@ dependencies = [
  "blake3",
  "chrono",
  "ed25519-dalek",
- "getrandom 0.2.17",
+ "getrandom 0.4.3",
  "hex",
  "rotaryengine",
  "serde",
